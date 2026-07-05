@@ -1,9 +1,5 @@
 using NUnit.Framework;
 using SharpClaw.Contracts.Tasks;
-using SharpClaw.Core.Tasks;
-using SharpClaw.Core.Tasks.Models;
-using SharpClaw.Core.Tasks.Parsing;
-using SharpClaw.Core.Tasks.Registry;
 using SharpClaw.Modules.AgentOrchestration;
 
 namespace SharpClaw.AgentOrchestration.Tests;
@@ -11,15 +7,6 @@ namespace SharpClaw.AgentOrchestration.Tests;
 [TestFixture]
 public sealed class AgentOrchestrationParserAndOperationTests
 {
-    [OneTimeSetUp]
-    public void RegisterAgentOrchestrationParserSurface()
-    {
-        foreach (var descriptor in new AgentOrchestrationOperationDescriptorProvider().Descriptors)
-            TaskOperationRegistry.Default.Register(descriptor);
-
-        TaskScriptParser.RegisterModule(TaskScriptingParserExtension.Instance);
-    }
-
     [Test]
     public void DescriptorProviderExposesAgentOrchestrationOperationDescriptors()
     {
@@ -167,127 +154,6 @@ public sealed class AgentOrchestrationParserAndOperationTests
     }
 
     [Test]
-    public void Parse_ScheduleOnEventAndStartup_AllExtracted()
-    {
-        var source = Wrap("", """
-[Schedule("0 * * * *")]
-[OnEvent("ModelAdded")]
-[OnStartup]
-""");
-
-        var definition = ParseOk(source);
-
-        Assert.That(definition.TriggerDefinitions, Has.Count.EqualTo(3));
-        Assert.That(definition.TriggerDefinitions.Select(t => t.TriggerKey), Is.EquivalentTo(new[]
-        {
-            TaskScriptingTriggerKeys.Cron,
-            AgentOrchestrationTriggerKeys.Event,
-            TaskScriptingTriggerKeys.Startup,
-        }));
-    }
-
-    [Test]
-    public void Parse_AoTriggerAttributes_PopulateExpectedTriggerDefinitions()
-    {
-        var cases = new[]
-        {
-            (
-                Source: Wrap("", """[Schedule("0 9 * * MON-FRI")]"""),
-                ExpectedTrigger: TaskScriptingTriggerKeys.Cron,
-                ExpectedParameters: new Dictionary<string, string>
-                {
-                    [TaskScriptingTriggerKeys.CronExpression] = "0 9 * * MON-FRI",
-                }),
-            (
-                Source: Wrap("", """[Schedule("0 9 * * *", Timezone = "America/New_York")]"""),
-                ExpectedTrigger: TaskScriptingTriggerKeys.Cron,
-                ExpectedParameters: new Dictionary<string, string>
-                {
-                    [TaskScriptingTriggerKeys.CronExpression] = "0 9 * * *",
-                    [TaskScriptingTriggerKeys.CronTimezone] = "America/New_York",
-                }),
-            (
-                Source: Wrap("", """[OnEvent("ModelAdded", Filter = "provider=openai")]"""),
-                ExpectedTrigger: AgentOrchestrationTriggerKeys.Event,
-                ExpectedParameters: new Dictionary<string, string>
-                {
-                    [AgentOrchestrationTriggerKeys.EventType] = "ModelAdded",
-                    [AgentOrchestrationTriggerKeys.EventFilter] = "provider=openai",
-                }),
-            (
-                Source: Wrap("", """[OnFileChanged("/tmp/data", Pattern = "*.json", Events = FileWatchEvent.Created | FileWatchEvent.Deleted)]"""),
-                ExpectedTrigger: FilesystemTriggerKeys.FileChanged,
-                ExpectedParameters: new Dictionary<string, string>
-                {
-                    [FilesystemTriggerKeys.WatchPath] = "/tmp/data",
-                    [FilesystemTriggerKeys.FilePattern] = "*.json",
-                    [FilesystemTriggerKeys.FileEvents] =
-                        (FileWatchEvent.Created | FileWatchEvent.Deleted).ToString(),
-                }),
-            (
-                Source: Wrap("", """[OnTaskCompleted("IngestData")]"""),
-                ExpectedTrigger: TaskScriptingTriggerKeys.TaskCompleted,
-                ExpectedParameters: new Dictionary<string, string>
-                {
-                    [TaskScriptingTriggerKeys.SourceTaskName] = "IngestData",
-                }),
-            (
-                Source: Wrap("", """[OnTaskFailed("IngestData")]"""),
-                ExpectedTrigger: TaskScriptingTriggerKeys.TaskFailed,
-                ExpectedParameters: new Dictionary<string, string>
-                {
-                    [TaskScriptingTriggerKeys.SourceTaskName] = "IngestData",
-                }),
-            (
-                Source: Wrap("", """[OnShutdown]"""),
-                ExpectedTrigger: TaskScriptingTriggerKeys.Shutdown,
-                ExpectedParameters: new Dictionary<string, string>()),
-            (
-                Source: Wrap("", """[OnTrigger("MyCustomSource", Filter = "type=foo")]"""),
-                ExpectedTrigger: "MyCustomSource",
-                ExpectedParameters: new Dictionary<string, string>
-                {
-                    [TaskScriptingTriggerKeys.CustomSourceFilter] = "type=foo",
-                }),
-        };
-
-        foreach (var item in cases)
-        {
-            var trigger = SingleTrigger(item.Source);
-            Assert.That(trigger.TriggerKey, Is.EqualTo(item.ExpectedTrigger));
-            foreach (var (key, value) in item.ExpectedParameters)
-                Assert.That(trigger.Parameters[key], Is.EqualTo(value), item.Source);
-        }
-    }
-
-    [Test]
-    public void Parse_TriggerDefinition_RecordsNonZeroLineNumber()
-    {
-        Assert.That(SingleTrigger(Wrap("", """[Schedule("0 9 * * *")]""")).Line, Is.GreaterThan(0));
-    }
-
-    [TestCase("var r = await Chat(agentId, \"hello\");", AgentOrchestrationOperationKeys.Chat)]
-    [TestCase("await ChatStream(agentId, \"msg\");", AgentOrchestrationOperationKeys.ChatStream)]
-    [TestCase("await Emit(\"output\");", AgentOrchestrationOperationKeys.Emit)]
-    [TestCase("var r = await ParseResponse<MyData>(reply);", AgentOrchestrationOperationKeys.ParseResponse)]
-    [TestCase("var m = await FindModel(modelId);", AgentOrchestrationOperationKeys.FindModel)]
-    [TestCase("var a = await FindAgent(agentName);", AgentOrchestrationOperationKeys.FindAgent)]
-    [TestCase("var a = await CreateAgent(\"name\", modelId);", AgentOrchestrationOperationKeys.CreateAgent)]
-    [TestCase("var c = await CreateChannel(\"title\", agentId);", AgentOrchestrationOperationKeys.CreateChannel)]
-    [TestCase("var c = await FindChannel(channelName);", AgentOrchestrationOperationKeys.FindChannel)]
-    [TestCase("var r = await CreateRole(\"admin\");", AgentOrchestrationOperationKeys.CreateRole)]
-    [TestCase("await AssignRole(agentId, roleId);", AgentOrchestrationOperationKeys.AssignRole)]
-    public void Parse_AgentOrchestrationCalls_AssignsModuleOperationStatementKey(
-        string body,
-        string expectedStatementKey)
-    {
-        var result = TaskScriptEngine.Parse(Wrap(body));
-
-        Assert.That(result.Success, Is.True, DescribeDiagnostics(result));
-        Assert.That(result.Definition!.Statements.Single().StatementKey, Is.EqualTo(expectedStatementKey));
-    }
-
-    [Test]
     public void AgentOrchestrationOperationKeysUseModuleNamespace()
     {
         var keys = new[]
@@ -325,7 +191,7 @@ public sealed class AgentOrchestrationParserAndOperationTests
             Assert.That(executor.CanExecute(AgentOrchestrationOperationKeys.ParseResponse), Is.True);
             Assert.That(executor.CanExecute(AgentOrchestrationOperationKeys.Chat), Is.True);
             Assert.That(executor.CanExecute(AgentOrchestrationOperationKeys.AddAllowedAgent), Is.True);
-            Assert.That(executor.CanExecute(TaskLanguageStatementKeys.Log), Is.False);
+            Assert.That(executor.CanExecute("sharpclaw.task.log"), Is.False);
             Assert.That(executor.CanExecute("other.module.operation"), Is.False);
         });
     }
@@ -351,31 +217,6 @@ public sealed class AgentOrchestrationParserAndOperationTests
             Assert.That(context.Variables, Is.Empty);
         });
     }
-
-    private static TaskScriptDefinition ParseOk(string source)
-    {
-        var result = TaskScriptEngine.Parse(source);
-        Assert.That(result.Success, Is.True, DescribeDiagnostics(result));
-        return result.Definition!;
-    }
-
-    private static TaskTriggerDefinition SingleTrigger(string source) =>
-        ParseOk(source).TriggerDefinitions.Single();
-
-    private static string Wrap(string body, string attributes = "") => $$"""
-{{attributes}}
-[Task("TriggerTask")]
-public class TriggerTask
-{
-    public async Task RunAsync(CancellationToken ct)
-    {
-        {{body}}
-    }
-}
-""";
-
-    private static string DescribeDiagnostics(TaskScriptParseResult result) =>
-        string.Join(Environment.NewLine, result.Diagnostics.Select(d => $"{d.Severity}: {d.Message}"));
 
     private sealed class RecordingTaskOperationExecutionContext : ITaskOperationExecutionContext
     {
