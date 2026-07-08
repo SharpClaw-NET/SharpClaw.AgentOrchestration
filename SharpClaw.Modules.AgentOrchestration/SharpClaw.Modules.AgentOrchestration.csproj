@@ -12,8 +12,8 @@
     <PackageTags>sharpclaw;module;agent;orchestration;scheduling</PackageTags>
     <PackageLicenseExpression>AGPL-3.0-only</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageProjectUrl>https://github.com/mkn8rn/SharpClaw.AgentOrchestration</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/mkn8rn/SharpClaw.AgentOrchestration</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/SharpClaw-NET/SharpClaw.AgentOrchestration</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/SharpClaw-NET/SharpClaw.AgentOrchestration</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
     <IncludeContentInPack>false</IncludeContentInPack>
