@@ -25,7 +25,7 @@ public sealed class ModuleIdentityTests
         Assert.Multiple(() =>
         {
             Assert.That(root.GetProperty("id").GetString(), Is.EqualTo(AgentOrchestrationModule.ModuleIdValue));
-            Assert.That(root.GetProperty("version").GetString(), Is.EqualTo("0.1.1-beta"));
+            Assert.That(root.GetProperty("version").GetString(), Is.EqualTo("0.1.1-beta.1"));
             Assert.That(root.GetProperty("toolPrefix").GetString(), Is.EqualTo("ao"));
             Assert.That(root.GetProperty("runtime").GetString(), Is.EqualTo("dotnet"));
             Assert.That(root.GetProperty("hostMode").GetString(), Is.EqualTo("sidecar"));
@@ -46,6 +46,29 @@ public sealed class ModuleIdentityTests
             Assert.That(module.Id, Is.EqualTo("sharpclaw_agent_orchestration"));
             Assert.That(module.DisplayName, Is.EqualTo("Agent Orchestration"));
             Assert.That(module.ToolPrefix, Is.EqualTo("ao"));
+        });
+    }
+
+    [Test]
+    public void ModuleExposesOnlyRetainedAgentSkillAndContextSurfaces()
+    {
+        var module = new AgentOrchestrationModule();
+        var tools = module.GetToolDefinitions().Select(tool => tool.Name).ToArray();
+        var storage = module.GetStorageContracts().Select(contract => contract.StorageName).ToArray();
+        var commands = module.GetCliCommands().Select(command => command.Name).ToArray();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(tools, Is.EquivalentTo(new[]
+            {
+                "create_sub_agent",
+                "ao_manage_agent",
+                "ao_access_skill",
+                "ao_edit_agent_header",
+                "ao_edit_channel_header",
+            }));
+            Assert.That(storage, Is.EquivalentTo(new[] { "skills" }));
+            Assert.That(commands, Is.EquivalentTo(new[] { "aoskill" }));
         });
     }
 }

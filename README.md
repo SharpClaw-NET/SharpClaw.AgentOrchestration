@@ -3,14 +3,13 @@
 SharpClaw Agent Orchestration is a runtime-loadable SharpClaw module package.
 The package id is `SharpClaw.Modules.AgentOrchestration`, the module id is
 `sharpclaw_agent_orchestration`, and SharpClaw loads the sidecar payload from
-the package `sharpclaw` directory through `SharpClaw.Modules.AgentOrchestration.dll`.
+the package `sharpclaw` directory through
+`SharpClaw.Modules.AgentOrchestration.dll`.
 
-The module contributes the `ao` tool prefix, agent lifecycle tools, scheduled
-job services, filesystem and lifecycle trigger sources, task-chain triggers,
-context tools, CLI commands for schedules and AO resources, and the task parser
-extension that recognizes Agent Orchestration trigger attributes. The module is
-enabled by default in `module.json`, so a compatible SharpClaw host can discover
-and activate it without a local source checkout.
+The module contributes the `ao` tool prefix, sub-agent creation and management,
+skill access, custom agent and channel headers, and cross-thread context tools.
+It is enabled by default in `module.json`, so a compatible SharpClaw host can
+discover and activate it without a local source checkout.
 
 Build and package from the repository root with `dotnet restore`,
 `dotnet build`, `dotnet test`, and `dotnet pack -c Release`. The NuGet package

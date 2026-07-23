@@ -8,8 +8,8 @@
     <Title>SharpClaw Agent Orchestration Module</Title>
     <Authors>mkn8rn</Authors>
     <Company>mkn8rn</Company>
-    <Description>Runtime-loadable SharpClaw module for agent lifecycle, scheduled jobs, task orchestration, triggers, and context tools.</Description>
-    <PackageTags>sharpclaw;module;agent;orchestration;scheduling</PackageTags>
+    <Description>Runtime-loadable SharpClaw module for agent lifecycle, agent management, skill access, cross-thread context tools, and custom agent or channel headers.</Description>
+    <PackageTags>sharpclaw;module;agent;orchestration;skills;context</PackageTags>
     <PackageLicenseExpression>AGPL-3.0-only</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageProjectUrl>https://github.com/SharpClaw-NET/SharpClaw.AgentOrchestration</PackageProjectUrl>

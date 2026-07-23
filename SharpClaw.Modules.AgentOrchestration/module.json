@@ -1,7 +1,7 @@
 {
   "id": "sharpclaw_agent_orchestration",
   "displayName": "Agent Orchestration",
-  "version": "0.1.1-beta",
+  "version": "0.1.1-beta.1",
   "toolPrefix": "ao",
   "runtime": "dotnet",
   "hostMode": "sidecar",
@@ -9,7 +9,7 @@
   "moduleType": "SharpClaw.Modules.AgentOrchestration.AgentOrchestrationModule",
   "minHostVersion": "0.1.0-beta",
   "author": "mkn8rn",
-  "description": "Agent lifecycle and orchestration tools: sub-agent creation, agent management, task editing, skill access.",
+  "description": "Agent lifecycle tools: sub-agent creation, agent management, skill access, cross-thread context tools, and custom headers.",
   "license": "AGPL-3.0",
   "platforms": null,
   "enabled": true,

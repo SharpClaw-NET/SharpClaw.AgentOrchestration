@@ -4,10 +4,10 @@
     <Nullable>enable</Nullable>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
     <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
-    <Version>0.1.1-beta</Version>
+    <Version>0.1.1-beta.1</Version>
     <AssemblyVersion>0.1.1.0</AssemblyVersion>
     <FileVersion>0.1.1.0</FileVersion>
-    <InformationalVersion>0.1.1-beta</InformationalVersion>
+    <InformationalVersion>0.1.1-beta.1</InformationalVersion>
     <NoWarn>$(NoWarn);CS9113;NU1507;NU1510;NETSDK1201</NoWarn>
   </PropertyGroup>
 </Project>
