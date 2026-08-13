@@ -140,6 +140,7 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
 
     public void ConfigureApplication(ISharpClawApplicationBuilder application)
     {
+        application.Endpoints.Add<AgentsEndpointContribution>();
         application.Cli.Add<AgentsCliHandler>(new ModuleCliCommandDescriptor(
             "agents-list",
             ["agent-list"],

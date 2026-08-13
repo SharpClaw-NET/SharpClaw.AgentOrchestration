@@ -39,7 +39,7 @@ public sealed class PermissionPolicyStore
         CancellationToken ct = default) =>
         _grants.Query()
             .WhereIndex("subjectId").EqualTo(subjectId)
-            .WhereIndex("capability").EqualTo(capability)
+            .WhereIndex("capability").EqualTo(capability.Trim())
             .ToListAsync(ct);
 
     public async Task<PermissionGrantRecord?> GetGrantAsync(
@@ -48,9 +48,10 @@ public sealed class PermissionPolicyStore
         string scope,
         CancellationToken ct = default)
     {
-        var grants = await ListGrantsAsync(subjectId, capability, ct);
+        var grants = await ListGrantsAsync(subjectId, capability.Trim(), ct);
+        var normalizedScope = NormalizeScope(scope);
         return grants.FirstOrDefault(grant =>
-            grant.Scope.Equals(scope, StringComparison.OrdinalIgnoreCase));
+            grant.Scope.Equals(normalizedScope, StringComparison.OrdinalIgnoreCase));
     }
 
     public Task<IReadOnlyList<PermissionApprovalRecord>> ListApprovalsAsync(
@@ -78,38 +79,18 @@ public sealed class PermissionPolicyStore
         CancellationToken ct = default)
     {
         var scope = NormalizeScope(grant.Scope);
-        var existing = await GetAsync(grant.SubjectId, ct);
-        var capabilities = grant.Clearance == PermissionClearance.Independent
-            && scope.Equals("global", StringComparison.OrdinalIgnoreCase)
-            ? (existing?.Capabilities ?? [])
-                .Append(grant.Capability)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray()
-            : existing?.Capabilities ?? [];
-        var delegated = (existing?.DelegatedBy ?? [])
-            .Append(caller.SubjectId)
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
-        await SaveAsync(new PermissionPolicyRecord(
-            grant.SubjectId,
-            existing?.Roles ?? [],
-            capabilities,
-            existing?.HardDeniedCapabilities ?? [],
-            grant.Clearance,
-            grant.RequireSourceOptIn,
-            delegated,
-            existing?.ExpiresAt,
-            DateTimeOffset.UtcNow), ct);
-
         var record = new PermissionGrantRecord(
-            $"{grant.SubjectId}:{grant.Capability}:{scope}",
+            $"{grant.SubjectId}:{grant.Capability.Trim()}:{scope}",
             grant.SubjectId,
-            grant.Capability,
+            grant.Capability.Trim(),
             scope,
             grant.Clearance,
             caller.SubjectId,
             DateTimeOffset.UtcNow,
-            null);
+            grant.ExpiresAt)
+        {
+            RequireSourceOptIn = grant.RequireSourceOptIn,
+        };
         await _grants.UpsertAsync(record.GrantId, record, new
         {
             subjectId = record.SubjectId,
@@ -125,17 +106,7 @@ public sealed class PermissionPolicyStore
         CancellationToken ct = default)
     {
         var normalizedScope = NormalizeScope(scope);
-        var existing = await GetAsync(subjectId, ct);
-        if (existing is not null
-            && normalizedScope.Equals("global", StringComparison.OrdinalIgnoreCase))
-        {
-            var capabilities = existing.Capabilities
-                .Where(item => !item.Equals(capability, StringComparison.OrdinalIgnoreCase))
-                .ToArray();
-            await SaveAsync(existing with { Capabilities = capabilities, UpdatedAt = DateTimeOffset.UtcNow }, ct);
-        }
-
-        await _grants.DeleteAsync($"{subjectId}:{capability}:{normalizedScope}", ct);
+        await _grants.DeleteAsync($"{subjectId}:{capability.Trim()}:{normalizedScope}", ct);
     }
 
     public Task SaveApprovalAsync(

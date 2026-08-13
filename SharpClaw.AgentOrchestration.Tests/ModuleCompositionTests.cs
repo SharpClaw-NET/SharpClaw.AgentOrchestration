@@ -98,6 +98,92 @@ public sealed class ModuleCompositionTests
     }
 
     [Test]
+    public void ApplicationContributionsDeclareOwnedApiEndpoints()
+    {
+        var expected = new[]
+        {
+            (Module: (ISharpClawApplicationModule)new ContextModule(),
+                Contribution: typeof(ContextEndpointContribution),
+                Routes: new[]
+                {
+                    ContextEndpointContribution.CreateThreadRoute,
+                    ContextEndpointContribution.ReadHistoryRoute,
+                    ContextEndpointContribution.CommitExchangeRoute,
+                }),
+            (Module: (ISharpClawApplicationModule)new TwoTierPermissionModule(),
+                Contribution: typeof(PermissionEndpointContribution),
+                Routes: new[]
+                {
+                    PermissionEndpointContribution.EvaluateRoute,
+                    PermissionEndpointContribution.GrantRoute,
+                    PermissionEndpointContribution.RevokeRoute,
+                    PermissionEndpointContribution.ApproveRoute,
+                }),
+            (Module: (ISharpClawApplicationModule)new AgentsModule(),
+                Contribution: typeof(AgentsEndpointContribution),
+                Routes: new[]
+                {
+                    AgentsEndpointContribution.CreateRoute,
+                    AgentsEndpointContribution.UpdateRoute,
+                    AgentsEndpointContribution.WriteMemoryRoute,
+                    AgentsEndpointContribution.SearchMemoryRoute,
+                    AgentsEndpointContribution.SaveSkillRoute,
+                    AgentsEndpointContribution.AccessSkillRoute,
+                }),
+        };
+
+        foreach (var item in expected)
+        {
+            var application = new RecordingApplicationBuilder();
+            item.Module.ConfigureApplication(application);
+
+            Assert.Multiple(() =>
+            {
+                Assert.That(application.Endpoints.Items, Does.Contain(item.Contribution));
+                Assert.That(item.Contribution.GetMethod("Map"), Is.Not.Null);
+                Assert.That(item.Routes, Is.All.Not.Null);
+                Assert.That(item.Routes, Is.All.Not.Empty);
+            });
+        }
+    }
+
+    [Test]
+    public void PermissionClearancePreservesFormerNumericIdentities()
+    {
+        var expected = new[]
+        {
+            (Value: 0, Clearance: PermissionClearance.Unset),
+            (Value: 1, Clearance: PermissionClearance.ApprovedBySameLevelUser),
+            (Value: 2, Clearance: PermissionClearance.ApprovedByWhitelistedUser),
+            (Value: 3, Clearance: PermissionClearance.ApprovedByPermittedAgent),
+            (Value: 4, Clearance: PermissionClearance.ApprovedByWhitelistedAgent),
+            (Value: 5, Clearance: PermissionClearance.Independent),
+            (Value: 6, Clearance: PermissionClearance.Restricted),
+        };
+
+        foreach (var item in expected)
+        {
+            var record = new PermissionPolicyRecord(
+                "subject",
+                [],
+                [],
+                [],
+                item.Clearance,
+                true,
+                [],
+                null,
+                DateTimeOffset.UtcNow);
+            var roundTrip = JsonSerializer.Deserialize<PermissionPolicyRecord>(
+                JsonSerializer.Serialize(record));
+
+            Assert.That((int)roundTrip!.Clearance, Is.EqualTo(item.Value));
+        }
+
+        Assert.That(PermissionDecision.Deny("denied", "denied", 1).Clearance,
+            Is.EqualTo(PermissionClearance.Restricted));
+    }
+
+    [Test]
     public async Task ContextHistoryUsesOwnedStorageAndPermissionGate()
     {
         var gateway = new InMemoryStorageGateway();
@@ -271,6 +357,202 @@ public sealed class ModuleCompositionTests
         var after = await policy.EvaluateCapabilityAsync(subject,
             new PermissionEvaluateAction(subject.SubjectId, "read_memory", "global", false));
         Assert.That(after.Allowed, Is.True);
+    }
+
+    [Test]
+    public async Task AllFormerApprovalRoutesRequireTheirDeclaredAuthority()
+    {
+        var gateway = new InMemoryStorageGateway();
+        var store = new PermissionPolicyStore(gateway);
+        var policy = new TwoTierPermissionPolicy(store);
+        var admin = new RequestPrincipal(Guid.NewGuid().ToString("D"), Roles: new HashSet<string>(["admin"]));
+        var approver = new RequestPrincipal(Guid.NewGuid().ToString("D"));
+
+        await store.SaveAsync(new PermissionPolicyRecord(
+            approver.SubjectId,
+            [],
+            ["approve_permissions"],
+            [],
+            PermissionClearance.Independent,
+            true,
+            [],
+            null,
+            DateTimeOffset.UtcNow));
+
+        var clearances = new[]
+        {
+            PermissionClearance.ApprovedBySameLevelUser,
+            PermissionClearance.ApprovedByWhitelistedUser,
+            PermissionClearance.ApprovedByPermittedAgent,
+            PermissionClearance.ApprovedByWhitelistedAgent,
+        };
+
+        foreach (var clearance in clearances)
+        {
+            var subject = Guid.NewGuid().ToString("D");
+            var scope = $"channel:{Guid.NewGuid():N}";
+            var targetPolicy = new PermissionPolicyRecord(
+                subject,
+                [],
+                [],
+                [],
+                PermissionClearance.ApprovedBySameLevelUser,
+                true,
+                [],
+                null,
+                DateTimeOffset.UtcNow);
+            targetPolicy = clearance switch
+            {
+                PermissionClearance.ApprovedByWhitelistedUser => targetPolicy with
+                {
+                    WhitelistedUserIds = [approver.SubjectId],
+                },
+                PermissionClearance.ApprovedByPermittedAgent => targetPolicy with
+                {
+                    PermittedAgentIds = [approver.SubjectId],
+                },
+                PermissionClearance.ApprovedByWhitelistedAgent => targetPolicy with
+                {
+                    WhitelistedAgentIds = [approver.SubjectId],
+                },
+                _ => targetPolicy,
+            };
+            await store.SaveAsync(targetPolicy);
+            await policy.GrantAsync(admin, new PermissionGrantAction(
+                subject,
+                "read_memory",
+                scope,
+                clearance));
+
+            await policy.ApproveAsync(approver, new PermissionApproveAction(subject, "read_memory", scope));
+
+            var decision = await policy.EvaluateCapabilityAsync(
+                new RequestPrincipal(subject),
+                new PermissionEvaluateAction(subject, "read_memory", scope, false));
+            Assert.That(decision.Allowed, Is.True, clearance.ToString());
+        }
+    }
+
+    [Test]
+    public async Task ScopedGrantDoesNotChangeGlobalClearanceOrOptInAfterRevoke()
+    {
+        var gateway = new InMemoryStorageGateway();
+        var store = new PermissionPolicyStore(gateway);
+        var policy = new TwoTierPermissionPolicy(store);
+        var admin = new RequestPrincipal(Guid.NewGuid().ToString("D"), Roles: new HashSet<string>(["admin"]));
+        var approver = new RequestPrincipal(Guid.NewGuid().ToString("D"));
+        var subjectAgentId = Guid.NewGuid();
+        var subject = new RequestPrincipal(subjectAgentId.ToString("D"));
+        var firstChannel = Guid.NewGuid();
+        var secondChannel = Guid.NewGuid();
+        var firstScope = $"channel:{firstChannel:N}";
+        var secondScope = $"channel:{secondChannel:N}";
+
+        await store.SaveAsync(new PermissionPolicyRecord(
+            subject.SubjectId,
+            [],
+            [],
+            [],
+            PermissionClearance.ApprovedBySameLevelUser,
+            true,
+            [],
+            null,
+            DateTimeOffset.UtcNow));
+        await store.SaveAsync(new PermissionPolicyRecord(
+            approver.SubjectId,
+            [],
+            ["approve_permissions"],
+            [],
+            PermissionClearance.Independent,
+            true,
+            [],
+            null,
+            DateTimeOffset.UtcNow));
+        await policy.GrantAsync(admin, new PermissionGrantAction(
+            subject.SubjectId,
+            ContextAccessCapabilities.ReadCrossThreadHistory,
+            firstScope,
+            PermissionClearance.Independent,
+            RequireSourceOptIn: false));
+        await policy.GrantAsync(admin, new PermissionGrantAction(
+            subject.SubjectId,
+            "CanReadCrossThreadHistory",
+            secondScope,
+            PermissionClearance.ApprovedBySameLevelUser,
+            RequireSourceOptIn: true));
+        await policy.ApproveAsync(approver, new PermissionApproveAction(
+            subject.SubjectId,
+            "CanReadCrossThreadHistory",
+            secondScope));
+
+        var first = await policy.EvaluateDetailedAsync(new ContextAccessRequest(
+            subject,
+            firstChannel,
+            subjectAgentId,
+            [],
+            null,
+            [],
+            SourceChannelOptedIn: false,
+            Capability: ContextAccessCapabilities.ReadCrossThreadHistory));
+        var second = await policy.EvaluateDetailedAsync(new ContextAccessRequest(
+            subject,
+            secondChannel,
+            subjectAgentId,
+            [],
+            null,
+            [],
+            SourceChannelOptedIn: false,
+            Capability: "CanReadCrossThreadHistory"));
+
+        Assert.That(first.Allowed, Is.True);
+        Assert.That(second.Allowed, Is.False);
+        Assert.That(second.Code, Is.EqualTo("source_opt_in_required"));
+
+        var reloadedStore = new PermissionPolicyStore(gateway);
+        var persistedPolicy = await reloadedStore.GetAsync(subject.SubjectId);
+        var persistedGrant = await reloadedStore.GetGrantAsync(
+            subject.SubjectId,
+            ContextAccessCapabilities.ReadCrossThreadHistory,
+            firstScope);
+        Assert.Multiple(() =>
+        {
+            Assert.That(persistedPolicy!.Clearance, Is.EqualTo(PermissionClearance.ApprovedBySameLevelUser));
+            Assert.That(persistedPolicy.RequireSourceOptIn, Is.True);
+            Assert.That(persistedPolicy.Capabilities, Is.Empty);
+            Assert.That(persistedGrant!.RequireSourceOptIn, Is.False);
+        });
+
+        await policy.RevokeAsync(admin, new PermissionRevokeAction(
+            subject.SubjectId,
+            ContextAccessCapabilities.ReadCrossThreadHistory,
+            firstScope));
+
+        var afterRevoke = await policy.EvaluateDetailedAsync(new ContextAccessRequest(
+            subject,
+            firstChannel,
+            subjectAgentId,
+            [],
+            null,
+            [],
+            SourceChannelOptedIn: false,
+            Capability: ContextAccessCapabilities.ReadCrossThreadHistory));
+        var secondAfterRevoke = await policy.EvaluateDetailedAsync(new ContextAccessRequest(
+            subject,
+            secondChannel,
+            subjectAgentId,
+            [],
+            null,
+            [],
+            SourceChannelOptedIn: false,
+            Capability: "CanReadCrossThreadHistory"));
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(afterRevoke.Allowed, Is.False);
+            Assert.That(afterRevoke.Code, Is.EqualTo("capability_denied"));
+            Assert.That(afterRevoke.Clearance, Is.EqualTo(PermissionClearance.ApprovedBySameLevelUser));
+            Assert.That(secondAfterRevoke.Code, Is.EqualTo("source_opt_in_required"));
+        });
     }
 
     [Test]
@@ -512,6 +794,38 @@ public sealed class ModuleCompositionTests
         IToolContributionBuilder ISharpClawModuleBuilder.Tools => Tools;
         public RecordingChat Chat { get; } = new();
         IChatLifecycleBuilder ISharpClawModuleBuilder.Chat => Chat;
+    }
+
+    private sealed class RecordingApplicationBuilder : ISharpClawApplicationBuilder
+    {
+        public RecordingEndpoints Endpoints { get; } = new();
+        IEndpointContributionBuilder ISharpClawApplicationBuilder.Endpoints => Endpoints;
+        public RecordingCli Cli { get; } = new();
+        ICliContributionBuilder ISharpClawApplicationBuilder.Cli => Cli;
+        public RecordingUi Ui { get; } = new();
+        IUiContributionBuilder ISharpClawApplicationBuilder.Ui => Ui;
+    }
+
+    private sealed class RecordingEndpoints : IEndpointContributionBuilder
+    {
+        public List<Type> Items { get; } = [];
+
+        public void Add<TContribution>() => Items.Add(typeof(TContribution));
+    }
+
+    private sealed class RecordingCli : ICliContributionBuilder
+    {
+        public void Add<THandler>(ModuleCliCommandDescriptor descriptor)
+            where THandler : IModuleCliHandler
+        {
+        }
+    }
+
+    private sealed class RecordingUi : IUiContributionBuilder
+    {
+        public void Add<TContribution>()
+        {
+        }
     }
 
     private sealed class RecordingContracts : IModuleContractBuilder

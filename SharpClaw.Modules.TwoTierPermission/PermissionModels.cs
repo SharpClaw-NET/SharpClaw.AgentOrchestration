@@ -4,10 +4,13 @@ namespace SharpClaw.Modules.TwoTierPermission;
 
 public enum PermissionClearance
 {
-    Unset,
-    Denied,
-    ApprovedBySameLevelUser,
-    Independent,
+    Unset = 0,
+    ApprovedBySameLevelUser = 1,
+    ApprovedByWhitelistedUser = 2,
+    ApprovedByPermittedAgent = 3,
+    ApprovedByWhitelistedAgent = 4,
+    Independent = 5,
+    Restricted = 6,
 }
 
 public sealed record PermissionPolicyRecord(
@@ -19,7 +22,14 @@ public sealed record PermissionPolicyRecord(
     bool RequireSourceOptIn,
     IReadOnlyList<string> DelegatedBy,
     DateTimeOffset? ExpiresAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt)
+{
+    public IReadOnlyList<string> WhitelistedUserIds { get; init; } = [];
+
+    public IReadOnlyList<string> PermittedAgentIds { get; init; } = [];
+
+    public IReadOnlyList<string> WhitelistedAgentIds { get; init; } = [];
+}
 
 public sealed record PermissionGrantRecord(
     string GrantId,
@@ -29,7 +39,10 @@ public sealed record PermissionGrantRecord(
     PermissionClearance Clearance,
     string GrantedBy,
     DateTimeOffset CreatedAt,
-    DateTimeOffset? ExpiresAt);
+    DateTimeOffset? ExpiresAt)
+{
+    public bool RequireSourceOptIn { get; init; } = true;
+}
 
 public sealed record PermissionApprovalRecord(
     string ApprovalId,
@@ -49,9 +62,9 @@ public sealed record PermissionDecision(
 {
     public static PermissionDecision Deny(
         string code,
-        string message,
-        int tier,
-        PermissionClearance clearance = PermissionClearance.Denied) =>
+    string message,
+    int tier,
+        PermissionClearance clearance = PermissionClearance.Restricted) =>
         new(false, code, message, tier, clearance);
 
     public static PermissionDecision Allow(
@@ -72,7 +85,8 @@ public sealed record PermissionGrantAction(
     string Capability,
     string Scope,
     PermissionClearance Clearance,
-    bool RequireSourceOptIn = true);
+    bool RequireSourceOptIn = true,
+    DateTimeOffset? ExpiresAt = null);
 
 public sealed record PermissionRevokeAction(
     string SubjectId,

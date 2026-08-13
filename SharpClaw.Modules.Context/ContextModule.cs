@@ -98,6 +98,7 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
 
     public void ConfigureApplication(ISharpClawApplicationBuilder application)
     {
+        application.Endpoints.Add<ContextEndpointContribution>();
         application.Cli.Add<ContextCliHandler>(new ModuleCliCommandDescriptor(
             "ctx-thread-list",
             ["ctxthreads"],

@@ -107,6 +107,7 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
 
     public void ConfigureApplication(ISharpClawApplicationBuilder application)
     {
+        application.Endpoints.Add<PermissionEndpointContribution>();
         application.Cli.Add<PermissionCliHandler>(new ModuleCliCommandDescriptor(
             "perm-grant",
             ["permission-grant"],

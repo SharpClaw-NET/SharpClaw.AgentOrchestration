@@ -6,6 +6,8 @@ This repository provides the package-owned Context, Two Tier Permission, and Age
 
 The modules use current `SharpClaw.Contracts` module builders, declared storage contracts, `ModuleDocumentStore<T>`, and `IModuleStorageGateway`. Jobs and Events remain kernel-owned. The packages use declared module boundaries and contain no host project references.
 
+The application contributions expose package-owned HTTP routes for context thread and history actions, permission evaluation and administration, and agent, skill, and memory actions. Each route creates a caller principal and invokes the owning action executor, so authorization and persistence use the same module path as tools and CLI commands.
+
 All coordinated packages use version `0.5.0-beta.1`. The package payload places each module manifest, module assembly, dependency graph, and package-local dependency assemblies under `sharpclaw\`. The package metadata uses this repository and the `AGPL-3.0-only` license.
 
 Run `dotnet restore`, `dotnet build`, `dotnet test`, and `dotnet pack -c Release` from the repository root. Publication is an owner-controlled step and is outside this repository change.
