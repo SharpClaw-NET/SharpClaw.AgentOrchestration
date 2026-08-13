@@ -42,7 +42,6 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
         module.Services.AddScoped<IPermissionActionExecutor, PermissionActionExecutor>();
         module.Services.AddScoped<PermissionGrantAuthorizationHook>();
         module.Services.AddScoped<PermissionCliHandler>();
-        module.Services.AddScoped<PermissionDbContextAccessor>();
 
         module.Contracts.Export<PermissionModuleContract>("sharpclaw.permission");
 
@@ -167,9 +166,4 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
     private static JsonElement BuildApproveSchema() => JsonDocument.Parse("""
         {"type":"object","properties":{"subjectId":{"type":"string"},"capability":{"type":"string"},"scope":{"type":"string"},"expiresAt":{"type":"string"}},"required":["subjectId","capability"],"additionalProperties":false}
         """).RootElement.Clone();
-}
-
-public sealed class PermissionDbContextAccessor(IModuleDbContextFactory factory)
-{
-    public PermissionDbContext Create() => factory.CreateDbContext<PermissionDbContext>();
 }

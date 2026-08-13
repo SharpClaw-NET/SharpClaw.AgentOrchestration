@@ -1,5 +1,4 @@
 using SharpClaw.Contracts.Modules;
-using SharpClaw.Contracts.Persistence;
 using SharpClaw.Modules.AgentOrchestration.Contracts;
 
 namespace SharpClaw.Modules.Context;
@@ -10,32 +9,29 @@ public sealed class ContextConversationResolver(ContextStore store) : IConversat
         ChatTurnInput input,
         CancellationToken ct)
     {
+        var caller = input.Caller;
+        if (caller is null || !caller.IsAuthenticated)
+            throw new UnauthorizedAccessException("Authentication is required to resolve a conversation.");
+
         if (input.ConversationId is { } existing)
         {
-            if (await store.GetThreadAsync(existing, ct) is not null)
-                return new ConversationSelection(existing);
-            throw new InvalidOperationException($"Conversation '{existing}' does not exist.");
+            var decision = await store.AuthorizeConversationAsync(
+                caller,
+                existing,
+                ContextAccessCapabilities.ReadHistory,
+                ct);
+            if (!decision.Allowed)
+                throw new UnauthorizedAccessException($"{decision.Code}: {decision.Message}");
+            return new ConversationSelection(existing);
         }
 
         var channelId = CreateConversationChannelId(input);
-        if (await store.GetChannelAsync(channelId, ct) is null)
-        {
-            var owner = input.Caller is { SubjectId: var subject }
-                && Guid.TryParse(subject, out var ownerId)
-                ? ownerId
-                : (Guid?)null;
-            await store.SaveChannelAsync(new ContextChannelRecord(
-                channelId,
-                "Conversation",
-                owner,
-                null,
-                [],
-                [],
-                false,
-                DateTimeOffset.UtcNow,
-                DateTimeOffset.UtcNow), ct);
-        }
-        var thread = await store.CreateThreadAsync(channelId, "Conversation", ct: ct);
+        var channel = await store.EnsureConversationChannelAsync(caller, channelId, ct);
+        var thread = await store.CreateThreadAsync(
+            caller,
+            channel.Id,
+            "Conversation",
+            ct: ct);
         return new ConversationSelection(thread.Id, Created: true);
     }
 
@@ -52,12 +48,10 @@ public sealed class ContextHistoryContributor(ContextStore store) : IChatContext
         ChatContextRequest request,
         CancellationToken ct)
     {
-        var messages = await store.LoadHistoryAsync(request.ConversationId, ct);
+        var caller = request.Turn?.Input.Caller
+            ?? throw new UnauthorizedAccessException(
+                "A caller is required to load conversation history.");
+        var messages = await store.LoadHistoryAsync(caller, request.ConversationId, ct);
         return new ChatContextContribution([], messages, []);
     }
-}
-
-public sealed class ContextDbContextAccessor(IModuleDbContextFactory factory)
-{
-    public ContextDbContext Create() => factory.CreateDbContext<ContextDbContext>();
 }

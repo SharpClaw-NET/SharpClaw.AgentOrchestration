@@ -5,14 +5,15 @@ using SharpClaw.Modules.AgentOrchestration.Contracts;
 namespace SharpClaw.Modules.Context;
 
 public sealed class ContextToolHandler(
-    ContextStore store,
-    IContextAccessPolicy policy) : IToolHandler
+    ContextStore store) : IToolHandler
 {
     public async ValueTask<ToolResult> InvokeAsync(
         ToolInvocation invocation,
         CancellationToken ct)
     {
-        if (!Guid.TryParse(invocation.Caller.SubjectId, out _))
+        if (!invocation.Caller.IsAuthenticated
+            || !Guid.TryParse(invocation.Caller.SubjectId, out var agentId)
+            || agentId == Guid.Empty)
             return ToolResult.Error("The caller subject must be an agent GUID.");
 
         return invocation.ToolName switch
@@ -29,7 +30,7 @@ public sealed class ContextToolHandler(
             return ToolResult.Error("channelId is required.");
 
         var threads = await store.ListAccessibleThreadsAsync(
-            invocation.Caller, channelId, policy, ct);
+            invocation.Caller, channelId, ct);
         var payload = threads.Select(thread => new
         {
             threadId = thread.ThreadId,
@@ -49,7 +50,7 @@ public sealed class ContextToolHandler(
             return ToolResult.Error("threadId is required.");
 
         var thread = await store.FindAccessibleThreadAsync(
-            invocation.Caller, channelId, threadId, policy, ct);
+            invocation.Caller, channelId, threadId, ct);
         if (thread is null)
             return ToolResult.Error("The thread is missing or inaccessible.");
 

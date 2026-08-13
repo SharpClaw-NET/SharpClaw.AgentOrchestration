@@ -3,8 +3,7 @@ using SharpClaw.Contracts.Modules;
 namespace SharpClaw.Modules.Context;
 
 public sealed class ContextCliHandler(
-    ContextStore store,
-    SharpClaw.Modules.AgentOrchestration.Contracts.IContextAccessPolicy policy) : IModuleCliHandler
+    ContextStore store) : IModuleCliHandler
 {
     public async ValueTask<ModuleCliResult> ExecuteAsync(
         ModuleCliInvocation invocation,
@@ -19,7 +18,6 @@ public sealed class ContextCliHandler(
                 await store.ListAccessibleThreadsAsync(
                     principal,
                     channelId,
-                    policy,
                     ct)));
         }
 

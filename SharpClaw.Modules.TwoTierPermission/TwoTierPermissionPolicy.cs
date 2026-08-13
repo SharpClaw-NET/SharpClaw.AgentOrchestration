@@ -6,6 +6,9 @@ namespace SharpClaw.Modules.TwoTierPermission;
 public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
     : IContextAccessPolicy, IAgentAccessPolicy
 {
+    private const string ManagePermissionsCapability = "manage_permissions";
+    private const string ApprovePermissionsCapability = "approve_permissions";
+
     public async ValueTask<ContextAccessDecision> EvaluateAsync(
         ContextAccessRequest request,
         CancellationToken ct = default)
@@ -23,18 +26,25 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
         if (!request.Principal.IsAuthenticated)
             return PermissionDecision.Deny("unauthenticated", "Authentication is required.", 1);
 
+        var capability = NormalizeCapability(request.Capability);
         var policy = await store.GetAsync(request.Principal.SubjectId, ct);
         var isAdministrator = IsAdministrator(request.Principal, policy);
-        var grant = await FindCrossThreadGrantAsync(request, ct);
+        var requestedScope = RequestedScope(request);
+        var grant = await FindUsableGrantAsync(
+            request.Principal.SubjectId,
+            capability,
+            requestedScope,
+            request.ContextId,
+            ct);
         var clearance = policy?.Clearance ?? PermissionClearance.Unset;
 
         if (policy?.ExpiresAt is { } expiry && expiry <= DateTimeOffset.UtcNow)
             return PermissionDecision.Deny("policy_expired", "The permission policy has expired.", 1, clearance);
 
-        if (policy?.HardDeniedCapabilities.Any(IsCrossThreadCapability) == true)
+        if (policy?.HardDeniedCapabilities.Any(item => IsSameCapability(item, capability)) == true)
             return PermissionDecision.Deny("hard_denial", "A hard denial blocks this capability.", 1, clearance);
 
-        if (!isAdministrator && !HasCrossThreadCapability(policy) && grant is null)
+        if (!isAdministrator && !HasCapability(policy, capability) && grant is null)
             return PermissionDecision.Deny("capability_denied", "The caller lacks the required capability.", 1, clearance);
 
         if (!isAdministrator && clearance is PermissionClearance.Unset or PermissionClearance.Denied)
@@ -44,17 +54,21 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
                 return PermissionDecision.Deny("clearance_denied", "The caller has no usable clearance.", 1, clearance);
         }
 
+        var callerAgentId = ParseAgentId(request.Principal.SubjectId);
         var isAssigned = isAdministrator
-            || request.OwnerAgentId == ParseAgentId(request.Principal.SubjectId)
-            || request.AllowedAgentIds.Contains(ParseAgentId(request.Principal.SubjectId))
-            || request.DefaultContextAgentId == ParseAgentId(request.Principal.SubjectId)
-            || request.ContextAllowedAgentIds.Contains(ParseAgentId(request.Principal.SubjectId));
+            || request.OwnerAgentId == callerAgentId
+            || request.AllowedAgentIds.Contains(callerAgentId)
+            || request.DefaultContextAgentId == callerAgentId
+            || request.ContextAllowedAgentIds.Contains(callerAgentId);
         if (!isAssigned)
             return PermissionDecision.Deny("scope_denied", "The caller is not assigned to the source channel or context.", 2, clearance);
 
         var requiresOptIn = policy?.RequireSourceOptIn ?? true;
-        if (!isAdministrator && clearance != PermissionClearance.Independent
-            && requiresOptIn && !request.SourceChannelOptedIn)
+        if (IsCrossThreadCapability(capability)
+            && !isAdministrator
+            && clearance != PermissionClearance.Independent
+            && requiresOptIn
+            && !request.SourceChannelOptedIn)
         {
             return PermissionDecision.Deny(
                 "source_opt_in_required",
@@ -66,7 +80,9 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
         return PermissionDecision.Allow(
             isAdministrator ? "administrator" : "assigned_and_authorized",
             2,
-            isAdministrator ? PermissionClearance.Independent : EffectiveClearance(clearance, grant?.Clearance));
+            isAdministrator
+                ? PermissionClearance.Independent
+                : EffectiveClearance(clearance, grant?.Clearance));
     }
 
     public async ValueTask<PermissionDecision> EvaluateCapabilityAsync(
@@ -82,16 +98,20 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
         var isAdministrator = IsAdministrator(caller, null)
             || (string.Equals(caller.SubjectId, action.SubjectId, StringComparison.Ordinal)
                 && IsAdministrator(subject, policy));
+        var capability = NormalizeCapability(action.Capability);
         var clearance = policy?.Clearance ?? PermissionClearance.Unset;
         if (policy?.ExpiresAt is { } expiry && expiry <= DateTimeOffset.UtcNow)
             return PermissionDecision.Deny("policy_expired", "The permission policy has expired.", 1, clearance);
-        if (policy?.HardDeniedCapabilities.Any(item =>
-                item.Equals(action.Capability, StringComparison.OrdinalIgnoreCase)) == true)
+        if (policy?.HardDeniedCapabilities.Any(item => IsSameCapability(item, capability)) == true)
             return PermissionDecision.Deny("hard_denial", "A hard denial blocks this capability.", 1, clearance);
 
-        var grants = await store.ListGrantsAsync(subject.SubjectId, action.Capability, ct);
-        var scopedGrant = await SelectUsableGrantAsync(grants, action.Scope, null, ct);
-        if (!isAdministrator && !HasCapability(policy, action.Capability) && scopedGrant is null)
+        var scopedGrant = await FindUsableGrantAsync(
+            subject.SubjectId,
+            capability,
+            NormalizeScope(action.Scope),
+            null,
+            ct);
+        if (!isAdministrator && !HasCapability(policy, capability) && scopedGrant is null)
             return PermissionDecision.Deny("capability_denied", "The caller lacks the required capability.", 1, clearance);
         if (!isAdministrator && clearance is PermissionClearance.Unset or PermissionClearance.Denied)
             clearance = scopedGrant?.Clearance ?? clearance;
@@ -120,15 +140,23 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
             return ContextAccessDecision.Deny("policy_expired", "The permission policy has expired.");
         if (policy is null || policy.Clearance is PermissionClearance.Unset or PermissionClearance.Denied)
             return ContextAccessDecision.Deny("clearance_denied", "The caller has no usable clearance.");
-        var grants = await store.ListGrantsAsync(principal.SubjectId, capability, ct);
-        var targetScope = targetAgentId is { } scopeAgentId ? $"agent:{scopeAgentId:N}" : "global";
-        var hasGrant = await SelectUsableGrantAsync(grants, targetScope, targetAgentId, ct) is not null;
-        if (!HasCapability(policy, capability) && !hasGrant)
+
+        var normalizedCapability = NormalizeCapability(capability);
+        var targetScope = targetAgentId is { } scopeAgentId
+            ? $"agent:{scopeAgentId:N}"
+            : "global";
+        var hasGrant = await FindUsableGrantAsync(
+            principal.SubjectId,
+            normalizedCapability,
+            targetScope,
+            targetAgentId,
+            ct) is not null;
+        if (!HasCapability(policy, normalizedCapability) && !hasGrant)
             return ContextAccessDecision.Deny("capability_denied", "The caller lacks the required agent capability.");
         if (targetAgentId is { } changedAgentId
             && Guid.TryParse(principal.SubjectId, out var callerId)
             && changedAgentId != callerId
-            && !policy.Capabilities.Any(item => item.Equals("manage_agents", StringComparison.OrdinalIgnoreCase)))
+            && !HasCapability(policy, "manage_agents"))
         {
             return ContextAccessDecision.Deny("scope_denied", "The caller cannot change another agent.");
         }
@@ -140,20 +168,28 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
         PermissionGrantAction action,
         CancellationToken ct = default)
     {
+        RequireAuthenticated(caller);
+        ValidateGrantAction(action);
         var callerPolicy = await store.GetAsync(caller.SubjectId, ct);
-        if (!IsAdministrator(caller, callerPolicy)
-            && callerPolicy?.Clearance != PermissionClearance.Independent)
+        var targetPolicy = await store.GetAsync(action.SubjectId, ct);
+        EnsureNotHardDenied(targetPolicy, action.Capability);
+
+        if (!IsAdministrator(caller, callerPolicy))
         {
-            throw new UnauthorizedAccessException("Only an administrator or independent caller can grant permission.");
+            EnsureDelegableClearance(callerPolicy, action.Clearance);
+            await EnsureDelegationAuthorityAsync(
+                caller,
+                callerPolicy,
+                action.Capability,
+                action.Scope,
+                ct);
         }
 
-        if (action.Clearance == PermissionClearance.Independent
-            && !IsAdministrator(caller, callerPolicy))
+        await store.GrantAsync(caller, action with
         {
-            throw new UnauthorizedAccessException("Only an administrator can grant independent clearance.");
-        }
-
-        await store.GrantAsync(caller, action, ct);
+            Capability = NormalizeCapability(action.Capability),
+            Scope = NormalizeScope(action.Scope),
+        }, ct);
     }
 
     public async Task RevokeAsync(
@@ -161,14 +197,27 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
         PermissionRevokeAction action,
         CancellationToken ct = default)
     {
+        RequireAuthenticated(caller);
+        if (string.IsNullOrWhiteSpace(action.SubjectId)
+            || string.IsNullOrWhiteSpace(action.Capability))
+            throw new ArgumentException("A revocation requires a subject and capability.");
+
         var callerPolicy = await store.GetAsync(caller.SubjectId, ct);
-        if (!IsAdministrator(caller, callerPolicy)
-            && callerPolicy?.Clearance != PermissionClearance.Independent)
+        if (!IsAdministrator(caller, callerPolicy))
         {
-            throw new UnauthorizedAccessException("Only an administrator or independent caller can revoke permission.");
+            await EnsureDelegationAuthorityAsync(
+                caller,
+                callerPolicy,
+                action.Capability,
+                action.Scope,
+                ct);
         }
 
-        await store.RevokeAsync(action.SubjectId, action.Capability, action.Scope, ct);
+        await store.RevokeAsync(
+            action.SubjectId,
+            NormalizeCapability(action.Capability),
+            NormalizeScope(action.Scope),
+            ct);
     }
 
     public async Task ApproveAsync(
@@ -176,39 +225,87 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
         PermissionApproveAction action,
         CancellationToken ct = default)
     {
+        RequireAuthenticated(caller);
+        var capability = NormalizeCapability(action.Capability);
+        var scope = NormalizeScope(action.Scope);
+        var grant = await store.GetGrantAsync(action.SubjectId, capability, scope, ct)
+            ?? throw new InvalidOperationException("The permission grant was not found.");
+        if (grant.Clearance == PermissionClearance.Independent)
+            throw new UnauthorizedAccessException("Independent grants do not require approval.");
+        if (grant.GrantedBy.Equals(caller.SubjectId, StringComparison.Ordinal))
+            throw new UnauthorizedAccessException("A grant cannot approve itself.");
+
         var callerPolicy = await store.GetAsync(caller.SubjectId, ct);
-        if (!IsAdministrator(caller, callerPolicy)
-            && callerPolicy?.Clearance != PermissionClearance.ApprovedBySameLevelUser
-            && callerPolicy?.Clearance != PermissionClearance.Independent)
+        if (!IsAdministrator(caller, callerPolicy))
         {
-            throw new UnauthorizedAccessException("An approved caller is required to approve permission.");
+            if (callerPolicy is null
+                || callerPolicy.Clearance < grant.Clearance
+                || callerPolicy.Clearance is PermissionClearance.Unset or PermissionClearance.Denied)
+            {
+                throw new UnauthorizedAccessException("The approver does not hold the required clearance.");
+            }
+
+            await EnsureDelegationAuthorityAsync(
+                caller,
+                callerPolicy,
+                capability,
+                scope,
+                ct);
+            if (!HasCapability(callerPolicy, ApprovePermissionsCapability))
+                throw new UnauthorizedAccessException("The caller lacks approval authority.");
         }
-        await store.ApproveAsync(caller, action, ct);
+
+        await store.ApproveAsync(caller, action with { Capability = capability, Scope = scope }, ct);
     }
 
-    private static bool HasCrossThreadCapability(PermissionPolicyRecord? policy) =>
-        policy?.Capabilities.Any(IsCrossThreadCapability) == true;
-
-    private async Task<PermissionGrantRecord?> FindCrossThreadGrantAsync(
-        ContextAccessRequest request,
+    private async Task EnsureDelegationAuthorityAsync(
+        RequestPrincipal caller,
+        PermissionPolicyRecord? callerPolicy,
+        string capability,
+        string scope,
         CancellationToken ct)
     {
-        var grants = await store.ListGrantsAsync(
-            request.Principal.SubjectId,
-            "read_cross_thread_history",
-            ct);
-        var legacyGrants = await store.ListGrantsAsync(
-            request.Principal.SubjectId,
-            "CanReadCrossThreadHistory",
-            ct);
-        var requestedScope = request.ContextId is { } contextId
-            ? $"context:{contextId:N}"
-            : $"channel:{request.ChannelId:N}";
-        return await SelectUsableGrantAsync(
-            grants.Concat(legacyGrants),
-            requestedScope,
-            request.ContextId,
-            ct);
+        if (callerPolicy is null
+            || callerPolicy.ExpiresAt is { } expiry && expiry <= DateTimeOffset.UtcNow
+            || callerPolicy.Clearance is PermissionClearance.Unset or PermissionClearance.Denied
+            || !HasCapability(callerPolicy, ManagePermissionsCapability))
+        {
+            throw new UnauthorizedAccessException(
+                "The caller lacks permission-management authority.");
+        }
+
+        if (!HasCapability(callerPolicy, capability)
+            && await FindUsableGrantAsync(
+                caller.SubjectId,
+                capability,
+                NormalizeScope(scope),
+                null,
+                ct) is null)
+        {
+            throw new UnauthorizedAccessException(
+                "The caller cannot delegate a capability that the caller does not hold.");
+        }
+    }
+
+    private async Task<PermissionGrantRecord?> FindUsableGrantAsync(
+        string subjectId,
+        string capability,
+        string requestedScope,
+        Guid? targetId,
+        CancellationToken ct)
+    {
+        var capabilities = IsCrossThreadCapability(capability)
+            ? new[] { capability, "CanReadCrossThreadHistory" }
+            : new[] { capability };
+        foreach (var capabilityName in capabilities.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var grants = await store.ListGrantsAsync(subjectId, capabilityName, ct);
+            var usable = await SelectUsableGrantAsync(grants, requestedScope, targetId, ct);
+            if (usable is not null)
+                return usable;
+        }
+
+        return null;
     }
 
     private async Task<PermissionGrantRecord?> SelectUsableGrantAsync(
@@ -232,8 +329,51 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
         return null;
     }
 
+    private static void ValidateGrantAction(PermissionGrantAction action)
+    {
+        if (string.IsNullOrWhiteSpace(action.SubjectId)
+            || string.IsNullOrWhiteSpace(action.Capability))
+            throw new ArgumentException("A grant requires a subject and capability.");
+    }
+
+    private static void EnsureDelegableClearance(
+        PermissionPolicyRecord? callerPolicy,
+        PermissionClearance requested)
+    {
+        if (callerPolicy is null
+            || callerPolicy.Clearance is PermissionClearance.Unset or PermissionClearance.Denied)
+        {
+            throw new UnauthorizedAccessException("The caller has no usable clearance.");
+        }
+        if (requested == PermissionClearance.Independent)
+            throw new UnauthorizedAccessException("Only an administrator can grant independent clearance.");
+        if (requested > callerPolicy.Clearance)
+            throw new UnauthorizedAccessException("The caller cannot grant a higher clearance than the caller holds.");
+    }
+
+    private static void EnsureNotHardDenied(
+        PermissionPolicyRecord? targetPolicy,
+        string capability)
+    {
+        if (targetPolicy?.HardDeniedCapabilities.Any(item => IsSameCapability(item, capability)) == true)
+            throw new UnauthorizedAccessException("A hard denial blocks this capability.");
+    }
+
+    private static string RequestedScope(ContextAccessRequest request) =>
+        request.ContextId is { } contextId
+            ? $"context:{contextId:N}"
+            : $"channel:{request.ChannelId:N}";
+
+    private static string NormalizeCapability(string? capability) =>
+        string.IsNullOrWhiteSpace(capability)
+            ? ContextAccessCapabilities.ReadCrossThreadHistory
+            : capability.Trim();
+
+    private static string NormalizeScope(string? scope) =>
+        string.IsNullOrWhiteSpace(scope) ? "global" : scope.Trim();
+
     private static bool HasCapability(PermissionPolicyRecord? policy, string capability) =>
-        policy?.Capabilities.Any(item => item.Equals(capability, StringComparison.OrdinalIgnoreCase)) == true;
+        policy?.Capabilities.Any(item => IsSameCapability(item, capability)) == true;
 
     private static PermissionClearance EffectiveClearance(
         PermissionClearance policy,
@@ -242,7 +382,7 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
 
     private static bool ScopeMatches(string? grantScope, string requestedScope, Guid? targetId)
     {
-        var scope = string.IsNullOrWhiteSpace(grantScope) ? "global" : grantScope.Trim();
+        var scope = NormalizeScope(grantScope);
         if (scope.Equals("global", StringComparison.OrdinalIgnoreCase)
             || scope.Equals(requestedScope, StringComparison.OrdinalIgnoreCase))
             return true;
@@ -257,8 +397,12 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
         : 1;
 
     private static bool IsCrossThreadCapability(string capability) =>
-        capability.Equals("read_cross_thread_history", StringComparison.OrdinalIgnoreCase)
+        capability.Equals(ContextAccessCapabilities.ReadCrossThreadHistory, StringComparison.OrdinalIgnoreCase)
         || capability.Equals("CanReadCrossThreadHistory", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsSameCapability(string left, string right) =>
+        left.Equals(right, StringComparison.OrdinalIgnoreCase)
+        || IsCrossThreadCapability(left) && IsCrossThreadCapability(right);
 
     private static bool IsAdministrator(
         RequestPrincipal principal,
@@ -269,6 +413,12 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
     private static bool IsAdministratorRole(string role) =>
         role.Equals("admin", StringComparison.OrdinalIgnoreCase)
         || role.Equals("administrator", StringComparison.OrdinalIgnoreCase);
+
+    private static void RequireAuthenticated(RequestPrincipal caller)
+    {
+        if (!caller.IsAuthenticated)
+            throw new UnauthorizedAccessException("Authentication is required.");
+    }
 
     private static Guid ParseAgentId(string subjectId) =>
         Guid.TryParse(subjectId, out var id) ? id : Guid.Empty;

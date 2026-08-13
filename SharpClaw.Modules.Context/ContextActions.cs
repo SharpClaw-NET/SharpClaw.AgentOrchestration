@@ -25,9 +25,7 @@ public interface IContextActionExecutor
         CancellationToken ct = default);
 }
 
-public sealed class ContextActionExecutor(
-    ContextStore store,
-    IContextAccessPolicy policy) : IContextActionExecutor
+public sealed class ContextActionExecutor(ContextStore store) : IContextActionExecutor
 {
     public async Task<ContextThreadRecord> CreateThreadAsync(
         RequestPrincipal caller,
@@ -41,7 +39,12 @@ public sealed class ContextActionExecutor(
         if (action.ChannelId == Guid.Empty)
             throw new ArgumentException("A channel id is required.", nameof(action));
         _ = agentId;
-        return await store.CreateThreadAsync(action.ChannelId, action.Name, action.ContextId, ct: ct);
+        return await store.CreateThreadAsync(
+            caller,
+            action.ChannelId,
+            action.Name,
+            action.ContextId,
+            ct: ct);
     }
 
     public async Task<IReadOnlyList<ContextMessageRecord>> ReadHistoryAsync(
@@ -50,7 +53,7 @@ public sealed class ContextActionExecutor(
         CancellationToken ct = default)
     {
         var thread = await store.FindAccessibleThreadAsync(
-            caller, action.ChannelId, action.ThreadId, policy, ct)
+            caller, action.ChannelId, action.ThreadId, ct)
             ?? throw new UnauthorizedAccessException("The thread is missing or inaccessible.");
         return await store.ReadMessagesAsync(thread.ThreadId, action.MaxMessages, ct);
     }

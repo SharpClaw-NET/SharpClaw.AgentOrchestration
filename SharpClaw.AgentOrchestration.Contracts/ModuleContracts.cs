@@ -8,6 +8,14 @@ public sealed record PermissionModuleContract;
 
 public sealed record AgentsModuleContract;
 
+public static class ContextAccessCapabilities
+{
+    public const string ReadCrossThreadHistory = "read_cross_thread_history";
+    public const string ReadHistory = "context_read";
+    public const string CreateThread = "context_create";
+    public const string CommitExchange = "context_write";
+}
+
 public sealed record ContextAccessRequest(
     RequestPrincipal Principal,
     Guid ChannelId,
@@ -16,7 +24,8 @@ public sealed record ContextAccessRequest(
     Guid? DefaultContextAgentId,
     IReadOnlyList<Guid> ContextAllowedAgentIds,
     bool SourceChannelOptedIn,
-    Guid? ContextId = null);
+    Guid? ContextId = null,
+    string Capability = ContextAccessCapabilities.ReadCrossThreadHistory);
 
 public sealed record ContextAccessDecision(
     bool Allowed,

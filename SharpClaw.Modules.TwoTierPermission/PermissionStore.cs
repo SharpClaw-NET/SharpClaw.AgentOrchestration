@@ -42,6 +42,17 @@ public sealed class PermissionPolicyStore
             .WhereIndex("capability").EqualTo(capability)
             .ToListAsync(ct);
 
+    public async Task<PermissionGrantRecord?> GetGrantAsync(
+        string subjectId,
+        string capability,
+        string scope,
+        CancellationToken ct = default)
+    {
+        var grants = await ListGrantsAsync(subjectId, capability, ct);
+        return grants.FirstOrDefault(grant =>
+            grant.Scope.Equals(scope, StringComparison.OrdinalIgnoreCase));
+    }
+
     public Task<IReadOnlyList<PermissionApprovalRecord>> ListApprovalsAsync(
         string subjectId,
         string capability,
@@ -66,8 +77,10 @@ public sealed class PermissionPolicyStore
         PermissionGrantAction grant,
         CancellationToken ct = default)
     {
+        var scope = NormalizeScope(grant.Scope);
         var existing = await GetAsync(grant.SubjectId, ct);
         var capabilities = grant.Clearance == PermissionClearance.Independent
+            && scope.Equals("global", StringComparison.OrdinalIgnoreCase)
             ? (existing?.Capabilities ?? [])
                 .Append(grant.Capability)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -89,10 +102,10 @@ public sealed class PermissionPolicyStore
             DateTimeOffset.UtcNow), ct);
 
         var record = new PermissionGrantRecord(
-            $"{grant.SubjectId}:{grant.Capability}:{grant.Scope}",
+            $"{grant.SubjectId}:{grant.Capability}:{scope}",
             grant.SubjectId,
             grant.Capability,
-            grant.Scope,
+            scope,
             grant.Clearance,
             caller.SubjectId,
             DateTimeOffset.UtcNow,
@@ -111,8 +124,10 @@ public sealed class PermissionPolicyStore
         string scope,
         CancellationToken ct = default)
     {
+        var normalizedScope = NormalizeScope(scope);
         var existing = await GetAsync(subjectId, ct);
-        if (existing is not null)
+        if (existing is not null
+            && normalizedScope.Equals("global", StringComparison.OrdinalIgnoreCase))
         {
             var capabilities = existing.Capabilities
                 .Where(item => !item.Equals(capability, StringComparison.OrdinalIgnoreCase))
@@ -120,7 +135,7 @@ public sealed class PermissionPolicyStore
             await SaveAsync(existing with { Capabilities = capabilities, UpdatedAt = DateTimeOffset.UtcNow }, ct);
         }
 
-        await _grants.DeleteAsync($"{subjectId}:{capability}:{scope}", ct);
+        await _grants.DeleteAsync($"{subjectId}:{capability}:{normalizedScope}", ct);
     }
 
     public Task SaveApprovalAsync(
@@ -166,4 +181,7 @@ public sealed class PermissionPolicyStore
     }
 
     private static string Key(string subjectId) => subjectId.Trim();
+
+    private static string NormalizeScope(string? scope) =>
+        string.IsNullOrWhiteSpace(scope) ? "global" : scope.Trim();
 }

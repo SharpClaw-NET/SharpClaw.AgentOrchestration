@@ -3,18 +3,22 @@ using SharpClaw.Contracts.Modules;
 namespace SharpClaw.Modules.Context;
 
 public sealed class ContextCommitAuthorizationHook
-    : IActionInterceptor<ContextCommitExchangeAction, bool>
+    (ContextStore store) : IActionInterceptor<ContextCommitExchangeAction, bool>
 {
-    public ValueTask<IActionOutcome<bool>> InvokeAsync(
+    public async ValueTask<IActionOutcome<bool>> InvokeAsync(
         ActionContext<ContextCommitExchangeAction> context,
         IActionControl<ContextCommitExchangeAction, bool> control,
         CancellationToken ct)
     {
         if (!context.Caller.IsAuthenticated)
-            return ValueTask.FromResult(control.Cancel(
+            return control.Cancel(
                 "unauthenticated",
-                "Authentication is required to commit a context exchange."));
+                "Authentication is required to commit a context exchange.");
 
-        return control.ProceedAsync(ct);
+        var decision = await store.AuthorizeCommitAsync(context.Caller, context.Action, ct);
+        if (!decision.Allowed)
+            return control.Cancel(decision.Code, decision.Message);
+
+        return await control.ProceedAsync(ct);
     }
 }

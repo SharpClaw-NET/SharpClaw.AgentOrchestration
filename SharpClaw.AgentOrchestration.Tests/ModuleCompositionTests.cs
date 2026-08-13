@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using NUnit.Framework;
 using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Providers;
 using SharpClaw.Modules.Agents;
 using SharpClaw.Modules.AgentOrchestration.Contracts;
 using SharpClaw.Modules.Context;
@@ -49,6 +50,12 @@ public sealed class ModuleCompositionTests
             Assert.That(agentsBuilder.Services.Any(item => item.ServiceType == typeof(IAgentsActionExecutor)), Is.True);
             Assert.That(contextBuilder.Actions.Items.OfType<ActionDescriptor<ContextCreateThreadAction, ContextThreadRecord>>().Single().SafePoints,
                 Is.Not.Empty);
+            Assert.That(
+                contextBuilder.Actions.Items
+                    .OfType<ActionDescriptor<ContextCommitExchangeAction, bool>>()
+                    .Single()
+                    .Capabilities,
+                Is.EqualTo(ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel));
             Assert.That(permissionBuilder.Actions.Items.OfType<ActionDescriptor<PermissionGrantAction, bool>>().Single().SafePoints,
                 Is.Not.Empty);
             Assert.That(agentsBuilder.Actions.Items.OfType<ActionDescriptor<AgentsSaveSkillAction, SkillRecord>>().Single().SafePoints,
@@ -100,12 +107,12 @@ public sealed class ModuleCompositionTests
         var caller = new RequestPrincipal(agentId.ToString("D"), Roles: new HashSet<string>());
         await policyStore.SaveAsync(new PermissionPolicyRecord(
             caller.SubjectId,
-            [], ["read_cross_thread_history"], [],
+            [], ["read_cross_thread_history", ContextAccessCapabilities.CreateThread], [],
             PermissionClearance.Independent,
             RequireSourceOptIn: true,
             [], null, DateTimeOffset.UtcNow));
 
-        var store = new ContextStore(gateway);
+        var store = new ContextStore(gateway, permission);
         var current = new ContextChannelRecord(
             Guid.NewGuid(), "Current", agentId, null, [], [], false,
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
@@ -114,12 +121,12 @@ public sealed class ModuleCompositionTests
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
         await store.SaveChannelAsync(current);
         await store.SaveChannelAsync(source);
-        var thread = await store.CreateThreadAsync(source.Id, "Source thread");
+        var thread = await store.CreateThreadAsync(caller, source.Id, "Source thread");
         await store.AppendMessageAsync(new ContextMessageRecord(
             Guid.NewGuid(), thread.Id, source.Id, "user", "retained history", "tester",
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
 
-        var handler = new ContextToolHandler(store, permission);
+        var handler = new ContextToolHandler(store);
         using var arguments = JsonDocument.Parse($$"""{"channelId":"{{current.Id:D}}"}""");
         var result = await handler.InvokeAsync(new ToolInvocation(
             Guid.NewGuid(), null, "call", ContextModule.ListThreadsTool,
@@ -144,7 +151,7 @@ public sealed class ModuleCompositionTests
         var agentId = Guid.NewGuid();
         var caller = new RequestPrincipal(agentId.ToString("D"));
         await store.SaveAsync(new PermissionPolicyRecord(
-            caller.SubjectId, [], ["read_cross_thread_history"], [],
+            caller.SubjectId, [], ["read_cross_thread_history", ContextAccessCapabilities.CreateThread], [],
             PermissionClearance.ApprovedBySameLevelUser, true, [], null, DateTimeOffset.UtcNow));
         var request = new ContextAccessRequest(
             caller, Guid.NewGuid(), agentId, [], null, [], SourceChannelOptedIn: false);
@@ -172,10 +179,10 @@ public sealed class ModuleCompositionTests
         var agentId = Guid.NewGuid();
         var caller = new RequestPrincipal(agentId.ToString("D"));
         await policyStore.SaveAsync(new PermissionPolicyRecord(
-            caller.SubjectId, [], ["read_cross_thread_history"], [],
+            caller.SubjectId, [], ["read_cross_thread_history", ContextAccessCapabilities.CreateThread], [],
             PermissionClearance.Independent, true, [], null, DateTimeOffset.UtcNow));
 
-        var store = new ContextStore(gateway);
+        var store = new ContextStore(gateway, permission);
         var current = new ContextChannelRecord(
             Guid.NewGuid(), "Current", agentId, null, [], [], false,
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
@@ -191,10 +198,9 @@ public sealed class ModuleCompositionTests
         await store.SaveChannelAsync(current);
         await store.SaveContextAsync(context);
         await store.SaveChannelAsync(source);
-        var thread = await store.CreateThreadAsync(source.Id, "Assigned thread", context.Id);
+        var thread = await store.CreateThreadAsync(caller, source.Id, "Assigned thread", context.Id);
 
-        var visible = await store.ListAccessibleThreadsAsync(
-            caller, current.Id, permission);
+        var visible = await store.ListAccessibleThreadsAsync(caller, current.Id);
 
         Assert.That(visible.Select(item => item.ThreadId), Does.Contain(thread.Id));
     }
@@ -223,12 +229,12 @@ public sealed class ModuleCompositionTests
         Assert.That(await agents.AccessSkillAsync(admin, new AgentsAccessSkillAction(skill.Id)),
             Does.Contain("use the skill"));
 
-        var contextStore = new ContextStore(gateway);
+        var contextStore = new ContextStore(gateway, permission);
         var channel = new ContextChannelRecord(
             Guid.NewGuid(), "Executor Channel", agent.Id, null, [], [], false,
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
         await contextStore.SaveChannelAsync(channel);
-        var contextExecutor = new ContextActionExecutor(contextStore, permission);
+        var contextExecutor = new ContextActionExecutor(contextStore);
         var thread = await contextExecutor.CreateThreadAsync(admin,
             new ContextCreateThreadAction(channel.Id, "Executor Thread"));
         Assert.That(await contextExecutor.CommitExchangeAsync(admin,
@@ -247,7 +253,11 @@ public sealed class ModuleCompositionTests
         var subject = new RequestPrincipal(Guid.NewGuid().ToString("D"));
         var approver = new RequestPrincipal(Guid.NewGuid().ToString("D"));
         await store.SaveAsync(new PermissionPolicyRecord(
-            approver.SubjectId, [], [], [], PermissionClearance.ApprovedBySameLevelUser,
+            approver.SubjectId,
+            [],
+            ["manage_permissions", "approve_permissions", "read_memory"],
+            [],
+            PermissionClearance.ApprovedBySameLevelUser,
             true, [], null, DateTimeOffset.UtcNow));
 
         await policy.GrantAsync(admin, new PermissionGrantAction(
@@ -289,6 +299,200 @@ public sealed class ModuleCompositionTests
         Assert.That((await new AgentChatProfileResolver(catalog).ResolveAsync(
             new ChatTurnContext(Guid.NewGuid(), new ChatTurnInput("hi", Caller: owner),
                 new ConversationSelection(Guid.NewGuid())), default)).ModelName, Is.EqualTo("model"));
+    }
+
+    [Test]
+    public async Task DirectChatAndStoreCommitRequireContextAuthorization()
+    {
+        var gateway = new InMemoryStorageGateway();
+        var policyStore = new PermissionPolicyStore(gateway);
+        var permission = new TwoTierPermissionPolicy(policyStore);
+        var agentId = Guid.NewGuid();
+        var caller = new RequestPrincipal(agentId.ToString("D"));
+        await policyStore.SaveAsync(new PermissionPolicyRecord(
+            caller.SubjectId,
+            [],
+            [
+                ContextAccessCapabilities.CreateThread,
+                ContextAccessCapabilities.ReadHistory,
+                ContextAccessCapabilities.CommitExchange,
+            ],
+            [],
+            PermissionClearance.ApprovedBySameLevelUser,
+            false,
+            [],
+            null,
+            DateTimeOffset.UtcNow));
+
+        var store = new ContextStore(gateway, permission);
+        var resolver = new ContextConversationResolver(store);
+        var selection = await resolver.ResolveAsync(
+            new ChatTurnInput("hello", Caller: caller),
+            default);
+        Assert.That(selection.Created, Is.True);
+
+        var anonymous = new RequestPrincipal("", IsAuthenticated: false);
+        Assert.ThrowsAsync<UnauthorizedAccessException>(async () =>
+            await resolver.ResolveAsync(new ChatTurnInput("blocked", Caller: anonymous), default));
+
+        var denied = new RequestPrincipal(Guid.NewGuid().ToString("D"));
+        Assert.ThrowsAsync<UnauthorizedAccessException>(async () =>
+            await resolver.ResolveAsync(
+                new ChatTurnInput("blocked", selection.ConversationId, denied),
+                default));
+
+        var turn = new ChatTurnContext(
+            Guid.NewGuid(),
+            new ChatTurnInput("hello", selection.ConversationId, caller),
+            selection);
+        var contributor = new ContextHistoryContributor(store);
+        var contribution = await contributor.ContributeAsync(
+            new ChatContextRequest(
+                selection.ConversationId,
+                new ChatProfile("test", Guid.NewGuid()),
+                [],
+                turn),
+            default);
+        Assert.That(contribution.Messages, Is.Empty);
+
+        await store.CommitExchangeAsync(
+            new ChatExchange(
+                turn,
+                "hello",
+                new ChatCompletionResult { Content = "answer" }),
+            default);
+        Assert.That((await store.ReadAllMessagesAsync(selection.ConversationId)).Select(item => item.Content),
+            Is.EquivalentTo(new[] { "hello", "answer" }));
+
+        var deniedExchange = new ChatExchange(
+            turn with
+            {
+                Input = turn.Input with { Caller = denied },
+            },
+            "blocked",
+            new ChatCompletionResult { Content = "blocked" });
+        Assert.ThrowsAsync<UnauthorizedAccessException>(async () =>
+            await store.CommitExchangeAsync(deniedExchange, default));
+        Assert.ThrowsAsync<UnauthorizedAccessException>(async () =>
+            await store.LoadHistoryAsync(selection.ConversationId, default));
+        Assert.That((await store.ReadAllMessagesAsync(selection.ConversationId)).Count, Is.EqualTo(2));
+    }
+
+    [Test]
+    public async Task PermissionPolicyRejectsDelegationOutsideHeldAuthority()
+    {
+        var gateway = new InMemoryStorageGateway();
+        var store = new PermissionPolicyStore(gateway);
+        var policy = new TwoTierPermissionPolicy(store);
+        var admin = new RequestPrincipal(
+            Guid.NewGuid().ToString("D"),
+            Roles: new HashSet<string>(["admin"]));
+        var delegator = new RequestPrincipal(Guid.NewGuid().ToString("D"));
+        var subject = Guid.NewGuid().ToString("D");
+        var channelScope = $"channel:{Guid.NewGuid():N}";
+
+        await store.SaveAsync(new PermissionPolicyRecord(
+            delegator.SubjectId,
+            [],
+            ["manage_permissions", "read_memory"],
+            [],
+            PermissionClearance.Independent,
+            false,
+            [],
+            null,
+            DateTimeOffset.UtcNow));
+        await policy.GrantAsync(admin, new PermissionGrantAction(
+            delegator.SubjectId,
+            "read_memory",
+            channelScope,
+            PermissionClearance.Independent));
+        await store.SaveAsync(new PermissionPolicyRecord(
+            delegator.SubjectId,
+            [],
+            ["manage_permissions"],
+            [],
+            PermissionClearance.Independent,
+            false,
+            [],
+            null,
+            DateTimeOffset.UtcNow));
+
+        Assert.ThrowsAsync<UnauthorizedAccessException>(async () =>
+            await policy.GrantAsync(delegator, new PermissionGrantAction(
+                subject,
+                "read_memory",
+                "global",
+                PermissionClearance.ApprovedBySameLevelUser)));
+        Assert.ThrowsAsync<UnauthorizedAccessException>(async () =>
+            await policy.GrantAsync(delegator, new PermissionGrantAction(
+                subject,
+                "write_memory",
+                channelScope,
+                PermissionClearance.ApprovedBySameLevelUser)));
+        Assert.ThrowsAsync<UnauthorizedAccessException>(async () =>
+            await policy.GrantAsync(delegator, new PermissionGrantAction(
+                subject,
+                "read_memory",
+                channelScope,
+                PermissionClearance.Independent)));
+        Assert.ThrowsAsync<UnauthorizedAccessException>(async () =>
+            await policy.RevokeAsync(delegator, new PermissionRevokeAction(
+                subject,
+                "read_memory",
+                "global")));
+    }
+
+    [Test]
+    public async Task ScopedIndependentGrantDoesNotBecomeGlobalCapability()
+    {
+        var gateway = new InMemoryStorageGateway();
+        var store = new PermissionPolicyStore(gateway);
+        var policy = new TwoTierPermissionPolicy(store);
+        var admin = new RequestPrincipal(
+            Guid.NewGuid().ToString("D"),
+            Roles: new HashSet<string>(["admin"]));
+        var subject = new RequestPrincipal(Guid.NewGuid().ToString("D"));
+        var channelScope = $"channel:{Guid.NewGuid():N}";
+
+        await policy.GrantAsync(admin, new PermissionGrantAction(
+            subject.SubjectId,
+            "read_memory",
+            channelScope,
+            PermissionClearance.Independent));
+
+        var global = await policy.EvaluateCapabilityAsync(
+            subject,
+            new PermissionEvaluateAction(subject.SubjectId, "read_memory", "global", false));
+        var scoped = await policy.EvaluateCapabilityAsync(
+            subject,
+            new PermissionEvaluateAction(subject.SubjectId, "read_memory", channelScope, false));
+
+        Assert.That(global.Allowed, Is.False);
+        Assert.That(scoped.Allowed, Is.True);
+    }
+
+    [Test]
+    public void RetainedModulesHaveNoEntityFrameworkPersistenceSurface()
+    {
+        var assemblies = new[]
+        {
+            typeof(ContextModule).Assembly,
+            typeof(TwoTierPermissionModule).Assembly,
+            typeof(AgentsModule).Assembly,
+        };
+
+        Assert.Multiple(() =>
+        {
+            foreach (var assembly in assemblies)
+            {
+                Assert.That(
+                    assembly.GetReferencedAssemblies().Select(name => name.Name),
+                    Does.Not.Contain("Microsoft.EntityFrameworkCore"));
+                Assert.That(
+                    assembly.GetTypes().Any(type => type.Name.Contains("DbContext", StringComparison.Ordinal)),
+                    Is.False);
+            }
+        });
     }
 
     private sealed class RecordingBuilder : ISharpClawModuleBuilder

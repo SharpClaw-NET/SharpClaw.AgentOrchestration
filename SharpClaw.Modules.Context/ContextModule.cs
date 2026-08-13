@@ -37,7 +37,6 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
         module.Services.AddScoped<IContextActionExecutor, ContextActionExecutor>();
         module.Services.AddScoped<ContextCommitAuthorizationHook>();
         module.Services.AddScoped<ContextCliHandler>();
-        module.Services.AddScoped<ContextDbContextAccessor>();
 
         module.Contracts.Export<ContextModuleContract>("sharpclaw.context");
         module.Contracts.Require<PermissionModuleContract>("sharpclaw.permission");
@@ -61,7 +60,7 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
         });
         module.Actions.Add(new ActionDescriptor<ContextCommitExchangeAction, bool>(
             new("context.conversation.commit"), 1, "context.conversation",
-            ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
+            ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel,
             true, false, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
             SafePoints = SafePoints,

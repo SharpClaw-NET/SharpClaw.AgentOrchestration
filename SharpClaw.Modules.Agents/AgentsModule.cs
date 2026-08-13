@@ -38,7 +38,6 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
         module.Services.AddScoped<AgentsCreateAuthorizationHook>();
         module.Services.AddScoped<AgentsCliHandler>();
         module.Services.AddScoped<AgentChatProfileResolver>();
-        module.Services.AddScoped<AgentsDbContextAccessor>();
 
         module.Contracts.Export<AgentsModuleContract>("sharpclaw.agents");
         module.Contracts.Require<ContextModuleContract>("sharpclaw.context");
@@ -203,9 +202,4 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
     private static JsonElement BuildSearchMemorySchema() => JsonDocument.Parse("""
         {"type":"object","properties":{"agentId":{"type":"string"},"query":{"type":"string"}},"required":["agentId"],"additionalProperties":false}
         """).RootElement.Clone();
-}
-
-public sealed class AgentsDbContextAccessor(IModuleDbContextFactory factory)
-{
-    public AgentsDbContext Create() => factory.CreateDbContext<AgentsDbContext>();
 }
