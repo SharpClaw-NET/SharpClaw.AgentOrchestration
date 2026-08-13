@@ -16,6 +16,7 @@ public sealed class PermissionToolHandler(TwoTierPermissionPolicy policy) : IToo
                 TwoTierPermissionModule.EvaluateTool => await EvaluateAsync(invocation, ct),
                 TwoTierPermissionModule.GrantTool => await GrantAsync(invocation, ct),
                 TwoTierPermissionModule.RevokeTool => await RevokeAsync(invocation, ct),
+                TwoTierPermissionModule.ApproveTool => await ApproveAsync(invocation, ct),
                 _ => ToolResult.Error($"Unknown permission tool '{invocation.ToolName}'."),
             };
         }
@@ -67,6 +68,22 @@ public sealed class PermissionToolHandler(TwoTierPermissionPolicy policy) : IToo
         await policy.RevokeAsync(invocation.Caller,
             new PermissionRevokeAction(subjectId, capability, scope), ct);
         return ToolResult.Text("Permission revoked.");
+    }
+
+    private async Task<ToolResult> ApproveAsync(ToolInvocation invocation, CancellationToken ct)
+    {
+        var subjectId = StringValue(invocation.Arguments, "subjectId");
+        var capability = StringValue(invocation.Arguments, "capability");
+        var scope = StringValue(invocation.Arguments, "scope") ?? "global";
+        if (subjectId is null || capability is null)
+            return ToolResult.Error("subjectId and capability are required.");
+        DateTimeOffset? expiresAt = DateTimeOffset.TryParse(
+            StringValue(invocation.Arguments, "expiresAt"), out var parsed)
+            ? parsed
+            : null;
+        await policy.ApproveAsync(invocation.Caller,
+            new PermissionApproveAction(subjectId, capability, scope, expiresAt), ct);
+        return ToolResult.Text("Permission approved.");
     }
 
     private static string? StringValue(JsonElement root, string name) =>

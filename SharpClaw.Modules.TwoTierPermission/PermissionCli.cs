@@ -27,6 +27,24 @@ public sealed class PermissionCliHandler(TwoTierPermissionPolicy policy) : IModu
             }
         }
 
+        if (invocation.Command.Equals("perm-approve", StringComparison.OrdinalIgnoreCase))
+        {
+            if (invocation.Arguments.Count < 2)
+                return Failure("perm-approve requires subject id and capability.");
+            try
+            {
+                await policy.ApproveAsync(invocation.Caller,
+                    new PermissionApproveAction(
+                        invocation.Arguments[0], invocation.Arguments[1],
+                        invocation.Arguments.Count > 2 ? invocation.Arguments[2] : "global"), ct);
+                return Success("Permission approved.");
+            }
+            catch (UnauthorizedAccessException exception)
+            {
+                return Failure(exception.Message);
+            }
+        }
+
         return Failure($"Unknown permission command '{invocation.Command}'.");
     }
 

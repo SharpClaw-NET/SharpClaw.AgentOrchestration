@@ -12,6 +12,7 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
     public const string EvaluateTool = "perm_evaluate";
     public const string GrantTool = "perm_grant";
     public const string RevokeTool = "perm_revoke";
+    public const string ApproveTool = "perm_approve";
     public const string PermissionChangedEvent = "permission.changed";
 
     private static readonly ActionRepeatPolicy RepeatPolicy =
@@ -68,6 +69,13 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
         {
             SafePoints = SafePoints,
         });
+        module.Actions.Add(new ActionDescriptor<PermissionApproveAction, bool>(
+            new("permission.approve"), 1, "permission.approval",
+            ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
+            true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
+        {
+            SafePoints = SafePoints,
+        });
 
         module.Events.Add(new EventDescriptor<PermissionChangedEvent>(
             new(PermissionChangedEvent), 1, "permission",
@@ -89,6 +97,10 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
             RevokeTool,
             "Revoke a capability from a subject.",
             BuildRevokeSchema(), ContainsSensitiveData: true));
+        module.Tools.Add<PermissionToolHandler>(new ToolDescriptor(
+            ApproveTool,
+            "Approve a same-level permission grant.",
+            BuildApproveSchema(), ContainsSensitiveData: true));
     }
 
     public void ConfigureApplication(ISharpClawApplicationBuilder application)
@@ -100,6 +112,12 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
             new JsonSchemaReference("sharpclaw.permission.cli.arguments", 1),
             new JsonSchemaReference("sharpclaw.permission.cli.result", 1),
             RequiresAdministrator: true));
+        application.Cli.Add<PermissionCliHandler>(new ModuleCliCommandDescriptor(
+            "perm-approve",
+            ["permission-approve"],
+            "Approve a permission grant.",
+            new JsonSchemaReference("sharpclaw.permission.approve.arguments", 1),
+            new JsonSchemaReference("sharpclaw.permission.cli.result", 1)));
     }
 
     public ValueTask StartAsync(ModuleStartContext context, CancellationToken ct) => ValueTask.CompletedTask;
@@ -141,6 +159,10 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
 
     private static JsonElement BuildRevokeSchema() => JsonDocument.Parse("""
         {"type":"object","properties":{"subjectId":{"type":"string"},"capability":{"type":"string"},"scope":{"type":"string"}},"required":["subjectId","capability"],"additionalProperties":false}
+        """).RootElement.Clone();
+
+    private static JsonElement BuildApproveSchema() => JsonDocument.Parse("""
+        {"type":"object","properties":{"subjectId":{"type":"string"},"capability":{"type":"string"},"scope":{"type":"string"},"expiresAt":{"type":"string"}},"required":["subjectId","capability"],"additionalProperties":false}
         """).RootElement.Clone();
 }
 

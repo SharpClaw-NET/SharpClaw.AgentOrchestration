@@ -23,6 +23,11 @@ public interface IPermissionActionExecutor
         RequestPrincipal caller,
         PermissionRevokeAction action,
         CancellationToken ct = default);
+
+    Task<bool> ApproveAsync(
+        RequestPrincipal caller,
+        PermissionApproveAction action,
+        CancellationToken ct = default);
 }
 
 public sealed class PermissionActionExecutor(
@@ -54,6 +59,15 @@ public sealed class PermissionActionExecutor(
         CancellationToken ct = default)
     {
         await policy.RevokeAsync(caller, action, ct);
+        return true;
+    }
+
+    public async Task<bool> ApproveAsync(
+        RequestPrincipal caller,
+        PermissionApproveAction action,
+        CancellationToken ct = default)
+    {
+        await policy.ApproveAsync(caller, action, ct);
         return true;
     }
 }

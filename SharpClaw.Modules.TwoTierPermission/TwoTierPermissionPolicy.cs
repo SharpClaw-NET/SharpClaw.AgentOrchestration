@@ -90,11 +90,7 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
             return PermissionDecision.Deny("hard_denial", "A hard denial blocks this capability.", 1, clearance);
 
         var grants = await store.ListGrantsAsync(subject.SubjectId, action.Capability, ct);
-        var scopedGrant = grants
-            .Where(item => item.ExpiresAt is null || item.ExpiresAt > DateTimeOffset.UtcNow)
-            .Where(item => ScopeMatches(item.Scope, action.Scope, null))
-            .OrderByDescending(item => ScopeRank(item.Scope))
-            .FirstOrDefault();
+        var scopedGrant = await SelectUsableGrantAsync(grants, action.Scope, null, ct);
         if (!isAdministrator && !HasCapability(policy, action.Capability) && scopedGrant is null)
             return PermissionDecision.Deny("capability_denied", "The caller lacks the required capability.", 1, clearance);
         if (!isAdministrator && clearance is PermissionClearance.Unset or PermissionClearance.Denied)
@@ -126,9 +122,7 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
             return ContextAccessDecision.Deny("clearance_denied", "The caller has no usable clearance.");
         var grants = await store.ListGrantsAsync(principal.SubjectId, capability, ct);
         var targetScope = targetAgentId is { } scopeAgentId ? $"agent:{scopeAgentId:N}" : "global";
-        var hasGrant = grants.Any(item =>
-            (item.ExpiresAt is null || item.ExpiresAt > DateTimeOffset.UtcNow)
-            && ScopeMatches(item.Scope, targetScope, targetAgentId));
+        var hasGrant = await SelectUsableGrantAsync(grants, targetScope, targetAgentId, ct) is not null;
         if (!HasCapability(policy, capability) && !hasGrant)
             return ContextAccessDecision.Deny("capability_denied", "The caller lacks the required agent capability.");
         if (targetAgentId is { } changedAgentId
@@ -177,6 +171,21 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
         await store.RevokeAsync(action.SubjectId, action.Capability, action.Scope, ct);
     }
 
+    public async Task ApproveAsync(
+        RequestPrincipal caller,
+        PermissionApproveAction action,
+        CancellationToken ct = default)
+    {
+        var callerPolicy = await store.GetAsync(caller.SubjectId, ct);
+        if (!IsAdministrator(caller, callerPolicy)
+            && callerPolicy?.Clearance != PermissionClearance.ApprovedBySameLevelUser
+            && callerPolicy?.Clearance != PermissionClearance.Independent)
+        {
+            throw new UnauthorizedAccessException("An approved caller is required to approve permission.");
+        }
+        await store.ApproveAsync(caller, action, ct);
+    }
+
     private static bool HasCrossThreadCapability(PermissionPolicyRecord? policy) =>
         policy?.Capabilities.Any(IsCrossThreadCapability) == true;
 
@@ -192,16 +201,35 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
             request.Principal.SubjectId,
             "CanReadCrossThreadHistory",
             ct);
-        return grants.Concat(legacyGrants)
-            .Where(item => item.ExpiresAt is null || item.ExpiresAt > DateTimeOffset.UtcNow)
-            .Where(item => ScopeMatches(
-                item.Scope,
-                request.ContextId is { } contextId
-                    ? $"context:{contextId:N}"
-                    : $"channel:{request.ChannelId:N}",
-                request.ContextId))
-            .OrderByDescending(item => ScopeRank(item.Scope))
-            .FirstOrDefault();
+        var requestedScope = request.ContextId is { } contextId
+            ? $"context:{contextId:N}"
+            : $"channel:{request.ChannelId:N}";
+        return await SelectUsableGrantAsync(
+            grants.Concat(legacyGrants),
+            requestedScope,
+            request.ContextId,
+            ct);
+    }
+
+    private async Task<PermissionGrantRecord?> SelectUsableGrantAsync(
+        IEnumerable<PermissionGrantRecord> grants,
+        string requestedScope,
+        Guid? targetId,
+        CancellationToken ct)
+    {
+        foreach (var grant in grants.OrderByDescending(item => ScopeRank(item.Scope)))
+        {
+            if (grant.ExpiresAt is { } expiry && expiry <= DateTimeOffset.UtcNow)
+                continue;
+            if (!ScopeMatches(grant.Scope, requestedScope, targetId))
+                continue;
+            if (grant.Clearance != PermissionClearance.Independent
+                && !await store.HasValidApprovalAsync(grant, ct))
+                continue;
+            return grant;
+        }
+
+        return null;
     }
 
     private static bool HasCapability(PermissionPolicyRecord? policy, string capability) =>

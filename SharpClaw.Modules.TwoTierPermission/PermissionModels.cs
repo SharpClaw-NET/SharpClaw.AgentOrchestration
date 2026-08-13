@@ -79,6 +79,12 @@ public sealed record PermissionRevokeAction(
     string Capability,
     string Scope);
 
+public sealed record PermissionApproveAction(
+    string SubjectId,
+    string Capability,
+    string Scope,
+    DateTimeOffset? ExpiresAt = null);
+
 public sealed record PermissionChangedEvent(
     string SubjectId,
     string Capability,

@@ -67,10 +67,12 @@ public sealed class PermissionPolicyStore
         CancellationToken ct = default)
     {
         var existing = await GetAsync(grant.SubjectId, ct);
-        var capabilities = (existing?.Capabilities ?? [])
-            .Append(grant.Capability)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+        var capabilities = grant.Clearance == PermissionClearance.Independent
+            ? (existing?.Capabilities ?? [])
+                .Append(grant.Capability)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray()
+            : existing?.Capabilities ?? [];
         var delegated = (existing?.DelegatedBy ?? [])
             .Append(caller.SubjectId)
             .Distinct(StringComparer.Ordinal)
@@ -130,6 +132,38 @@ public sealed class PermissionPolicyStore
             capability = approval.Capability,
             scope = approval.Scope,
         }, ct);
+
+    public async Task ApproveAsync(
+        RequestPrincipal caller,
+        PermissionApproveAction action,
+        CancellationToken ct = default)
+    {
+        if (!caller.IsAuthenticated)
+            throw new UnauthorizedAccessException("Authentication is required.");
+        if (string.IsNullOrWhiteSpace(action.SubjectId)
+            || string.IsNullOrWhiteSpace(action.Capability))
+            throw new ArgumentException("An approval requires a subject and capability.");
+        var approval = new PermissionApprovalRecord(
+            $"{action.SubjectId}:{action.Capability}:{action.Scope}:{caller.SubjectId}",
+            action.SubjectId,
+            action.Capability,
+            action.Scope,
+            caller.SubjectId,
+            DateTimeOffset.UtcNow,
+            action.ExpiresAt);
+        await SaveApprovalAsync(approval, ct);
+    }
+
+    public async Task<bool> HasValidApprovalAsync(
+        PermissionGrantRecord grant,
+        CancellationToken ct = default)
+    {
+        var approvals = await ListApprovalsAsync(grant.SubjectId, grant.Capability, ct);
+        return approvals.Any(approval =>
+            approval.Scope.Equals(grant.Scope, StringComparison.OrdinalIgnoreCase)
+            && (approval.ExpiresAt is null || approval.ExpiresAt > DateTimeOffset.UtcNow)
+            && !approval.ApprovedBy.Equals(grant.GrantedBy, StringComparison.Ordinal));
+    }
 
     private static string Key(string subjectId) => subjectId.Trim();
 }

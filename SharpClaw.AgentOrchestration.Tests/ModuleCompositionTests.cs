@@ -234,6 +234,32 @@ public sealed class ModuleCompositionTests
     }
 
     [Test]
+    public async Task SameLevelGrantRequiresIndependentApproval()
+    {
+        var gateway = new InMemoryStorageGateway();
+        var store = new PermissionPolicyStore(gateway);
+        var policy = new TwoTierPermissionPolicy(store);
+        var admin = new RequestPrincipal(Guid.NewGuid().ToString("D"), Roles: new HashSet<string>(["admin"]));
+        var subject = new RequestPrincipal(Guid.NewGuid().ToString("D"));
+        var approver = new RequestPrincipal(Guid.NewGuid().ToString("D"));
+        await store.SaveAsync(new PermissionPolicyRecord(
+            approver.SubjectId, [], [], [], PermissionClearance.ApprovedBySameLevelUser,
+            true, [], null, DateTimeOffset.UtcNow));
+
+        await policy.GrantAsync(admin, new PermissionGrantAction(
+            subject.SubjectId, "read_memory", "global", PermissionClearance.ApprovedBySameLevelUser));
+        var before = await policy.EvaluateCapabilityAsync(subject,
+            new PermissionEvaluateAction(subject.SubjectId, "read_memory", "global", false));
+        Assert.That(before.Allowed, Is.False);
+
+        await policy.ApproveAsync(approver, new PermissionApproveAction(
+            subject.SubjectId, "read_memory", "global"));
+        var after = await policy.EvaluateCapabilityAsync(subject,
+            new PermissionEvaluateAction(subject.SubjectId, "read_memory", "global", false));
+        Assert.That(after.Allowed, Is.True);
+    }
+
+    [Test]
     public async Task AgentsOwnProfileSkillAndMemoryPersistence()
     {
         var gateway = new InMemoryStorageGateway();
