@@ -15,7 +15,8 @@ public sealed record ContextAccessRequest(
     IReadOnlyList<Guid> AllowedAgentIds,
     Guid? DefaultContextAgentId,
     IReadOnlyList<Guid> ContextAllowedAgentIds,
-    bool SourceChannelOptedIn);
+    bool SourceChannelOptedIn,
+    Guid? ContextId = null);
 
 public sealed record ContextAccessDecision(
     bool Allowed,

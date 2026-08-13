@@ -48,3 +48,24 @@ public sealed record AgentsWriteMemoryAction(
     string Key,
     string Content,
     IReadOnlyList<string> Tags);
+
+public sealed record AgentsSaveSkillAction(SkillRecord Skill);
+
+public sealed record AgentsAccessSkillAction(Guid SkillId);
+
+public sealed record AgentsSearchMemoryAction(Guid AgentId, string? Query);
+
+public sealed record AgentChangedEvent(
+    Guid AgentId,
+    string Change,
+    DateTimeOffset ChangedAt);
+
+public sealed record SkillChangedEvent(
+    Guid SkillId,
+    string Change,
+    DateTimeOffset ChangedAt);
+
+public sealed record MemoryChangedEvent(
+    Guid AgentId,
+    string Key,
+    DateTimeOffset ChangedAt);

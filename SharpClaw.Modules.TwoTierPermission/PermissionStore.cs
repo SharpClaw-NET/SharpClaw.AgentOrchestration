@@ -33,6 +33,24 @@ public sealed class PermissionPolicyStore
         CancellationToken ct = default) =>
         _policies.ListAsync(ct);
 
+    public Task<IReadOnlyList<PermissionGrantRecord>> ListGrantsAsync(
+        string subjectId,
+        string capability,
+        CancellationToken ct = default) =>
+        _grants.Query()
+            .WhereIndex("subjectId").EqualTo(subjectId)
+            .WhereIndex("capability").EqualTo(capability)
+            .ToListAsync(ct);
+
+    public Task<IReadOnlyList<PermissionApprovalRecord>> ListApprovalsAsync(
+        string subjectId,
+        string capability,
+        CancellationToken ct = default) =>
+        _approvals.Query()
+            .WhereIndex("subjectId").EqualTo(subjectId)
+            .WhereIndex("capability").EqualTo(capability)
+            .ToListAsync(ct);
+
     public Task SaveAsync(
         PermissionPolicyRecord policy,
         CancellationToken ct = default) =>

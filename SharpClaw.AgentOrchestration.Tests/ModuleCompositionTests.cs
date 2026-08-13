@@ -44,6 +44,18 @@ public sealed class ModuleCompositionTests
                 Does.Contain("sharpclaw.permission"));
             Assert.That(agentsBuilder.Contracts.Requires.Select(item => item.ContractName),
                 Is.EquivalentTo(new[] { "sharpclaw.context", "sharpclaw.permission" }));
+            Assert.That(contextBuilder.Services.Any(item => item.ServiceType == typeof(IContextActionExecutor)), Is.True);
+            Assert.That(permissionBuilder.Services.Any(item => item.ServiceType == typeof(IPermissionActionExecutor)), Is.True);
+            Assert.That(agentsBuilder.Services.Any(item => item.ServiceType == typeof(IAgentsActionExecutor)), Is.True);
+            Assert.That(contextBuilder.Actions.Items.OfType<ActionDescriptor<ContextCreateThreadAction, ContextThreadRecord>>().Single().SafePoints,
+                Is.Not.Empty);
+            Assert.That(permissionBuilder.Actions.Items.OfType<ActionDescriptor<PermissionGrantAction, bool>>().Single().SafePoints,
+                Is.Not.Empty);
+            Assert.That(agentsBuilder.Actions.Items.OfType<ActionDescriptor<AgentsSaveSkillAction, SkillRecord>>().Single().SafePoints,
+                Is.Not.Empty);
+            Assert.That(contextBuilder.Events.Items.OfType<EventDescriptor<ContextThreadChangedEvent>>(), Has.Exactly(1).Items);
+            Assert.That(permissionBuilder.Events.Items.OfType<EventDescriptor<PermissionChangedEvent>>(), Has.Exactly(1).Items);
+            Assert.That(agentsBuilder.Events.Items.OfType<EventDescriptor<MemoryChangedEvent>>(), Has.Exactly(1).Items);
         });
     }
 
@@ -145,6 +157,80 @@ public sealed class ModuleCompositionTests
             PermissionClearance.Independent, false, [], null, DateTimeOffset.UtcNow));
         var hardDenied = await policy.EvaluateDetailedAsync(request with { SourceChannelOptedIn = true });
         Assert.That(hardDenied.Code, Is.EqualTo("hard_denial"));
+    }
+
+    [Test]
+    public async Task ContextDefaultAgentAssignmentAllowsHistoryDiscovery()
+    {
+        var gateway = new InMemoryStorageGateway();
+        var policyStore = new PermissionPolicyStore(gateway);
+        var permission = new TwoTierPermissionPolicy(policyStore);
+        var agentId = Guid.NewGuid();
+        var caller = new RequestPrincipal(agentId.ToString("D"));
+        await policyStore.SaveAsync(new PermissionPolicyRecord(
+            caller.SubjectId, [], ["read_cross_thread_history"], [],
+            PermissionClearance.Independent, true, [], null, DateTimeOffset.UtcNow));
+
+        var store = new ContextStore(gateway);
+        var current = new ContextChannelRecord(
+            Guid.NewGuid(), "Current", agentId, null, [], [], false,
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        var context = new ContextRecord(
+            Guid.NewGuid(), "Assigned context", agentId, [],
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        var source = new ContextChannelRecord(
+            Guid.NewGuid(), "Source", null, null, [], [], false,
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow)
+        {
+            ContextId = context.Id,
+        };
+        await store.SaveChannelAsync(current);
+        await store.SaveContextAsync(context);
+        await store.SaveChannelAsync(source);
+        var thread = await store.CreateThreadAsync(source.Id, "Assigned thread", context.Id);
+
+        var visible = await store.ListAccessibleThreadsAsync(
+            caller, current.Id, permission);
+
+        Assert.That(visible.Select(item => item.ThreadId), Does.Contain(thread.Id));
+    }
+
+    [Test]
+    public async Task ActionExecutorsUseOwnedModuleOperations()
+    {
+        var gateway = new InMemoryStorageGateway();
+        var permissionStore = new PermissionPolicyStore(gateway);
+        var permission = new TwoTierPermissionPolicy(permissionStore);
+        var admin = new RequestPrincipal(Guid.NewGuid().ToString("D"), Roles: new HashSet<string>(["admin"]));
+        var permissionExecutor = new PermissionActionExecutor(permission);
+        Assert.That(await permissionExecutor.GrantAsync(admin,
+            new PermissionGrantAction("subject", "read_memory", "global", PermissionClearance.Independent)), Is.True);
+        Assert.That((await permissionExecutor.EvaluateAsync(
+            new RequestPrincipal("subject"),
+            new PermissionEvaluateAction("subject", "read_memory", "global", false))).Allowed, Is.True);
+
+        var agents = new AgentsActionExecutor(new AgentsCatalog(gateway, permission));
+        var agent = await agents.CreateAsync(admin,
+            new AgentsCreateAction("Executor Agent", Guid.NewGuid(), "provider", "model", null));
+        var skill = await agents.SaveSkillAsync(admin,
+            new AgentsSaveSkillAction(new SkillRecord(
+                Guid.NewGuid(), "Executor Skill", null, "use the skill", [agent.Id],
+                DateTimeOffset.UtcNow, DateTimeOffset.UtcNow)));
+        Assert.That(await agents.AccessSkillAsync(admin, new AgentsAccessSkillAction(skill.Id)),
+            Does.Contain("use the skill"));
+
+        var contextStore = new ContextStore(gateway);
+        var channel = new ContextChannelRecord(
+            Guid.NewGuid(), "Executor Channel", agent.Id, null, [], [], false,
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        await contextStore.SaveChannelAsync(channel);
+        var contextExecutor = new ContextActionExecutor(contextStore, permission);
+        var thread = await contextExecutor.CreateThreadAsync(admin,
+            new ContextCreateThreadAction(channel.Id, "Executor Thread"));
+        Assert.That(await contextExecutor.CommitExchangeAsync(admin,
+            new ContextCommitExchangeAction(thread.Id, "question", "answer")), Is.True);
+        Assert.That((await contextStore.ReadAllMessagesAsync(thread.Id)).Select(item => item.Content),
+            Is.EquivalentTo(new[] { "question", "answer" }));
     }
 
     [Test]

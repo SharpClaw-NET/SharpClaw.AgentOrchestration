@@ -11,10 +11,19 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
     public const string ModuleIdValue = "sharpclaw_context";
     public const string ListThreadsTool = "ctx_list_accessible_threads";
     public const string ReadHistoryTool = "ctx_read_thread_history";
+    public const string ThreadChangedEvent = "context.thread.changed";
+    public const string ExchangeCommittedEvent = "context.exchange.committed";
 
     private static readonly JsonElement EmptySchema = ToolSchemas.EmptyObject;
     private static readonly ActionRepeatPolicy RepeatPolicy =
         new(ActionRepeatKind.Idempotent, 3, TimeSpan.FromMilliseconds(50), "context");
+    private static readonly IReadOnlyList<ActionSafePoint> SafePoints =
+    [
+        ActionSafePoint.BeforeTerminal,
+        ActionSafePoint.AfterTerminal,
+        ActionSafePoint.BeforeCommit,
+        ActionSafePoint.AfterCommit,
+    ];
 
     public ModuleIdentity Identity { get; } = new(ModuleIdValue, "SharpClaw Context", "ctx");
 
@@ -25,6 +34,7 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
         module.Services.AddScoped<IConversationResolver, ContextConversationResolver>();
         module.Services.AddScoped<IChatContextContributor, ContextHistoryContributor>();
         module.Services.AddScoped<ContextToolHandler>();
+        module.Services.AddScoped<IContextActionExecutor, ContextActionExecutor>();
         module.Services.AddScoped<ContextCliHandler>();
         module.Services.AddScoped<ContextDbContextAccessor>();
 
@@ -37,15 +47,39 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
         module.Actions.Add(new ActionDescriptor<ContextCreateThreadAction, ContextThreadRecord>(
             new("context.thread.create"), 1, "context.thread",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
-            false, false, RepeatPolicy, null, TimeSpan.FromSeconds(30)));
+            false, false, RepeatPolicy, null, TimeSpan.FromSeconds(30))
+        {
+            SafePoints = SafePoints,
+        });
         module.Actions.Add(new ActionDescriptor<ContextReadHistoryAction, IReadOnlyList<ContextMessageRecord>>(
             new("context.thread.read-history"), 1, "context.thread",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
-            false, false, RepeatPolicy, null, TimeSpan.FromSeconds(30)));
+            false, false, RepeatPolicy, null, TimeSpan.FromSeconds(30))
+        {
+            SafePoints = SafePoints,
+        });
         module.Actions.Add(new ActionDescriptor<ContextCommitExchangeAction, bool>(
             new("context.conversation.commit"), 1, "context.conversation",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
-            false, false, RepeatPolicy, null, TimeSpan.FromSeconds(30)));
+            true, false, RepeatPolicy, null, TimeSpan.FromSeconds(30))
+        {
+            SafePoints = SafePoints,
+        });
+
+        module.Events.Add(new EventDescriptor<ContextThreadChangedEvent>(
+            new(ThreadChangedEvent), 1, "context.thread",
+            EventInterceptionCapabilities.Inspect | EventInterceptionCapabilities.Observe,
+            true, false)
+        {
+            DeliveryClasses = [EventDelivery.Durable],
+        });
+        module.Events.Add(new EventDescriptor<ContextExchangeCommittedEvent>(
+            new(ExchangeCommittedEvent), 1, "context.conversation",
+            EventInterceptionCapabilities.Inspect | EventInterceptionCapabilities.Observe,
+            true, true)
+        {
+            DeliveryClasses = [EventDelivery.Durable],
+        });
 
         module.Tools.Add<ContextToolHandler>(new ToolDescriptor(
             ListThreadsTool,
@@ -78,7 +112,7 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
     public static IReadOnlyList<ModuleStorageContractDescriptor> StorageContracts =>
     [
         Storage(ContextStore.ChannelsStorage, "Context channel ownership and cross-thread opt-in.",
-            [new("ownerAgentId", ModuleStorageIndexValueKind.String), new("optedIn", ModuleStorageIndexValueKind.Bool)]),
+            [new("ownerAgentId", ModuleStorageIndexValueKind.String), new("contextId", ModuleStorageIndexValueKind.String), new("optedIn", ModuleStorageIndexValueKind.Bool)]),
         Storage(ContextStore.ContextsStorage, "Context ownership and default-agent assignment.",
             [new("defaultAgentId", ModuleStorageIndexValueKind.String)]),
         Storage(ContextStore.ThreadsStorage, "Thread identity, channel identity, and update order.",

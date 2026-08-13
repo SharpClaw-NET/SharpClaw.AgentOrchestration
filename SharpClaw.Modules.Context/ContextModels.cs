@@ -9,7 +9,10 @@ public sealed record ContextChannelRecord(
     IReadOnlyList<Guid> ContextAllowedAgentIds,
     bool CrossThreadOptedIn,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt)
+{
+    public Guid? ContextId { get; init; }
+}
 
 public sealed record ContextRecord(
     Guid Id,
@@ -58,3 +61,14 @@ public sealed record ContextCommitExchangeAction(
     Guid ThreadId,
     string UserMessage,
     string AssistantMessage);
+
+public sealed record ContextThreadChangedEvent(
+    Guid ThreadId,
+    Guid ChannelId,
+    string Change,
+    DateTimeOffset ChangedAt);
+
+public sealed record ContextExchangeCommittedEvent(
+    Guid ThreadId,
+    int MessageCount,
+    DateTimeOffset CommittedAt);

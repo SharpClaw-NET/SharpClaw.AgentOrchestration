@@ -94,6 +94,8 @@ public sealed class AgentsCatalog
         CancellationToken ct = default)
     {
         await RequireAsync(caller, "manage_skills", null, ct);
+        if (string.IsNullOrWhiteSpace(skill.Name) || string.IsNullOrWhiteSpace(skill.SkillText))
+            throw new ArgumentException("A skill requires a name and skill text.");
         var now = DateTimeOffset.UtcNow;
         var stored = skill with
         {

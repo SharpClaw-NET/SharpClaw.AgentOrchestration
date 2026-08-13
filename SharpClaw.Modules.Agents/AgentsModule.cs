@@ -14,9 +14,19 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
     public const string AccessSkillTool = "agents_access_skill";
     public const string WriteMemoryTool = "agents_write_memory";
     public const string SearchMemoryTool = "agents_search_memory";
+    public const string AgentChangedEvent = "agents.agent.changed";
+    public const string SkillChangedEvent = "agents.skill.changed";
+    public const string MemoryChangedEvent = "agents.memory.changed";
 
     private static readonly ActionRepeatPolicy RepeatPolicy =
         new(ActionRepeatKind.Receipted, 3, TimeSpan.FromMilliseconds(100), "agents");
+    private static readonly IReadOnlyList<ActionSafePoint> SafePoints =
+    [
+        ActionSafePoint.BeforeTerminal,
+        ActionSafePoint.AfterTerminal,
+        ActionSafePoint.BeforeCommit,
+        ActionSafePoint.AfterCommit,
+    ];
 
     public ModuleIdentity Identity { get; } = new(ModuleIdValue, "SharpClaw Agents", "agents");
 
@@ -24,6 +34,7 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
     {
         module.Services.AddScoped<AgentsCatalog>();
         module.Services.AddScoped<AgentsToolHandler>();
+        module.Services.AddScoped<IAgentsActionExecutor, AgentsActionExecutor>();
         module.Services.AddScoped<AgentsCliHandler>();
         module.Services.AddScoped<AgentChatProfileResolver>();
         module.Services.AddScoped<AgentsDbContextAccessor>();
@@ -38,15 +49,67 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
         module.Actions.Add(new ActionDescriptor<AgentsCreateAction, AgentRecord>(
             new("agents.create"), 1, "agents",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
-            true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30)));
+            true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
+        {
+            SafePoints = SafePoints,
+        });
         module.Actions.Add(new ActionDescriptor<AgentsUpdateAction, AgentRecord?>(
             new("agents.update"), 1, "agents",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
-            true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30)));
+            true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
+        {
+            SafePoints = SafePoints,
+        });
         module.Actions.Add(new ActionDescriptor<AgentsWriteMemoryAction, MemoryRecord>(
             new("agents.memory.write"), 1, "agents.memory",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
-            true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30)));
+            true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
+        {
+            SafePoints = SafePoints,
+        });
+        module.Actions.Add(new ActionDescriptor<AgentsSaveSkillAction, SkillRecord>(
+            new("agents.skill.save"), 1, "agents.skills",
+            ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
+            true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
+        {
+            SafePoints = SafePoints,
+        });
+        module.Actions.Add(new ActionDescriptor<AgentsAccessSkillAction, string>(
+            new("agents.skill.access"), 1, "agents.skills",
+            ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
+            false, false, RepeatPolicy, null, TimeSpan.FromSeconds(10))
+        {
+            SafePoints = SafePoints,
+        });
+        module.Actions.Add(new ActionDescriptor<AgentsSearchMemoryAction, IReadOnlyList<MemoryRecord>>(
+            new("agents.memory.search"), 1, "agents.memory",
+            ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
+            true, false, RepeatPolicy, null, TimeSpan.FromSeconds(10))
+        {
+            SafePoints = SafePoints,
+        });
+
+        module.Events.Add(new EventDescriptor<AgentChangedEvent>(
+            new(AgentChangedEvent), 1, "agents",
+            EventInterceptionCapabilities.Inspect | EventInterceptionCapabilities.Observe,
+            true, true)
+        {
+            DeliveryClasses = [EventDelivery.Durable],
+        });
+        module.Events.Add(new EventDescriptor<SkillChangedEvent>(
+            new(SkillChangedEvent), 1, "agents.skills",
+            EventInterceptionCapabilities.Inspect | EventInterceptionCapabilities.Observe,
+            true, true)
+        {
+            DeliveryClasses = [EventDelivery.Durable],
+        });
+        module.Events.Add(new EventDescriptor<MemoryChangedEvent>(
+            new(MemoryChangedEvent), 1, "agents.memory",
+            EventInterceptionCapabilities.Inspect | EventInterceptionCapabilities.Observe,
+            true, true)
+        {
+            DeliveryClasses = [EventDelivery.Durable],
+        });
 
         module.Tools.Add<AgentsToolHandler>(new ToolDescriptor(
             CreateTool,

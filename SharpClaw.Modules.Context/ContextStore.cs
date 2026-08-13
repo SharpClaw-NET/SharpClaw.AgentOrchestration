@@ -35,6 +35,9 @@ public sealed class ContextStore : IConversationStore
     public Task<ContextThreadRecord?> GetThreadAsync(Guid id, CancellationToken ct = default) =>
         _threads.GetAsync(Key(id), ct);
 
+    public Task<ContextRecord?> GetContextAsync(Guid id, CancellationToken ct = default) =>
+        _contexts.GetAsync(Key(id), ct);
+
     public async Task<ContextChannelRecord> SaveChannelAsync(
         ContextChannelRecord channel,
         CancellationToken ct = default)
@@ -43,6 +46,7 @@ public sealed class ContextStore : IConversationStore
         await _channels.UpsertAsync(Key(channel.Id), channel, new
         {
             ownerAgentId = channel.OwnerAgentId?.ToString("N"),
+            contextId = channel.ContextId?.ToString("N"),
             optedIn = channel.CrossThreadOptedIn,
             updatedAt = channel.UpdatedAt,
         }, ct);
@@ -111,34 +115,40 @@ public sealed class ContextStore : IConversationStore
         CancellationToken ct = default)
     {
         var channels = await _channels.ListAsync(ct);
-        var visible = new List<ContextChannelRecord>();
-        foreach (var channel in channels.Where(channel => channel.Id != currentChannelId))
-        {
-            var decision = await policy.EvaluateAsync(new ContextAccessRequest(
-                principal,
-                channel.Id,
-                channel.OwnerAgentId,
-                channel.AllowedAgentIds,
-                channel.DefaultContextAgentId,
-                channel.ContextAllowedAgentIds,
-                channel.CrossThreadOptedIn), ct);
-            if (decision.Allowed)
-                visible.Add(channel);
-        }
-
         var summaries = new List<ContextThreadSummary>();
-        foreach (var channel in visible)
+        foreach (var channel in channels.Where(channel => channel.Id != currentChannelId))
         {
             var threads = await _threads.Query()
                 .WhereIndex("channelId").EqualTo(channel.Id.ToString("N"))
                 .OrderByIndexDescending("updatedAt")
                 .ToListAsync(ct);
-            summaries.AddRange(threads.Select(thread => new ContextThreadSummary(
-                thread.Id,
-                thread.Name,
-                thread.ChannelId,
-                channel.Title,
-                thread.UpdatedAt)));
+            foreach (var thread in threads)
+            {
+                var context = thread.ContextId is { } contextId
+                    ? await GetContextAsync(contextId, ct)
+                    : channel.ContextId is { } channelContextId
+                        ? await GetContextAsync(channelContextId, ct)
+                        : null;
+                var decision = await policy.EvaluateAsync(new ContextAccessRequest(
+                    principal,
+                    channel.Id,
+                    channel.OwnerAgentId,
+                    channel.AllowedAgentIds,
+                    context?.DefaultAgentId ?? channel.DefaultContextAgentId,
+                    channel.ContextAllowedAgentIds
+                        .Concat(context?.AllowedAgentIds ?? [])
+                        .Distinct()
+                        .ToArray(),
+                    channel.CrossThreadOptedIn,
+                    context?.Id ?? thread.ContextId ?? channel.ContextId), ct);
+                if (decision.Allowed)
+                    summaries.Add(new ContextThreadSummary(
+                        thread.Id,
+                        thread.Name,
+                        thread.ChannelId,
+                        channel.Title,
+                        thread.UpdatedAt));
+            }
         }
 
         return summaries
@@ -214,6 +224,42 @@ public sealed class ContextStore : IConversationStore
                 Guid.NewGuid(), thread.Id, thread.ChannelId, "assistant",
                 exchange.Completion.Content!, "assistant", now, now), ct);
         }
+        await _threads.UpsertAsync(Key(thread.Id), thread with { UpdatedAt = now }, new
+        {
+            channelId = thread.ChannelId.ToString("N"),
+            contextId = thread.ContextId?.ToString("N"),
+            updatedAt = now,
+        }, ct);
+    }
+
+    public async Task<bool> CommitExchangeAsync(
+        RequestPrincipal caller,
+        ContextCommitExchangeAction action,
+        CancellationToken ct = default)
+    {
+        if (!caller.IsAuthenticated)
+            throw new UnauthorizedAccessException("Authentication is required.");
+        if (action.ThreadId == Guid.Empty)
+            throw new ArgumentException("A thread id is required.", nameof(action));
+        var thread = await GetThreadAsync(action.ThreadId, ct)
+            ?? throw new InvalidOperationException("The conversation thread was not found.");
+        var now = DateTimeOffset.UtcNow;
+        await AppendMessageAsync(new ContextMessageRecord(
+            Guid.NewGuid(), thread.Id, thread.ChannelId, "user", action.UserMessage,
+            caller.SubjectId, now, now), ct);
+        if (!string.IsNullOrWhiteSpace(action.AssistantMessage))
+        {
+            await AppendMessageAsync(new ContextMessageRecord(
+                Guid.NewGuid(), thread.Id, thread.ChannelId, "assistant", action.AssistantMessage,
+                "assistant", now, now), ct);
+        }
+        await _threads.UpsertAsync(Key(thread.Id), thread with { UpdatedAt = now }, new
+        {
+            channelId = thread.ChannelId.ToString("N"),
+            contextId = thread.ContextId?.ToString("N"),
+            updatedAt = now,
+        }, ct);
+        return true;
     }
 
     private static string Key(Guid id) => id.ToString("N");

@@ -12,9 +12,17 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
     public const string EvaluateTool = "perm_evaluate";
     public const string GrantTool = "perm_grant";
     public const string RevokeTool = "perm_revoke";
+    public const string PermissionChangedEvent = "permission.changed";
 
     private static readonly ActionRepeatPolicy RepeatPolicy =
         new(ActionRepeatKind.Receipted, 3, TimeSpan.FromMilliseconds(100), "permission");
+    private static readonly IReadOnlyList<ActionSafePoint> SafePoints =
+    [
+        ActionSafePoint.BeforeTerminal,
+        ActionSafePoint.AfterTerminal,
+        ActionSafePoint.BeforeCommit,
+        ActionSafePoint.AfterCommit,
+    ];
 
     public ModuleIdentity Identity { get; } = new(
         ModuleIdValue,
@@ -30,6 +38,7 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
         module.Services.AddScoped<IAgentAccessPolicy>(sp =>
             sp.GetRequiredService<TwoTierPermissionPolicy>());
         module.Services.AddScoped<PermissionToolHandler>();
+        module.Services.AddScoped<IPermissionActionExecutor, PermissionActionExecutor>();
         module.Services.AddScoped<PermissionCliHandler>();
         module.Services.AddScoped<PermissionDbContextAccessor>();
 
@@ -41,15 +50,32 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
         module.Actions.Add(new ActionDescriptor<PermissionEvaluateAction, PermissionDecision>(
             new("permission.evaluate"), 1, "permission",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
-            true, false, RepeatPolicy, null, TimeSpan.FromSeconds(10)));
+            true, false, RepeatPolicy, null, TimeSpan.FromSeconds(10))
+        {
+            SafePoints = SafePoints,
+        });
         module.Actions.Add(new ActionDescriptor<PermissionGrantAction, bool>(
             new("permission.grant"), 1, "permission.administration",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
-            true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30)));
+            true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
+        {
+            SafePoints = SafePoints,
+        });
         module.Actions.Add(new ActionDescriptor<PermissionRevokeAction, bool>(
             new("permission.revoke"), 1, "permission.administration",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
-            true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30)));
+            true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
+        {
+            SafePoints = SafePoints,
+        });
+
+        module.Events.Add(new EventDescriptor<PermissionChangedEvent>(
+            new(PermissionChangedEvent), 1, "permission",
+            EventInterceptionCapabilities.Inspect | EventInterceptionCapabilities.Observe,
+            true, true)
+        {
+            DeliveryClasses = [EventDelivery.Durable],
+        });
 
         module.Tools.Add<PermissionToolHandler>(new ToolDescriptor(
             EvaluateTool,

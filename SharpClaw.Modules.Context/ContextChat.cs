@@ -17,10 +17,25 @@ public sealed class ContextConversationResolver(ContextStore store) : IConversat
             throw new InvalidOperationException($"Conversation '{existing}' does not exist.");
         }
 
-        var thread = await store.CreateThreadAsync(
-            CreateConversationChannelId(input),
-            "Conversation",
-            ct: ct);
+        var channelId = CreateConversationChannelId(input);
+        if (await store.GetChannelAsync(channelId, ct) is null)
+        {
+            var owner = input.Caller is { SubjectId: var subject }
+                && Guid.TryParse(subject, out var ownerId)
+                ? ownerId
+                : (Guid?)null;
+            await store.SaveChannelAsync(new ContextChannelRecord(
+                channelId,
+                "Conversation",
+                owner,
+                null,
+                [],
+                [],
+                false,
+                DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow), ct);
+        }
+        var thread = await store.CreateThreadAsync(channelId, "Conversation", ct: ct);
         return new ConversationSelection(thread.Id, Created: true);
     }
 

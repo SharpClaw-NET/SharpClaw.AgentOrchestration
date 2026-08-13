@@ -78,3 +78,10 @@ public sealed record PermissionRevokeAction(
     string SubjectId,
     string Capability,
     string Scope);
+
+public sealed record PermissionChangedEvent(
+    string SubjectId,
+    string Capability,
+    string Scope,
+    string Change,
+    DateTimeOffset ChangedAt);
