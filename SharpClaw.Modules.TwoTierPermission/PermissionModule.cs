@@ -40,6 +40,7 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
             sp.GetRequiredService<TwoTierPermissionPolicy>());
         module.Services.AddScoped<PermissionToolHandler>();
         module.Services.AddScoped<IPermissionActionExecutor, PermissionActionExecutor>();
+        module.Services.AddScoped<PermissionGrantAuthorizationHook>();
         module.Services.AddScoped<PermissionCliHandler>();
         module.Services.AddScoped<PermissionDbContextAccessor>();
 
@@ -76,6 +77,8 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
         {
             SafePoints = SafePoints,
         });
+        module.Hooks.For(new SharpClawActionKey("permission.grant"))
+            .Use<PermissionGrantAuthorizationHook>(new HookOrdering("permission.grant.authorization"));
 
         module.Events.Add(new EventDescriptor<PermissionChangedEvent>(
             new(PermissionChangedEvent), 1, "permission",

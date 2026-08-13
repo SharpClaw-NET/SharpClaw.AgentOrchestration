@@ -56,6 +56,9 @@ public sealed class ModuleCompositionTests
             Assert.That(contextBuilder.Events.Items.OfType<EventDescriptor<ContextThreadChangedEvent>>(), Has.Exactly(1).Items);
             Assert.That(permissionBuilder.Events.Items.OfType<EventDescriptor<PermissionChangedEvent>>(), Has.Exactly(1).Items);
             Assert.That(agentsBuilder.Events.Items.OfType<EventDescriptor<MemoryChangedEvent>>(), Has.Exactly(1).Items);
+            Assert.That(contextBuilder.Hooks.Items.Any(item => item.StartsWith("context.conversation.commit", StringComparison.Ordinal)), Is.True);
+            Assert.That(permissionBuilder.Hooks.Items.Any(item => item.StartsWith("permission.grant", StringComparison.Ordinal)), Is.True);
+            Assert.That(agentsBuilder.Hooks.Items.Any(item => item.StartsWith("agents.create", StringComparison.Ordinal)), Is.True);
         });
     }
 
@@ -82,6 +85,7 @@ public sealed class ModuleCompositionTests
                 Assert.That(root.GetProperty("moduleType").GetString(), Is.EqualTo(item.Item3));
                 Assert.That(root.GetProperty("defaultEnabled").GetBoolean(), Is.True);
                 Assert.That(root.GetProperty("hostMode").GetString(), Is.EqualTo("sidecar"));
+                Assert.That(root.GetProperty("requestedHooks").GetArrayLength(), Is.GreaterThan(0));
             });
         }
     }
@@ -332,16 +336,21 @@ public sealed class ModuleCompositionTests
 
     private sealed class RecordingHooks : IActionHookBuilder
     {
-        private static readonly IActionHookRegistrationBuilder Registration = new NoOpActionRegistration();
-        public IActionHookRegistrationBuilder For(SharpClawActionKey key) => Registration;
-        public IActionHookRegistrationBuilder Category(string category) => Registration;
-        public IActionHookRegistrationBuilder AnyAction() => Registration;
+        public List<string> Items { get; } = [];
+        public IActionHookRegistrationBuilder For(SharpClawActionKey key) => new NoOpActionRegistration(Items, key.Value);
+        public IActionHookRegistrationBuilder Category(string category) => new NoOpActionRegistration(Items, category);
+        public IActionHookRegistrationBuilder AnyAction() => new NoOpActionRegistration(Items, "*");
     }
 
-    private sealed class NoOpActionRegistration : IActionHookRegistrationBuilder
+    private sealed class NoOpActionRegistration(
+        List<string> items,
+        string target) : IActionHookRegistrationBuilder
     {
-        public void Use<TInterceptor>(HookOrdering ordering) { }
-        public void UseAny<TInterceptor>(HookOrdering ordering) { }
+        public void Use<TInterceptor>(HookOrdering ordering) =>
+            items.Add($"{target}:{typeof(TInterceptor).Name}:{ordering.Id}");
+
+        public void UseAny<TInterceptor>(HookOrdering ordering) =>
+            items.Add($"{target}:any:{typeof(TInterceptor).Name}:{ordering.Id}");
     }
 
     private sealed class RecordingEvents : IEventDefinitionBuilder

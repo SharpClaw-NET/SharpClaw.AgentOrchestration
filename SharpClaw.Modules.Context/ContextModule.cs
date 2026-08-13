@@ -35,6 +35,7 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
         module.Services.AddScoped<IChatContextContributor, ContextHistoryContributor>();
         module.Services.AddScoped<ContextToolHandler>();
         module.Services.AddScoped<IContextActionExecutor, ContextActionExecutor>();
+        module.Services.AddScoped<ContextCommitAuthorizationHook>();
         module.Services.AddScoped<ContextCliHandler>();
         module.Services.AddScoped<ContextDbContextAccessor>();
 
@@ -65,6 +66,8 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
         {
             SafePoints = SafePoints,
         });
+        module.Hooks.For(new SharpClawActionKey("context.conversation.commit"))
+            .Use<ContextCommitAuthorizationHook>(new HookOrdering("context.conversation.commit.authorization"));
 
         module.Events.Add(new EventDescriptor<ContextThreadChangedEvent>(
             new(ThreadChangedEvent), 1, "context.thread",

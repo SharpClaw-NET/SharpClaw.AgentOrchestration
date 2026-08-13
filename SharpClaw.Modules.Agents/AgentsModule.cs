@@ -35,6 +35,7 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
         module.Services.AddScoped<AgentsCatalog>();
         module.Services.AddScoped<AgentsToolHandler>();
         module.Services.AddScoped<IAgentsActionExecutor, AgentsActionExecutor>();
+        module.Services.AddScoped<AgentsCreateAuthorizationHook>();
         module.Services.AddScoped<AgentsCliHandler>();
         module.Services.AddScoped<AgentChatProfileResolver>();
         module.Services.AddScoped<AgentsDbContextAccessor>();
@@ -88,6 +89,8 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
         {
             SafePoints = SafePoints,
         });
+        module.Hooks.For(new SharpClawActionKey("agents.create"))
+            .Use<AgentsCreateAuthorizationHook>(new HookOrdering("agents.create.authorization"));
 
         module.Events.Add(new EventDescriptor<AgentChangedEvent>(
             new(AgentChangedEvent), 1, "agents",

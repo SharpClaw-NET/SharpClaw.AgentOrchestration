@@ -26,5 +26,11 @@
       "serviceType": "SharpClaw.Modules.AgentOrchestration.Contracts.PermissionModuleContract",
       "optional": false
     }
+  ],
+  "requestedHooks": [
+    {
+      "target": "context.conversation.commit",
+      "effects": ["Inspect", "Cancel"]
+    }
   ]
 }

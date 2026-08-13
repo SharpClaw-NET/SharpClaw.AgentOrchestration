@@ -31,5 +31,11 @@
       "serviceType": "SharpClaw.Modules.AgentOrchestration.Contracts.PermissionModuleContract",
       "optional": false
     }
+  ],
+  "requestedHooks": [
+    {
+      "target": "agents.create",
+      "effects": ["Inspect", "Cancel"]
+    }
   ]
 }
