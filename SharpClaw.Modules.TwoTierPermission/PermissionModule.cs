@@ -25,6 +25,16 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
         ActionSafePoint.AfterCommit,
     ];
 
+    public static readonly ActionDescriptor<PermissionApiAction, JsonElement> ApiDescriptor =
+        new(new("permission.api.dispatch"), 1, "permission.api",
+            ActionInterceptionCapabilities.Inspect
+            | ActionInterceptionCapabilities.Cancel
+            | ActionInterceptionCapabilities.Observe,
+            true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
+        {
+            SafePoints = SafePoints,
+        };
+
     public ModuleIdentity Identity { get; } = new(
         ModuleIdValue,
         "SharpClaw Two Tier Permission",
@@ -40,6 +50,9 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
             sp.GetRequiredService<TwoTierPermissionPolicy>());
         module.Services.AddScoped<PermissionToolHandler>();
         module.Services.AddScoped<IPermissionActionExecutor, PermissionActionExecutor>();
+        module.Services.AddScoped<PermissionApiActionExecutor>();
+        module.Services.AddScoped<IPermissionActionGateway, PermissionActionGateway>();
+        module.Services.AddScoped<IModuleActionPipeline, ModuleActionPipeline>();
         module.Services.AddScoped<PermissionGrantAuthorizationHook>();
         module.Services.AddScoped<PermissionCliHandler>();
 
@@ -47,6 +60,8 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
 
         foreach (var storage in StorageContracts)
             module.Storage.Add(storage);
+
+        module.Actions.Add(ApiDescriptor);
 
         module.Actions.Add(new ActionDescriptor<PermissionEvaluateAction, PermissionDecision>(
             new("permission.evaluate"), 1, "permission",
@@ -108,19 +123,21 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
     public void ConfigureApplication(ISharpClawApplicationBuilder application)
     {
         application.Endpoints.Add<PermissionEndpointContribution>();
-        application.Cli.Add<PermissionCliHandler>(new ModuleCliCommandDescriptor(
-            "perm-grant",
-            ["permission-grant"],
-            "Grant a permission capability.",
-            new JsonSchemaReference("sharpclaw.permission.cli.arguments", 1),
-            new JsonSchemaReference("sharpclaw.permission.cli.result", 1),
-            RequiresAdministrator: true));
-        application.Cli.Add<PermissionCliHandler>(new ModuleCliCommandDescriptor(
-            "perm-approve",
-            ["permission-approve"],
-            "Approve a permission grant.",
-            new JsonSchemaReference("sharpclaw.permission.approve.arguments", 1),
-            new JsonSchemaReference("sharpclaw.permission.cli.result", 1)));
+        foreach (var command in PermissionCliHandler.Commands)
+        {
+            application.Cli.Add<PermissionCliHandler>(new ModuleCliCommandDescriptor(
+                command.Name,
+                command.Name switch
+                {
+                    "perm-grant" => ["permission-grant"],
+                    "perm-approve" => ["permission-approve"],
+                    _ => [],
+                },
+                $"Execute the permission {command.Operation} operation.",
+                new JsonSchemaReference("sharpclaw.permission.cli.arguments", 1),
+                new JsonSchemaReference("sharpclaw.permission.cli.result", 1),
+                RequiresAdministrator: command.Operation is not PermissionApiOperations.Evaluate));
+        }
     }
 
     public ValueTask StartAsync(ModuleStartContext context, CancellationToken ct) => ValueTask.CompletedTask;
@@ -135,6 +152,10 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
             [new("subjectId", ModuleStorageIndexValueKind.String), new("capability", ModuleStorageIndexValueKind.String), new("scope", ModuleStorageIndexValueKind.String)]),
         Storage(PermissionPolicyStore.ApprovalsStorage, "Approval records for same-level and delegated checks.",
             [new("subjectId", ModuleStorageIndexValueKind.String), new("capability", ModuleStorageIndexValueKind.String), new("scope", ModuleStorageIndexValueKind.String)]),
+        Storage(PermissionPolicyStore.RolesStorage, "Permission roles and assigned subjects.",
+            [new("name", ModuleStorageIndexValueKind.String), new("clearance", ModuleStorageIndexValueKind.String)]),
+        Storage(PermissionPolicyStore.PermissionSetsStorage, "Reusable permission capability sets.",
+            [new("name", ModuleStorageIndexValueKind.String), new("updatedAt", ModuleStorageIndexValueKind.DateTime)]),
     ];
 
     private static ModuleStorageContractDescriptor Storage(

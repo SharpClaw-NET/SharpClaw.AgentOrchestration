@@ -9,6 +9,8 @@ public sealed class PermissionPolicyStore
     public const string PoliciesStorage = "policies";
     public const string GrantsStorage = "grants";
     public const string ApprovalsStorage = "approvals";
+    public const string RolesStorage = "roles";
+    public const string PermissionSetsStorage = "permission_sets";
 
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web) { PropertyNameCaseInsensitive = true };
@@ -16,22 +18,153 @@ public sealed class PermissionPolicyStore
     private readonly ModuleDocumentStore<PermissionPolicyRecord> _policies;
     private readonly ModuleDocumentStore<PermissionGrantRecord> _grants;
     private readonly ModuleDocumentStore<PermissionApprovalRecord> _approvals;
+    private readonly ModuleDocumentStore<PermissionRoleRecord> _roles;
+    private readonly ModuleDocumentStore<PermissionSetRecord> _permissionSets;
 
     public PermissionPolicyStore(IModuleStorageGateway gateway)
     {
         _policies = new(gateway, ModuleId, PoliciesStorage, $"{ModuleId}:{PoliciesStorage}", JsonOptions);
         _grants = new(gateway, ModuleId, GrantsStorage, $"{ModuleId}:{GrantsStorage}", JsonOptions);
         _approvals = new(gateway, ModuleId, ApprovalsStorage, $"{ModuleId}:{ApprovalsStorage}", JsonOptions);
+        _roles = new(gateway, ModuleId, RolesStorage, $"{ModuleId}:{RolesStorage}", JsonOptions);
+        _permissionSets = new(gateway, ModuleId, PermissionSetsStorage, $"{ModuleId}:{PermissionSetsStorage}", JsonOptions);
     }
 
-    public Task<PermissionPolicyRecord?> GetAsync(
+    public async Task<PermissionPolicyRecord?> GetAsync(
         string subjectId,
-        CancellationToken ct = default) =>
-        _policies.GetAsync(Key(subjectId), ct);
+        CancellationToken ct = default)
+    {
+        var policy = await _policies.GetAsync(Key(subjectId), ct);
+        var roles = await _roles.ListAsync(ct);
+        var assignedRoles = roles
+            .Where(role => role.AssignedSubjectIds.Any(item => item.Equals(subjectId, StringComparison.Ordinal)))
+            .ToArray();
+        var sets = await _permissionSets.ListAsync(ct);
+        var assignedSets = sets
+            .Where(set => set.AssignedSubjectIds.Any(item => item.Equals(subjectId, StringComparison.Ordinal)))
+            .ToArray();
+        var setRoleIds = assignedSets.SelectMany(set => set.RoleIds).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var setRoles = roles.Where(role => setRoleIds.Contains(role.RoleId)).ToArray();
+        var allRoles = assignedRoles.Concat(setRoles).ToArray();
+        if (policy is null && allRoles.Length == 0 && assignedSets.Length == 0)
+            return null;
+
+        var capabilities = (policy?.Capabilities ?? [])
+            .Concat(allRoles.SelectMany(role => role.Capabilities))
+            .Concat(assignedSets.SelectMany(set => set.Capabilities))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var roleNames = (policy?.Roles ?? [])
+            .Concat(allRoles.Select(role => role.Name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var clearance = allRoles
+            .Select(role => role.Clearance)
+            .Append(policy?.Clearance ?? PermissionClearance.Unset)
+            .Max();
+        return (policy ?? new PermissionPolicyRecord(
+            subjectId,
+            [],
+            [],
+            [],
+            PermissionClearance.Unset,
+            true,
+            [],
+            null,
+            DateTimeOffset.UtcNow)) with
+        {
+            Roles = roleNames,
+            Capabilities = capabilities,
+            Clearance = clearance,
+        };
+    }
 
     public Task<IReadOnlyList<PermissionPolicyRecord>> ListAsync(
         CancellationToken ct = default) =>
         _policies.ListAsync(ct);
+
+    public Task<IReadOnlyList<PermissionRoleRecord>> ListRolesAsync(
+        CancellationToken ct = default) =>
+        _roles.ListAsync(ct);
+
+    public Task<PermissionRoleRecord?> GetRoleAsync(
+        string roleId,
+        CancellationToken ct = default) =>
+        _roles.GetAsync(roleId.Trim(), ct);
+
+    public Task SaveRoleAsync(
+        PermissionRoleRecord role,
+        CancellationToken ct = default) =>
+        _roles.UpsertAsync(role.RoleId.Trim(), role, new
+        {
+            name = role.Name,
+            clearance = role.Clearance.ToString(),
+            updatedAt = role.UpdatedAt,
+        }, ct);
+
+    public Task DeleteRoleAsync(
+        string roleId,
+        CancellationToken ct = default) =>
+        _roles.DeleteAsync(roleId.Trim(), ct);
+
+    public Task<IReadOnlyList<PermissionSetRecord>> ListPermissionSetsAsync(
+        CancellationToken ct = default) =>
+        _permissionSets.ListAsync(ct);
+
+    public Task<PermissionSetRecord?> GetPermissionSetAsync(
+        string permissionSetId,
+        CancellationToken ct = default) =>
+        _permissionSets.GetAsync(permissionSetId.Trim(), ct);
+
+    public Task SavePermissionSetAsync(
+        PermissionSetRecord permissionSet,
+        CancellationToken ct = default) =>
+        _permissionSets.UpsertAsync(permissionSet.PermissionSetId.Trim(), permissionSet, new
+        {
+            name = permissionSet.Name,
+            updatedAt = permissionSet.UpdatedAt,
+        }, ct);
+
+    public Task DeletePermissionSetAsync(
+        string permissionSetId,
+        CancellationToken ct = default) =>
+        _permissionSets.DeleteAsync(permissionSetId.Trim(), ct);
+
+    public async Task<PermissionRoleRecord> AssignRoleAsync(
+        string roleId,
+        string subjectId,
+        bool assign,
+        CancellationToken ct = default)
+    {
+        var role = await GetRoleAsync(roleId, ct)
+            ?? throw new InvalidOperationException("The permission role was not found.");
+        var subjects = role.AssignedSubjectIds
+            .Where(item => !item.Equals(subjectId, StringComparison.Ordinal))
+            .Concat(assign ? [subjectId] : [])
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        var updated = role with { AssignedSubjectIds = subjects, UpdatedAt = DateTimeOffset.UtcNow };
+        await SaveRoleAsync(updated, ct);
+        return updated;
+    }
+
+    public async Task<PermissionSetRecord> AssignPermissionSetAsync(
+        string permissionSetId,
+        string subjectId,
+        bool assign,
+        CancellationToken ct = default)
+    {
+        var permissionSet = await GetPermissionSetAsync(permissionSetId, ct)
+            ?? throw new InvalidOperationException("The permission set was not found.");
+        var subjects = permissionSet.AssignedSubjectIds
+            .Where(item => !item.Equals(subjectId, StringComparison.Ordinal))
+            .Concat(assign ? [subjectId] : [])
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        var updated = permissionSet with { AssignedSubjectIds = subjects, UpdatedAt = DateTimeOffset.UtcNow };
+        await SavePermissionSetAsync(updated, ct);
+        return updated;
+    }
 
     public Task<IReadOnlyList<PermissionGrantRecord>> ListGrantsAsync(
         string subjectId,
@@ -72,6 +205,11 @@ public sealed class PermissionPolicyStore
             clearance = policy.Clearance.ToString(),
             updatedAt = policy.UpdatedAt,
         }, ct);
+
+    public Task DeleteAsync(
+        string subjectId,
+        CancellationToken ct = default) =>
+        _policies.DeleteAsync(Key(subjectId), ct);
 
     public async Task GrantAsync(
         RequestPrincipal caller,

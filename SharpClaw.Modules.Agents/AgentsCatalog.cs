@@ -10,6 +10,8 @@ public sealed class AgentsCatalog
     public const string AgentsStorage = "agents";
     public const string SkillsStorage = "skills";
     public const string MemoryStorage = "memory";
+    public const string CostsStorage = "costs";
+    public const string SynchronizationStorage = "synchronization";
 
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web) { PropertyNameCaseInsensitive = true };
@@ -17,6 +19,8 @@ public sealed class AgentsCatalog
     private readonly ModuleDocumentStore<AgentRecord> _agents;
     private readonly ModuleDocumentStore<SkillRecord> _skills;
     private readonly ModuleDocumentStore<MemoryRecord> _memory;
+    private readonly ModuleDocumentStore<AgentCostRecord> _costs;
+    private readonly ModuleDocumentStore<AgentSynchronizationRecord> _synchronization;
     private readonly IAgentAccessPolicy _access;
 
     public AgentsCatalog(IModuleStorageGateway gateway, IAgentAccessPolicy access)
@@ -25,6 +29,8 @@ public sealed class AgentsCatalog
         _agents = new(gateway, ModuleId, AgentsStorage, $"{ModuleId}:{AgentsStorage}", JsonOptions);
         _skills = new(gateway, ModuleId, SkillsStorage, $"{ModuleId}:{SkillsStorage}", JsonOptions);
         _memory = new(gateway, ModuleId, MemoryStorage, $"{ModuleId}:{MemoryStorage}", JsonOptions);
+        _costs = new(gateway, ModuleId, CostsStorage, $"{ModuleId}:{CostsStorage}", JsonOptions);
+        _synchronization = new(gateway, ModuleId, SynchronizationStorage, $"{ModuleId}:{SynchronizationStorage}", JsonOptions);
     }
 
     public Task<AgentRecord?> GetAgentAsync(Guid id, CancellationToken ct = default) =>
@@ -38,6 +44,92 @@ public sealed class AgentsCatalog
 
     public Task<IReadOnlyList<SkillRecord>> ListSkillsAsync(CancellationToken ct = default) =>
         _skills.ListAsync(ct);
+
+    public async Task<AgentRecord> DeleteAgentAsync(
+        RequestPrincipal caller,
+        Guid agentId,
+        CancellationToken ct = default)
+    {
+        var agent = await GetAgentAsync(agentId, ct)
+            ?? throw new InvalidOperationException("The agent was not found.");
+        await RequireAsync(caller, "manage_agents", agentId, ct);
+        await _agents.DeleteAsync(Key(agentId), ct);
+        return agent;
+    }
+
+    public async Task<AgentRecord> AssignRoleAsync(
+        RequestPrincipal caller,
+        Guid agentId,
+        string role,
+        bool assign,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(role))
+            throw new ArgumentException("A role is required.", nameof(role));
+        var agent = await GetAgentAsync(agentId, ct)
+            ?? throw new InvalidOperationException("The agent was not found.");
+        await RequireAsync(caller, "manage_agents", agentId, ct);
+        var roles = agent.Roles
+            .Where(item => !item.Equals(role, StringComparison.OrdinalIgnoreCase))
+            .Concat(assign ? [role.Trim()] : [])
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var updated = agent with { Roles = roles, UpdatedAt = DateTimeOffset.UtcNow };
+        await _agents.UpsertAsync(Key(updated.Id), updated, new
+        {
+            name = updated.Name,
+            providerKey = updated.ProviderKey,
+            updatedAt = updated.UpdatedAt,
+        }, ct);
+        return updated;
+    }
+
+    public async Task<AgentSynchronizationRecord> SynchronizeAsync(
+        RequestPrincipal caller,
+        Guid agentId,
+        CancellationToken ct = default)
+    {
+        var agent = await GetAgentAsync(agentId, ct)
+            ?? throw new InvalidOperationException("The agent was not found.");
+        await RequireAsync(caller, "manage_agents", agentId, ct);
+        var record = new AgentSynchronizationRecord(
+            agentId,
+            "synchronized",
+            DateTimeOffset.UtcNow,
+            agent.ProviderKey);
+        await _synchronization.UpsertAsync(Key(agentId), record, new
+        {
+            agentId = agentId.ToString("N"),
+            updatedAt = record.SynchronizedAt,
+        }, ct);
+        return record;
+    }
+
+    public async Task<AgentCostRecord> GetCostAsync(
+        RequestPrincipal caller,
+        Guid agentId,
+        CancellationToken ct = default)
+    {
+        var agent = await GetAgentAsync(agentId, ct)
+            ?? throw new InvalidOperationException("The agent was not found.");
+        var access = await _access.EvaluateAgentAsync(caller, "read_agent_cost", agentId, ct);
+        if (!access.Allowed && !IsAdministrator(caller))
+            throw new UnauthorizedAccessException("The caller cannot read agent cost data.");
+        return await _costs.GetAsync(Key(agent.Id), ct)
+            ?? new AgentCostRecord(agent.Id, 0m, 0, 0, agent.UpdatedAt);
+    }
+
+    public async Task<SkillRecord> DeleteSkillAsync(
+        RequestPrincipal caller,
+        Guid skillId,
+        CancellationToken ct = default)
+    {
+        var skill = await GetSkillAsync(skillId, ct)
+            ?? throw new InvalidOperationException("The skill was not found.");
+        await RequireAsync(caller, "manage_skills", null, ct);
+        await _skills.DeleteAsync(Key(skillId), ct);
+        return skill;
+    }
 
     public async Task<AgentRecord> CreateAgentAsync(
         RequestPrincipal caller,
@@ -116,8 +208,26 @@ public sealed class AgentsCatalog
         Guid skillId,
         CancellationToken ct = default)
     {
+        var skill = await GetSkillForCallerAsync(caller, skillId, ct);
+        return $"Skill: {skill.Name}\n\n{skill.SkillText}";
+    }
+
+    public async Task<SkillRecord> GetSkillForCallerAsync(
+        RequestPrincipal caller,
+        Guid skillId,
+        CancellationToken ct = default)
+    {
         var skill = await GetSkillAsync(skillId, ct)
             ?? throw new InvalidOperationException($"Skill '{skillId}' was not found.");
+        await RequireSkillAccessAsync(caller, skill, ct);
+        return skill;
+    }
+
+    private async Task RequireSkillAccessAsync(
+        RequestPrincipal caller,
+        SkillRecord skill,
+        CancellationToken ct)
+    {
         var accessDecision = await _access.EvaluateAgentAsync(caller, "access_skills", null, ct);
         if (!accessDecision.Allowed && !IsAdministrator(caller))
             throw new UnauthorizedAccessException("The caller cannot access this skill.");
@@ -126,7 +236,6 @@ public sealed class AgentsCatalog
             && (!Guid.TryParse(caller.SubjectId, out var agentId)
                 || !skill.AllowedAgentIds.Contains(agentId)))
             throw new UnauthorizedAccessException("The caller cannot access this skill.");
-        return $"Skill: {skill.Name}\n\n{skill.SkillText}";
     }
 
     public async Task<MemoryRecord> WriteMemoryAsync(

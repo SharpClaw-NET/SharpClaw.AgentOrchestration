@@ -1,106 +1,90 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using SharpClaw.Contracts.Modules;
 
 namespace SharpClaw.Modules.TwoTierPermission;
 
-public sealed class PermissionToolHandler(TwoTierPermissionPolicy policy) : IToolHandler
+public sealed class PermissionToolHandler(IPermissionActionGateway gateway) : IToolHandler
 {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter() },
+    };
+
     public async ValueTask<ToolResult> InvokeAsync(
         ToolInvocation invocation,
         CancellationToken ct)
     {
         try
         {
-            return invocation.ToolName switch
+            var operation = invocation.ToolName switch
             {
-                TwoTierPermissionModule.EvaluateTool => await EvaluateAsync(invocation, ct),
-                TwoTierPermissionModule.GrantTool => await GrantAsync(invocation, ct),
-                TwoTierPermissionModule.RevokeTool => await RevokeAsync(invocation, ct),
-                TwoTierPermissionModule.ApproveTool => await ApproveAsync(invocation, ct),
-                _ => ToolResult.Error($"Unknown permission tool '{invocation.ToolName}'."),
+                TwoTierPermissionModule.EvaluateTool => PermissionApiOperations.Evaluate,
+                TwoTierPermissionModule.GrantTool => PermissionApiOperations.Grant,
+                TwoTierPermissionModule.RevokeTool => PermissionApiOperations.Revoke,
+                TwoTierPermissionModule.ApproveTool => PermissionApiOperations.Approve,
+                _ => null,
             };
+            if (operation is null)
+                return ToolResult.Error($"Unknown permission tool '{invocation.ToolName}'.");
+
+            var payload = BuildPayload(operation, invocation);
+            var result = await gateway.ExecuteAsync(invocation.Caller, operation, payload, ct);
+            return new ToolResult(result.GetRawText());
         }
         catch (UnauthorizedAccessException exception)
         {
             return ToolResult.Error(exception.Message);
         }
+        catch (ArgumentException exception)
+        {
+            return ToolResult.Error(exception.Message);
+        }
     }
 
-    private async Task<ToolResult> EvaluateAsync(ToolInvocation invocation, CancellationToken ct)
+    private static JsonElement BuildPayload(
+        string operation,
+        ToolInvocation invocation)
     {
-        var subjectId = StringValue(invocation.Arguments, "subjectId") ?? invocation.Caller.SubjectId;
-        var channelId = GuidValue(invocation.Arguments, "channelId");
-        var ownerAgentId = GuidValue(invocation.Arguments, "ownerAgentId");
-        var allowedAgents = GuidList(invocation.Arguments, "allowedAgentIds");
-        var contextAgentId = GuidValue(invocation.Arguments, "defaultContextAgentId");
-        var contextAllowed = GuidList(invocation.Arguments, "contextAllowedAgentIds");
-        var optedIn = invocation.Arguments.TryGetProperty("sourceChannelOptedIn", out var opted)
-            && opted.ValueKind == JsonValueKind.True;
-        var principal = invocation.Caller with { SubjectId = subjectId };
-        var result = await policy.EvaluateDetailedAsync(new(
-            principal, channelId, ownerAgentId, allowedAgents,
-            contextAgentId, contextAllowed, optedIn), ct);
-        return new ToolResult(JsonSerializer.Serialize(result));
-    }
+        if (operation == PermissionApiOperations.Evaluate)
+            return invocation.Arguments;
 
-    private async Task<ToolResult> GrantAsync(ToolInvocation invocation, CancellationToken ct)
-    {
-        var subjectId = StringValue(invocation.Arguments, "subjectId");
-        var capability = StringValue(invocation.Arguments, "capability");
+        var subjectId = StringValue(invocation.Arguments, "subjectId")
+            ?? throw new ArgumentException("subjectId is required.");
+        var capability = StringValue(invocation.Arguments, "capability")
+            ?? throw new ArgumentException("capability is required.");
         var scope = StringValue(invocation.Arguments, "scope") ?? "global";
-        if (subjectId is null || capability is null)
-            return ToolResult.Error("subjectId and capability are required.");
-        var clearance = EnumValue(invocation.Arguments, "clearance", PermissionClearance.ApprovedBySameLevelUser);
-        var optIn = !invocation.Arguments.TryGetProperty("requireSourceOptIn", out var required)
-            || required.ValueKind != JsonValueKind.False;
-        await policy.GrantAsync(invocation.Caller,
-            new PermissionGrantAction(subjectId, capability, scope, clearance, optIn), ct);
-        return ToolResult.Text("Permission granted.");
-    }
-
-    private async Task<ToolResult> RevokeAsync(ToolInvocation invocation, CancellationToken ct)
-    {
-        var subjectId = StringValue(invocation.Arguments, "subjectId");
-        var capability = StringValue(invocation.Arguments, "capability");
-        var scope = StringValue(invocation.Arguments, "scope") ?? "global";
-        if (subjectId is null || capability is null)
-            return ToolResult.Error("subjectId and capability are required.");
-        await policy.RevokeAsync(invocation.Caller,
-            new PermissionRevokeAction(subjectId, capability, scope), ct);
-        return ToolResult.Text("Permission revoked.");
-    }
-
-    private async Task<ToolResult> ApproveAsync(ToolInvocation invocation, CancellationToken ct)
-    {
-        var subjectId = StringValue(invocation.Arguments, "subjectId");
-        var capability = StringValue(invocation.Arguments, "capability");
-        var scope = StringValue(invocation.Arguments, "scope") ?? "global";
-        if (subjectId is null || capability is null)
-            return ToolResult.Error("subjectId and capability are required.");
-        DateTimeOffset? expiresAt = DateTimeOffset.TryParse(
-            StringValue(invocation.Arguments, "expiresAt"), out var parsed)
-            ? parsed
-            : null;
-        await policy.ApproveAsync(invocation.Caller,
-            new PermissionApproveAction(subjectId, capability, scope, expiresAt), ct);
-        return ToolResult.Text("Permission approved.");
+        return operation switch
+        {
+            PermissionApiOperations.Grant => JsonSerializer.SerializeToElement(
+                new PermissionGrantAction(
+                    subjectId,
+                    capability,
+                    scope,
+                    EnumValue(invocation.Arguments, "clearance", PermissionClearance.ApprovedBySameLevelUser),
+                    !invocation.Arguments.TryGetProperty("requireSourceOptIn", out var required)
+                        || required.ValueKind != JsonValueKind.False,
+                    DateTimeOffset.TryParse(StringValue(invocation.Arguments, "expiresAt"), out var grantExpiry)
+                        ? grantExpiry
+                        : null), JsonOptions),
+            PermissionApiOperations.Revoke => JsonSerializer.SerializeToElement(
+                new PermissionRevokeAction(subjectId, capability, scope), JsonOptions),
+            PermissionApiOperations.Approve => JsonSerializer.SerializeToElement(
+                new PermissionApproveAction(
+                    subjectId,
+                    capability,
+                    scope,
+                    DateTimeOffset.TryParse(StringValue(invocation.Arguments, "expiresAt"), out var approvalExpiry)
+                        ? approvalExpiry
+                        : null), JsonOptions),
+            _ => throw new ArgumentException("The permission operation is not supported.", nameof(operation)),
+        };
     }
 
     private static string? StringValue(JsonElement root, string name) =>
         root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
             ? value.GetString()
             : null;
-
-    private static Guid GuidValue(JsonElement root, string name) =>
-        Guid.TryParse(StringValue(root, name), out var value) ? value : Guid.Empty;
-
-    private static IReadOnlyList<Guid> GuidList(JsonElement root, string name) =>
-        root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Array
-            ? value.EnumerateArray()
-                .Select(item => Guid.TryParse(item.GetString(), out var id) ? id : Guid.Empty)
-                .Where(id => id != Guid.Empty)
-                .ToArray()
-            : [];
 
     private static PermissionClearance EnumValue(
         JsonElement root,

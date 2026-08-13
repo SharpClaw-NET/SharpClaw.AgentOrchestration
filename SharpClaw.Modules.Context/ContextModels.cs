@@ -20,7 +20,10 @@ public sealed record ContextRecord(
     Guid? DefaultAgentId,
     IReadOnlyList<Guid> AllowedAgentIds,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt)
+{
+    public bool Enabled { get; init; } = true;
+}
 
 public sealed record ContextThreadRecord(
     Guid Id,

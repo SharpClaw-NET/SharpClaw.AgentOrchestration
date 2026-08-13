@@ -1,3 +1,4 @@
+using System.Text.Json;
 using SharpClaw.Contracts.Modules;
 
 namespace SharpClaw.Modules.TwoTierPermission;
@@ -53,6 +54,33 @@ public sealed record PermissionApprovalRecord(
     DateTimeOffset CreatedAt,
     DateTimeOffset? ExpiresAt);
 
+public sealed record PermissionRoleRecord(
+    string RoleId,
+    string Name,
+    string? Description,
+    IReadOnlyList<string> Capabilities,
+    PermissionClearance Clearance,
+    IReadOnlyList<string> AssignedSubjectIds,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt);
+
+public sealed record PermissionSetRecord(
+    string PermissionSetId,
+    string Name,
+    string? Description,
+    IReadOnlyList<string> Capabilities,
+    IReadOnlyList<string> RoleIds,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt)
+{
+    public IReadOnlyList<string> AssignedSubjectIds { get; init; } = [];
+}
+
+public sealed record PermissionApiAction(
+    string Operation,
+    JsonElement Payload,
+    RequestPrincipal Caller);
+
 public sealed record PermissionDecision(
     bool Allowed,
     string Code,
@@ -105,3 +133,25 @@ public sealed record PermissionChangedEvent(
     string Scope,
     string Change,
     DateTimeOffset ChangedAt);
+
+public static class PermissionApiOperations
+{
+    public const string Evaluate = "permission.evaluate";
+    public const string ListPolicies = "policy.list";
+    public const string GetPolicy = "policy.get";
+    public const string SavePolicy = "policy.save";
+    public const string DeletePolicy = "policy.delete";
+    public const string Grant = "permission.grant";
+    public const string Revoke = "permission.revoke";
+    public const string Approve = "permission.approve";
+    public const string ListRoles = "role.list";
+    public const string GetRole = "role.get";
+    public const string SaveRole = "role.save";
+    public const string DeleteRole = "role.delete";
+    public const string AssignRole = "role.assign";
+    public const string ListPermissionSets = "permission-set.list";
+    public const string GetPermissionSet = "permission-set.get";
+    public const string SavePermissionSet = "permission-set.save";
+    public const string DeletePermissionSet = "permission-set.delete";
+    public const string AssignPermissionSet = "permission-set.assign";
+}

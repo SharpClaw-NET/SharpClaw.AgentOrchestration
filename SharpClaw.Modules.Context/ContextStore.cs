@@ -110,6 +110,383 @@ public sealed class ContextStore : IConversationStore
         return context;
     }
 
+    internal async Task<IReadOnlyList<ContextChannelRecord>> ListChannelsAsync(
+        RequestPrincipal caller,
+        CancellationToken ct = default)
+    {
+        RequireAuthenticatedAgent(caller);
+        var channels = await _channels.ListAsync(ct);
+        var visible = new List<ContextChannelRecord>(channels.Count);
+        foreach (var channel in channels)
+        {
+            var context = channel.ContextId is { } contextId
+                ? await GetContextAsync(contextId, ct)
+                : null;
+            var decision = await EvaluateAsync(
+                caller,
+                channel,
+                context,
+                ContextAccessCapabilities.ReadHistory,
+                ct);
+            if (decision.Allowed)
+                visible.Add(channel);
+        }
+
+        return visible.OrderByDescending(channel => channel.UpdatedAt).ToArray();
+    }
+
+    internal async Task<ContextChannelRecord> GetChannelForCallerAsync(
+        RequestPrincipal caller,
+        Guid channelId,
+        CancellationToken ct = default,
+        string capability = ContextAccessCapabilities.ReadHistory)
+    {
+        var channel = await GetChannelAsync(channelId, ct)
+            ?? throw new InvalidOperationException("The channel was not found.");
+        var context = channel.ContextId is { } contextId
+            ? await GetContextAsync(contextId, ct)
+            : null;
+        await RequireAllowedAsync(caller, channel, context?.Id, capability, ct);
+        return channel;
+    }
+
+    internal async Task<ContextChannelRecord> CreateChannelAsync(
+        RequestPrincipal caller,
+        JsonElement payload,
+        CancellationToken ct = default)
+    {
+        RequireAuthenticatedAgent(caller);
+        var now = DateTimeOffset.UtcNow;
+        var id = GuidValue(payload, "channelId") ?? Guid.NewGuid();
+        var contextId = GuidValue(payload, "contextId");
+        var owner = ParseAgentId(caller.SubjectId);
+        var channel = new ContextChannelRecord(
+            id,
+            StringValue(payload, "title") ?? "Conversation",
+            owner,
+            GuidValue(payload, "defaultContextAgentId"),
+            GuidList(payload, "allowedAgentIds"),
+            GuidList(payload, "contextAllowedAgentIds"),
+            BoolValue(payload, "crossThreadOptedIn"),
+            now,
+            now)
+        {
+            ContextId = contextId,
+        };
+        await RequireAllowedAsync(caller, channel, contextId, ContextAccessCapabilities.CreateThread, ct);
+        return await SaveChannelAsync(channel, ct);
+    }
+
+    internal async Task<ContextChannelRecord> UpdateChannelAsync(
+        RequestPrincipal caller,
+        JsonElement payload,
+        CancellationToken ct = default)
+    {
+        var channelId = GuidValue(payload, "channelId")
+            ?? throw new ArgumentException("channelId is required.");
+        var existing = await GetChannelAsync(channelId, ct)
+            ?? throw new InvalidOperationException("The channel was not found.");
+        await RequireAllowedAsync(caller, existing, existing.ContextId, ContextAccessCapabilities.CommitExchange, ct);
+        var updated = existing with
+        {
+            Title = StringValue(payload, "title") ?? existing.Title,
+            DefaultContextAgentId = GuidValue(payload, "defaultContextAgentId") ?? existing.DefaultContextAgentId,
+            AllowedAgentIds = payload.TryGetProperty("allowedAgentIds", out _)
+                ? GuidList(payload, "allowedAgentIds")
+                : existing.AllowedAgentIds,
+            ContextAllowedAgentIds = payload.TryGetProperty("contextAllowedAgentIds", out _)
+                ? GuidList(payload, "contextAllowedAgentIds")
+                : existing.ContextAllowedAgentIds,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        } with
+        {
+            CrossThreadOptedIn = payload.TryGetProperty("crossThreadOptedIn", out _)
+                ? BoolValue(payload, "crossThreadOptedIn")
+                : existing.CrossThreadOptedIn,
+        };
+        return await SaveChannelAsync(updated, ct);
+    }
+
+    internal async Task<ContextChannelRecord> DeleteChannelAsync(
+        RequestPrincipal caller,
+        Guid channelId,
+        CancellationToken ct = default)
+    {
+        var channel = await GetChannelForCallerAsync(caller, channelId, ct);
+        await RequireAllowedAsync(caller, channel, channel.ContextId, ContextAccessCapabilities.CommitExchange, ct);
+        var threads = await _threads.Query().WhereIndex("channelId").EqualTo(channelId.ToString("N")).ToListAsync(ct);
+        foreach (var thread in threads)
+            await _threads.DeleteAsync(Key(thread.Id), ct);
+        await _channels.DeleteAsync(Key(channelId), ct);
+        return channel;
+    }
+
+    internal async Task<ContextChannelRecord> AssignChannelAsync(
+        RequestPrincipal caller,
+        JsonElement payload,
+        CancellationToken ct = default) =>
+        await ChangeChannelAssignmentAsync(caller, payload, assign: true, ct);
+
+    internal async Task<ContextChannelRecord> UnassignChannelAsync(
+        RequestPrincipal caller,
+        JsonElement payload,
+        CancellationToken ct = default) =>
+        await ChangeChannelAssignmentAsync(caller, payload, assign: false, ct);
+
+    internal async Task<ContextChannelRecord> SetChannelOptInAsync(
+        RequestPrincipal caller,
+        JsonElement payload,
+        bool optedIn,
+        CancellationToken ct = default)
+    {
+        var channelId = GuidValue(payload, "channelId")
+            ?? throw new ArgumentException("channelId is required.");
+        var channel = await GetChannelForCallerAsync(
+            caller,
+            channelId,
+            ct,
+            ContextAccessCapabilities.ReadCrossThreadHistory);
+        await RequireAllowedAsync(caller, channel, channel.ContextId, ContextAccessCapabilities.CommitExchange, ct);
+        return await SaveChannelAsync(channel with
+        {
+            CrossThreadOptedIn = optedIn,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        }, ct);
+    }
+
+    internal async Task<object> GetChannelPermissionsAsync(
+        RequestPrincipal caller,
+        Guid channelId,
+        CancellationToken ct = default)
+    {
+        var channel = await GetChannelForCallerAsync(caller, channelId, ct);
+        return new
+        {
+            channel.Id,
+            channel.OwnerAgentId,
+            channel.DefaultContextAgentId,
+            channel.AllowedAgentIds,
+            channel.ContextAllowedAgentIds,
+            channel.CrossThreadOptedIn,
+        };
+    }
+
+    internal Task<ContextChannelRecord> SynchronizeChannelAsync(
+        RequestPrincipal caller,
+        Guid channelId,
+        CancellationToken ct = default) =>
+        GetChannelForCallerAsync(caller, channelId, ct);
+
+    internal async Task<IReadOnlyList<ContextRecord>> ListContextsAsync(
+        RequestPrincipal caller,
+        CancellationToken ct = default)
+    {
+        RequireAuthenticatedAgent(caller);
+        var contexts = await _contexts.ListAsync(ct);
+        var visible = new List<ContextRecord>(contexts.Count);
+        foreach (var context in contexts)
+        {
+            try
+            {
+                await RequireContextAccessAsync(
+                    caller,
+                    context,
+                    ContextAccessCapabilities.ReadHistory,
+                    ct);
+                visible.Add(context);
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+
+        return visible.OrderByDescending(context => context.UpdatedAt).ToArray();
+    }
+
+    internal async Task<ContextRecord> GetContextForCallerAsync(
+        RequestPrincipal caller,
+        Guid contextId,
+        CancellationToken ct = default)
+    {
+        var context = await GetContextAsync(contextId, ct)
+            ?? throw new InvalidOperationException("The context was not found.");
+        await RequireContextAccessAsync(caller, context, ContextAccessCapabilities.ReadHistory, ct);
+        return context;
+    }
+
+    internal async Task<ContextRecord> CreateContextAsync(
+        RequestPrincipal caller,
+        JsonElement payload,
+        CancellationToken ct = default)
+    {
+        RequireAuthenticatedAgent(caller);
+        var callerId = ParseAgentId(caller.SubjectId);
+        var now = DateTimeOffset.UtcNow;
+        var context = new ContextRecord(
+            GuidValue(payload, "contextId") ?? Guid.NewGuid(),
+            StringValue(payload, "name") ?? "Context",
+            GuidValue(payload, "defaultAgentId") ?? callerId,
+            GuidList(payload, "allowedAgentIds"),
+            now,
+            now)
+        {
+            Enabled = true,
+        };
+        await RequireContextAccessAsync(caller, context, ContextAccessCapabilities.CreateThread, ct);
+        return await SaveContextAsync(context, ct);
+    }
+
+    internal async Task<ContextRecord> UpdateContextAsync(
+        RequestPrincipal caller,
+        JsonElement payload,
+        CancellationToken ct = default)
+    {
+        var contextId = GuidValue(payload, "contextId")
+            ?? throw new ArgumentException("contextId is required.");
+        var existing = await GetContextAsync(contextId, ct)
+            ?? throw new InvalidOperationException("The context was not found.");
+        await RequireContextAccessAsync(caller, existing, ContextAccessCapabilities.CommitExchange, ct);
+        var updated = existing with
+        {
+            Name = StringValue(payload, "name") ?? existing.Name,
+            DefaultAgentId = GuidValue(payload, "defaultAgentId") ?? existing.DefaultAgentId,
+            AllowedAgentIds = payload.TryGetProperty("allowedAgentIds", out _)
+                ? GuidList(payload, "allowedAgentIds")
+                : existing.AllowedAgentIds,
+            UpdatedAt = DateTimeOffset.UtcNow,
+            Enabled = payload.TryGetProperty("enabled", out var enabled)
+                ? enabled.ValueKind != JsonValueKind.False
+                : existing.Enabled,
+        };
+        return await SaveContextAsync(updated, ct);
+    }
+
+    internal async Task<ContextRecord> DeleteContextAsync(
+        RequestPrincipal caller,
+        Guid contextId,
+        CancellationToken ct = default)
+    {
+        var context = await GetContextForCallerAsync(caller, contextId, ct);
+        await RequireContextAccessAsync(caller, context, ContextAccessCapabilities.CommitExchange, ct);
+        await _contexts.DeleteAsync(Key(contextId), ct);
+        return context;
+    }
+
+    internal Task<ContextRecord> AssignContextAsync(
+        RequestPrincipal caller,
+        JsonElement payload,
+        CancellationToken ct = default) =>
+        ChangeContextAssignmentAsync(caller, payload, assign: true, ct);
+
+    internal Task<ContextRecord> UnassignContextAsync(
+        RequestPrincipal caller,
+        JsonElement payload,
+        CancellationToken ct = default) =>
+        ChangeContextAssignmentAsync(caller, payload, assign: false, ct);
+
+    internal async Task<ContextRecord> SetContextEnabledAsync(
+        RequestPrincipal caller,
+        JsonElement payload,
+        bool enabled,
+        CancellationToken ct = default)
+    {
+        var contextId = GuidValue(payload, "contextId")
+            ?? throw new ArgumentException("contextId is required.");
+        var context = await GetContextForCallerAsync(caller, contextId, ct);
+        await RequireContextAccessAsync(caller, context, ContextAccessCapabilities.CommitExchange, ct);
+        return await SaveContextAsync(context with { Enabled = enabled, UpdatedAt = DateTimeOffset.UtcNow }, ct);
+    }
+
+    internal async Task<object> GetContextPermissionsAsync(
+        RequestPrincipal caller,
+        Guid contextId,
+        CancellationToken ct = default)
+    {
+        var context = await GetContextForCallerAsync(caller, contextId, ct);
+        return new { context.Id, context.DefaultAgentId, context.AllowedAgentIds, context.Enabled };
+    }
+
+    internal Task<ContextRecord> SynchronizeContextAsync(
+        RequestPrincipal caller,
+        Guid contextId,
+        CancellationToken ct = default) =>
+        GetContextForCallerAsync(caller, contextId, ct);
+
+    internal async Task<IReadOnlyList<ContextThreadRecord>> ListThreadsForCallerAsync(
+        RequestPrincipal caller,
+        JsonElement payload,
+        CancellationToken ct = default)
+    {
+        var channelId = GuidValue(payload, "channelId")
+            ?? throw new ArgumentException("channelId is required.");
+        var channel = await GetChannelForCallerAsync(
+            caller,
+            channelId,
+            ct,
+            ContextAccessCapabilities.ReadCrossThreadHistory);
+        var threads = await _threads.Query()
+            .WhereIndex("channelId").EqualTo(channel.Id.ToString("N"))
+            .OrderByIndexDescending("updatedAt")
+            .ToListAsync(ct);
+        return threads;
+    }
+
+    internal async Task<ContextThreadRecord> GetThreadForCallerAsync(
+        RequestPrincipal caller,
+        Guid threadId,
+        CancellationToken ct = default)
+    {
+        await RequireThreadAccessAsync(caller, threadId, ContextAccessCapabilities.ReadHistory, ct);
+        return await GetThreadAsync(threadId, ct)
+            ?? throw new InvalidOperationException("The thread was not found.");
+    }
+
+    internal Task<ContextThreadRecord> CreateThreadFromPayloadAsync(
+        RequestPrincipal caller,
+        JsonElement payload,
+        CancellationToken ct = default)
+    {
+        var channelId = GuidValue(payload, "channelId")
+            ?? throw new ArgumentException("channelId is required.");
+        var name = StringValue(payload, "name") ?? "Thread";
+        return CreateThreadAsync(caller, channelId, name, GuidValue(payload, "contextId"), ct: ct);
+    }
+
+    internal async Task<ContextThreadRecord> UpdateThreadAsync(
+        RequestPrincipal caller,
+        JsonElement payload,
+        CancellationToken ct = default)
+    {
+        var threadId = GuidValue(payload, "threadId")
+            ?? throw new ArgumentException("threadId is required.");
+        var existing = await GetThreadForCallerAsync(caller, threadId, ct);
+        var updated = existing with
+        {
+            Name = StringValue(payload, "name") ?? existing.Name,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        };
+        await _threads.UpsertAsync(Key(updated.Id), updated, new
+        {
+            channelId = updated.ChannelId.ToString("N"),
+            contextId = updated.ContextId?.ToString("N"),
+            updatedAt = updated.UpdatedAt,
+        }, ct);
+        return updated;
+    }
+
+    internal async Task<ContextThreadRecord> DeleteThreadAsync(
+        RequestPrincipal caller,
+        Guid threadId,
+        CancellationToken ct = default)
+    {
+        var thread = await GetThreadForCallerAsync(caller, threadId, ct);
+        await _threads.DeleteAsync(Key(thread.Id), ct);
+        var messages = await _messages.Query().WhereIndex("threadId").EqualTo(thread.Id.ToString("N")).ToListAsync(ct);
+        foreach (var message in messages)
+            await _messages.DeleteAsync(Key(message.Id), ct);
+        return thread;
+    }
+
     internal async Task<ContextThreadRecord> CreateThreadAsync(
         RequestPrincipal caller,
         Guid channelId,
@@ -408,6 +785,77 @@ public sealed class ContextStore : IConversationStore
         return await EvaluateAsync(caller, channel, context, capability, ct);
     }
 
+    private async Task<ContextChannelRecord> ChangeChannelAssignmentAsync(
+        RequestPrincipal caller,
+        JsonElement payload,
+        bool assign,
+        CancellationToken ct)
+    {
+        var channelId = GuidValue(payload, "channelId")
+            ?? throw new ArgumentException("channelId is required.");
+        var agentId = GuidValue(payload, "agentId")
+            ?? throw new ArgumentException("agentId is required.");
+        var channel = await GetChannelForCallerAsync(caller, channelId, ct);
+        await RequireAllowedAsync(caller, channel, channel.ContextId, ContextAccessCapabilities.CommitExchange, ct);
+        var agents = channel.AllowedAgentIds
+            .Where(id => id != agentId)
+            .Concat(assign ? [agentId] : [])
+            .Distinct()
+            .ToArray();
+        return await SaveChannelAsync(channel with
+        {
+            AllowedAgentIds = agents,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        }, ct);
+    }
+
+    private async Task<ContextRecord> ChangeContextAssignmentAsync(
+        RequestPrincipal caller,
+        JsonElement payload,
+        bool assign,
+        CancellationToken ct)
+    {
+        var contextId = GuidValue(payload, "contextId")
+            ?? throw new ArgumentException("contextId is required.");
+        var agentId = GuidValue(payload, "agentId")
+            ?? throw new ArgumentException("agentId is required.");
+        var context = await GetContextForCallerAsync(caller, contextId, ct);
+        await RequireContextAccessAsync(caller, context, ContextAccessCapabilities.CommitExchange, ct);
+        var agents = context.AllowedAgentIds
+            .Where(id => id != agentId)
+            .Concat(assign ? [agentId] : [])
+            .Distinct()
+            .ToArray();
+        return await SaveContextAsync(context with
+        {
+            AllowedAgentIds = agents,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        }, ct);
+    }
+
+    private async Task RequireContextAccessAsync(
+        RequestPrincipal caller,
+        ContextRecord context,
+        string capability,
+        CancellationToken ct)
+    {
+        RequireAuthenticatedAgent(caller);
+        if (!context.Enabled)
+            throw new UnauthorizedAccessException("The context is disabled.");
+        var decision = await _policy.EvaluateAsync(new ContextAccessRequest(
+            caller,
+            Guid.Empty,
+            null,
+            [],
+            context.DefaultAgentId,
+            context.AllowedAgentIds,
+            false,
+            context.Id,
+            capability), ct);
+        if (!decision.Allowed && !IsAdministrator(caller))
+            throw new UnauthorizedAccessException($"{decision.Code}: {decision.Message}");
+    }
+
     private async Task RequireAllowedAsync(
         RequestPrincipal principal,
         ContextChannelRecord channel,
@@ -467,6 +915,38 @@ public sealed class ContextStore : IConversationStore
 
     private static Guid ParseAgentId(string subjectId) =>
         Guid.TryParse(subjectId, out var id) ? id : Guid.Empty;
+
+    private static bool IsAdministrator(RequestPrincipal caller) =>
+        caller.Roles?.Any(role => role.Equals("admin", StringComparison.OrdinalIgnoreCase)
+            || role.Equals("administrator", StringComparison.OrdinalIgnoreCase)) == true;
+
+    private static Guid? GuidValue(JsonElement payload, string name) =>
+        payload.TryGetProperty(name, out var value)
+        && value.ValueKind == JsonValueKind.String
+        && Guid.TryParse(value.GetString(), out var id)
+            ? id
+            : null;
+
+    private static bool BoolValue(JsonElement payload, string name) =>
+        payload.TryGetProperty(name, out var value)
+        && value.ValueKind == JsonValueKind.True;
+
+    private static string? StringValue(JsonElement payload, string name) =>
+        payload.TryGetProperty(name, out var value)
+        && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    private static IReadOnlyList<Guid> GuidList(JsonElement payload, string name) =>
+        payload.TryGetProperty(name, out var value)
+        && value.ValueKind == JsonValueKind.Array
+            ? value.EnumerateArray()
+                .Where(item => item.ValueKind == JsonValueKind.String
+                    && Guid.TryParse(item.GetString(), out _))
+                .Select(item => Guid.Parse(item.GetString()!))
+                .Distinct()
+                .ToArray()
+            : [];
 
     private static string Key(Guid id) => id.ToString("N");
 }

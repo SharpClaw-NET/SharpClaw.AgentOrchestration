@@ -38,9 +38,9 @@ public sealed class ModuleCompositionTests
             Assert.That(contextBuilder.Storage.Items.Select(item => item.StorageName), Is.EquivalentTo(
                 new[] { "channels", "contexts", "threads", "messages" }));
             Assert.That(permissionBuilder.Storage.Items.Select(item => item.StorageName), Is.EquivalentTo(
-                new[] { "policies", "grants", "approvals" }));
+                new[] { "policies", "grants", "approvals", "roles", "permission_sets" }));
             Assert.That(agentsBuilder.Storage.Items.Select(item => item.StorageName), Is.EquivalentTo(
-                new[] { "agents", "skills", "memory" }));
+                new[] { "agents", "skills", "memory", "costs", "synchronization" }));
             Assert.That(permissionBuilder.Contracts.Exports.Select(item => item.ContractName),
                 Does.Contain("sharpclaw.permission"));
             Assert.That(agentsBuilder.Contracts.Requires.Select(item => item.ContractName),
@@ -148,6 +148,227 @@ public sealed class ModuleCompositionTests
     }
 
     [Test]
+    public void ApiRouteMatricesPreserveTheFormerOwnerSurface()
+    {
+        Assert.Multiple(() =>
+        {
+            Assert.That(ContextEndpointContribution.ChannelRoutes, Has.Count.EqualTo(13));
+            Assert.That(ContextEndpointContribution.ChannelContextRoutes, Has.Count.EqualTo(12));
+            Assert.That(ContextEndpointContribution.ThreadRoutes, Has.Count.EqualTo(5));
+            Assert.That(ContextEndpointContribution.ThreadRoutes, Is.Unique);
+            Assert.That(ContextEndpointContribution.CreateThreadRoute, Is.EqualTo("/sharpclaw/context/threads"));
+            Assert.That(ContextEndpointContribution.ReadHistoryRoute, Is.EqualTo("/sharpclaw/context/history"));
+            Assert.That(ContextEndpointContribution.CommitExchangeRoute, Is.EqualTo("/sharpclaw/context/exchanges"));
+            Assert.That(AgentsEndpointContribution.AgentRoutes, Does.Contain("/sharpclaw/agents/list"));
+            Assert.That(AgentsEndpointContribution.AgentRoutes, Does.Contain("/sharpclaw/agents/get"));
+            Assert.That(AgentsEndpointContribution.AgentRoutes, Does.Contain("/sharpclaw/agents/delete"));
+            Assert.That(AgentsEndpointContribution.AgentRoutes, Does.Contain("/sharpclaw/agents/role"));
+            Assert.That(AgentsEndpointContribution.AgentRoutes, Does.Contain("/sharpclaw/agents/synchronize"));
+            Assert.That(AgentsEndpointContribution.AgentRoutes, Does.Contain("/sharpclaw/agents/cost"));
+            Assert.That(PermissionEndpointContribution.PolicyRoutes, Has.Count.EqualTo(4));
+            Assert.That(PermissionEndpointContribution.RoleRoutes, Has.Count.EqualTo(5));
+            Assert.That(PermissionEndpointContribution.PermissionSetRoutes, Has.Count.EqualTo(5));
+        });
+    }
+
+    [Test]
+    public void PublicApiActionsAreRegisteredForEachOwner()
+    {
+        var contextBuilder = new RecordingBuilder();
+        var permissionBuilder = new RecordingBuilder();
+        var agentsBuilder = new RecordingBuilder();
+
+        new ContextModule().Configure(contextBuilder);
+        new TwoTierPermissionModule().Configure(permissionBuilder);
+        new AgentsModule().Configure(agentsBuilder);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(contextBuilder.Actions.Items.OfType<ActionDescriptor<ContextApiAction, JsonElement>>()
+                .Select(item => item.Key.Value), Does.Contain("context.api.dispatch"));
+            Assert.That(permissionBuilder.Actions.Items.OfType<ActionDescriptor<PermissionApiAction, JsonElement>>()
+                .Select(item => item.Key.Value), Does.Contain("permission.api.dispatch"));
+            Assert.That(agentsBuilder.Actions.Items.OfType<ActionDescriptor<AgentsApiAction, JsonElement>>()
+                .Select(item => item.Key.Value), Does.Contain("agents.api.dispatch"));
+        });
+    }
+
+    [Test]
+    public void CliCommandsCoverTheOwnerAdministrationMatrices()
+    {
+        Assert.Multiple(() =>
+        {
+            Assert.That(ContextCliHandler.Commands, Has.Count.EqualTo(29));
+            Assert.That(PermissionCliHandler.Commands, Has.Count.EqualTo(18));
+            Assert.That(AgentsCliHandler.Commands, Has.Count.EqualTo(12));
+        });
+
+        var contextApplication = new RecordingApplicationBuilder();
+        var permissionApplication = new RecordingApplicationBuilder();
+        var agentsApplication = new RecordingApplicationBuilder();
+        new ContextModule().ConfigureApplication(contextApplication);
+        new TwoTierPermissionModule().ConfigureApplication(permissionApplication);
+        new AgentsModule().ConfigureApplication(agentsApplication);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(contextApplication.Cli.Items, Has.Count.EqualTo(ContextCliHandler.Commands.Count));
+            Assert.That(permissionApplication.Cli.Items, Has.Count.EqualTo(PermissionCliHandler.Commands.Count));
+            Assert.That(agentsApplication.Cli.Items, Has.Count.EqualTo(AgentsCliHandler.Commands.Count));
+        });
+    }
+
+    [Test]
+    public async Task ModuleActionPipelineUsesTheHostDispatcher()
+    {
+        var dispatcher = new RecordingActionDispatcher();
+        var pipeline = new ModuleActionPipeline(
+            dispatcher,
+            new ActionPipelineSnapshot("test", []));
+        var action = new ContextApiAction(
+            ContextApiOperations.ListChannels,
+            JsonSerializer.SerializeToElement(new { }),
+            RequestPrincipal.Anonymous);
+
+        var result = await pipeline.RunRequiredAsync(
+            ContextModule.ApiDescriptor,
+            action,
+            (value, _) => ValueTask.FromResult(JsonSerializer.SerializeToElement(value.Operation)));
+
+        Assert.That(result.GetString(), Is.EqualTo(ContextApiOperations.ListChannels));
+        Assert.That(dispatcher.RequiredCalls, Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task SameLevelApprovalRequiresTheApprovedCapability()
+    {
+        var gateway = new InMemoryStorageGateway();
+        var store = new PermissionPolicyStore(gateway);
+        var policy = new TwoTierPermissionPolicy(store);
+        var admin = new RequestPrincipal(Guid.NewGuid().ToString("D"), Roles: new HashSet<string>(["admin"]));
+        var approver = new RequestPrincipal(Guid.NewGuid().ToString("D"));
+        var subject = Guid.NewGuid().ToString("D");
+
+        await store.SaveAsync(new PermissionPolicyRecord(
+            approver.SubjectId,
+            [],
+            ["approve_permissions"],
+            [],
+            PermissionClearance.Independent,
+            true,
+            [],
+            null,
+            DateTimeOffset.UtcNow));
+        await policy.GrantAsync(admin, new PermissionGrantAction(
+            subject,
+            "read_memory",
+            "global",
+            PermissionClearance.ApprovedBySameLevelUser));
+
+        Assert.ThrowsAsync<UnauthorizedAccessException>(async () =>
+            await policy.ApproveAsync(approver, new PermissionApproveAction(
+                subject, "read_memory", "global")));
+
+        await store.SaveAsync(new PermissionPolicyRecord(
+            approver.SubjectId,
+            [],
+            ["approve_permissions", "read_memory"],
+            [],
+            PermissionClearance.Independent,
+            true,
+            [],
+            null,
+            DateTimeOffset.UtcNow));
+        Assert.DoesNotThrowAsync(async () =>
+            await policy.ApproveAsync(approver, new PermissionApproveAction(
+                subject, "read_memory", "global")));
+    }
+
+    [Test]
+    public async Task ContextScopeResolutionUsesChannelThenContextThenAgentRole()
+    {
+        var gateway = new InMemoryStorageGateway();
+        var store = new PermissionPolicyStore(gateway);
+        var policy = new TwoTierPermissionPolicy(store);
+        var agentId = Guid.NewGuid();
+        var caller = new RequestPrincipal(
+            agentId.ToString("D"),
+            Roles: new HashSet<string>(["support"]));
+        await store.SaveAsync(new PermissionPolicyRecord(
+            caller.SubjectId,
+            ["support"],
+            [ContextAccessCapabilities.ReadCrossThreadHistory],
+            [],
+            PermissionClearance.Independent,
+            false,
+            [],
+            null,
+            DateTimeOffset.UtcNow));
+
+        var channel = Guid.NewGuid();
+        var context = Guid.NewGuid();
+        var channelDecision = await policy.EvaluateDetailedAsync(new ContextAccessRequest(
+            caller,
+            channel,
+            agentId,
+            [],
+            agentId,
+            [],
+            false,
+            context));
+        var contextDecision = await policy.EvaluateDetailedAsync(new ContextAccessRequest(
+            caller,
+            channel,
+            Guid.NewGuid(),
+            [],
+            agentId,
+            [],
+            false,
+            context));
+        var roleDecision = await policy.EvaluateDetailedAsync(new ContextAccessRequest(
+            caller,
+            channel,
+            Guid.NewGuid(),
+            [],
+            Guid.NewGuid(),
+            [],
+            false,
+            context));
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(channelDecision.Code, Does.StartWith("channel_"));
+            Assert.That(contextDecision.Code, Does.StartWith("context_"));
+            Assert.That(roleDecision.Code, Does.StartWith("agent-role_"));
+        });
+    }
+
+    [Test]
+    public async Task AssignedPermissionRoleSuppliesPersistedCapability()
+    {
+        var gateway = new InMemoryStorageGateway();
+        var store = new PermissionPolicyStore(gateway);
+        var policy = new TwoTierPermissionPolicy(store);
+        var subject = Guid.NewGuid().ToString("D");
+        await store.SaveRoleAsync(new PermissionRoleRecord(
+            "support",
+            "Support",
+            null,
+            ["read_memory"],
+            PermissionClearance.ApprovedBySameLevelUser,
+            [subject],
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow));
+
+        var decision = await policy.EvaluateCapabilityAsync(
+            new RequestPrincipal(subject),
+            new PermissionEvaluateAction(subject, "read_memory", "global", false));
+
+        Assert.That(decision.Allowed, Is.True);
+        Assert.That(decision.Clearance, Is.EqualTo(PermissionClearance.ApprovedBySameLevelUser));
+    }
+
+    [Test]
     public void PermissionClearancePreservesFormerNumericIdentities()
     {
         var expected = new[]
@@ -212,7 +433,10 @@ public sealed class ModuleCompositionTests
             Guid.NewGuid(), thread.Id, source.Id, "user", "retained history", "tester",
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
 
-        var handler = new ContextToolHandler(store);
+        var contextGateway = new ContextActionGateway(
+            new PassthroughActionPipeline(),
+            new ContextApiActionExecutor(store));
+        var handler = new ContextToolHandler(contextGateway);
         using var arguments = JsonDocument.Parse($$"""{"channelId":"{{current.Id:D}}"}""");
         var result = await handler.InvokeAsync(new ToolInvocation(
             Guid.NewGuid(), null, "call", ContextModule.ListThreadsTool,
@@ -371,7 +595,7 @@ public sealed class ModuleCompositionTests
         await store.SaveAsync(new PermissionPolicyRecord(
             approver.SubjectId,
             [],
-            ["approve_permissions"],
+            ["approve_permissions", "read_memory", "read_cross_thread_history"],
             [],
             PermissionClearance.Independent,
             true,
@@ -461,7 +685,7 @@ public sealed class ModuleCompositionTests
         await store.SaveAsync(new PermissionPolicyRecord(
             approver.SubjectId,
             [],
-            ["approve_permissions"],
+            ["approve_permissions", "read_memory", "read_cross_thread_history"],
             [],
             PermissionClearance.Independent,
             true,
@@ -815,9 +1039,12 @@ public sealed class ModuleCompositionTests
 
     private sealed class RecordingCli : ICliContributionBuilder
     {
+        public List<ModuleCliCommandDescriptor> Items { get; } = [];
+
         public void Add<THandler>(ModuleCliCommandDescriptor descriptor)
             where THandler : IModuleCliHandler
         {
+            Items.Add(descriptor);
         }
     }
 
@@ -906,6 +1133,42 @@ public sealed class ModuleCompositionTests
             where TResolver : IChatProfileResolver => Profiles.Add(typeof(TResolver));
         public void AddContextContributor<TContributor>() where TContributor : IChatContextContributor =>
             Contributors.Add(typeof(TContributor));
+    }
+
+    private sealed class PassthroughActionPipeline : IModuleActionPipeline
+    {
+        public ValueTask<TResult> RunRequiredAsync<TAction, TResult>(
+            ActionDescriptor<TAction, TResult> descriptor,
+            TAction action,
+            Func<TAction, CancellationToken, ValueTask<TResult>> terminal,
+            CancellationToken ct = default) =>
+            terminal(action, ct);
+    }
+
+    private sealed class RecordingActionDispatcher : IActionDispatcher
+    {
+        public int RequiredCalls { get; private set; }
+
+        public ValueTask<IActionOutcome<TResult>> RunAsync<TAction, TResult>(
+            ActionDescriptor<TAction, TResult> descriptor,
+            TAction action,
+            Func<TAction, CancellationToken, ValueTask<TResult>> terminal,
+            ActionPipelineSnapshot snapshot,
+            CancellationToken ct)
+        {
+            throw new NotSupportedException();
+        }
+
+        public async ValueTask<TResult> RunRequiredAsync<TAction, TResult>(
+            ActionDescriptor<TAction, TResult> descriptor,
+            TAction action,
+            Func<TAction, CancellationToken, ValueTask<TResult>> terminal,
+            ActionPipelineSnapshot snapshot,
+            CancellationToken ct)
+        {
+            RequiredCalls++;
+            return await terminal(action, ct);
+        }
     }
 
     private sealed class InMemoryStorageGateway : IModuleStorageGateway

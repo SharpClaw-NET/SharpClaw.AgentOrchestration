@@ -28,12 +28,25 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
         ActionSafePoint.AfterCommit,
     ];
 
+    public static readonly ActionDescriptor<AgentsApiAction, JsonElement> ApiDescriptor =
+        new(new("agents.api.dispatch"), 1, "agents.api",
+            ActionInterceptionCapabilities.Inspect
+            | ActionInterceptionCapabilities.Cancel
+            | ActionInterceptionCapabilities.Observe,
+            true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
+        {
+            SafePoints = SafePoints,
+        };
+
     public ModuleIdentity Identity { get; } = new(ModuleIdValue, "SharpClaw Agents", "agents");
 
     public void Configure(ISharpClawModuleBuilder module)
     {
         module.Services.AddScoped<AgentsCatalog>();
         module.Services.AddScoped<AgentsToolHandler>();
+        module.Services.AddScoped<AgentsApiActionExecutor>();
+        module.Services.AddScoped<IAgentsActionGateway, AgentsActionGateway>();
+        module.Services.AddScoped<IModuleActionPipeline, ModuleActionPipeline>();
         module.Services.AddScoped<IAgentsActionExecutor, AgentsActionExecutor>();
         module.Services.AddScoped<AgentsCreateAuthorizationHook>();
         module.Services.AddScoped<AgentsCliHandler>();
@@ -45,6 +58,8 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
 
         foreach (var storage in StorageContracts)
             module.Storage.Add(storage);
+
+        module.Actions.Add(ApiDescriptor);
 
         module.Actions.Add(new ActionDescriptor<AgentsCreateAction, AgentRecord>(
             new("agents.create"), 1, "agents",
@@ -141,20 +156,21 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
     public void ConfigureApplication(ISharpClawApplicationBuilder application)
     {
         application.Endpoints.Add<AgentsEndpointContribution>();
-        application.Cli.Add<AgentsCliHandler>(new ModuleCliCommandDescriptor(
-            "agents-list",
-            ["agent-list"],
-            "List configured agents.",
-            new JsonSchemaReference("sharpclaw.agents.cli.arguments", 1),
-            new JsonSchemaReference("sharpclaw.agents.cli.result", 1),
-            RequiresAdministrator: true));
-        application.Cli.Add<AgentsCliHandler>(new ModuleCliCommandDescriptor(
-            "skills-list",
-            ["skill-list"],
-            "List configured skills.",
-            new JsonSchemaReference("sharpclaw.agents.skills.cli.arguments", 1),
-            new JsonSchemaReference("sharpclaw.agents.skills.cli.result", 1),
-            RequiresAdministrator: true));
+        foreach (var command in AgentsCliHandler.Commands)
+        {
+            application.Cli.Add<AgentsCliHandler>(new ModuleCliCommandDescriptor(
+                command.Name,
+                command.Name switch
+                {
+                    "agents-list" => ["agent-list"],
+                    "skills-list" => ["skill-list"],
+                    _ => [],
+                },
+                $"Execute the Agents {command.Operation} operation.",
+                new JsonSchemaReference("sharpclaw.agents.cli.arguments", 1),
+                new JsonSchemaReference("sharpclaw.agents.cli.result", 1),
+                RequiresAdministrator: true));
+        }
     }
 
     public ValueTask StartAsync(ModuleStartContext context, CancellationToken ct) => ValueTask.CompletedTask;
@@ -169,6 +185,10 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
             [new("name", ModuleStorageIndexValueKind.String), new("updatedAt", ModuleStorageIndexValueKind.DateTime)]),
         Storage(AgentsCatalog.MemoryStorage, "Agent-owned memory records and update order.",
             [new("agentId", ModuleStorageIndexValueKind.String), new("memoryKey", ModuleStorageIndexValueKind.String), new("updatedAt", ModuleStorageIndexValueKind.DateTime)]),
+        Storage(AgentsCatalog.CostsStorage, "Agent model usage and cost totals.",
+            [new("agentId", ModuleStorageIndexValueKind.String), new("updatedAt", ModuleStorageIndexValueKind.DateTime)]),
+        Storage(AgentsCatalog.SynchronizationStorage, "Agent provider synchronization state.",
+            [new("agentId", ModuleStorageIndexValueKind.String), new("updatedAt", ModuleStorageIndexValueKind.DateTime)]),
     ];
 
     private static ModuleStorageContractDescriptor Storage(

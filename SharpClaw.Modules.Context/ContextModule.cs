@@ -25,6 +25,16 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
         ActionSafePoint.AfterCommit,
     ];
 
+    public static readonly ActionDescriptor<ContextApiAction, JsonElement> ApiDescriptor =
+        new(new("context.api.dispatch"), 1, "context.api",
+            ActionInterceptionCapabilities.Inspect
+            | ActionInterceptionCapabilities.Cancel
+            | ActionInterceptionCapabilities.Observe,
+            true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
+        {
+            SafePoints = SafePoints,
+        };
+
     public ModuleIdentity Identity { get; } = new(ModuleIdValue, "SharpClaw Context", "ctx");
 
     public void Configure(ISharpClawModuleBuilder module)
@@ -35,6 +45,9 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
         module.Services.AddScoped<IChatContextContributor, ContextHistoryContributor>();
         module.Services.AddScoped<ContextToolHandler>();
         module.Services.AddScoped<IContextActionExecutor, ContextActionExecutor>();
+        module.Services.AddScoped<ContextApiActionExecutor>();
+        module.Services.AddScoped<IContextActionGateway, ContextActionGateway>();
+        module.Services.AddScoped<IModuleActionPipeline, ModuleActionPipeline>();
         module.Services.AddScoped<ContextCommitAuthorizationHook>();
         module.Services.AddScoped<ContextCliHandler>();
 
@@ -43,6 +56,8 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
 
         foreach (var storage in StorageContracts)
             module.Storage.Add(storage);
+
+        module.Actions.Add(ApiDescriptor);
 
         module.Actions.Add(new ActionDescriptor<ContextCreateThreadAction, ContextThreadRecord>(
             new("context.thread.create"), 1, "context.thread",
@@ -99,12 +114,17 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
     public void ConfigureApplication(ISharpClawApplicationBuilder application)
     {
         application.Endpoints.Add<ContextEndpointContribution>();
-        application.Cli.Add<ContextCliHandler>(new ModuleCliCommandDescriptor(
-            "ctx-thread-list",
-            ["ctxthreads"],
-            "List accessible Context threads.",
-            new JsonSchemaReference("sharpclaw.context.cli.arguments", 1),
-            new JsonSchemaReference("sharpclaw.context.cli.result", 1)));
+        foreach (var command in ContextCliHandler.Commands)
+        {
+            application.Cli.Add<ContextCliHandler>(new ModuleCliCommandDescriptor(
+                command.Name,
+                command.Name.Equals("ctx-thread-list", StringComparison.OrdinalIgnoreCase)
+                    ? ["ctxthreads"]
+                    : [],
+                $"Execute the Context {command.Operation} operation.",
+                new JsonSchemaReference("sharpclaw.context.cli.arguments", 1),
+                new JsonSchemaReference("sharpclaw.context.cli.result", 1)));
+        }
     }
 
     public ValueTask StartAsync(ModuleStartContext context, CancellationToken ct) =>

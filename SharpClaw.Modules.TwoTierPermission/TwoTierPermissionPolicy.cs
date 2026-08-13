@@ -1,4 +1,5 @@
 using SharpClaw.Contracts.Modules;
+using System.Text.Json;
 using SharpClaw.Modules.AgentOrchestration.Contracts;
 
 namespace SharpClaw.Modules.TwoTierPermission;
@@ -29,13 +30,7 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
         var capability = NormalizeCapability(request.Capability);
         var policy = await store.GetAsync(request.Principal.SubjectId, ct);
         var isAdministrator = IsAdministrator(request.Principal, policy);
-        var requestedScope = RequestedScope(request);
-        var grant = await FindUsableGrantAsync(
-            request.Principal.SubjectId,
-            capability,
-            requestedScope,
-            request.ContextId,
-            ct);
+        var grant = await FindUsableGrantForRequestAsync(request, capability, ct);
         var clearance = EffectiveClearance(
             policy?.Clearance ?? PermissionClearance.Unset,
             grant?.Clearance);
@@ -53,13 +48,9 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
             return PermissionDecision.Deny("clearance_denied", "The caller has no usable clearance.", 1, clearance);
 
         var callerAgentId = ParseAgentId(request.Principal.SubjectId);
-        var isAssigned = isAdministrator
-            || request.OwnerAgentId == callerAgentId
-            || request.AllowedAgentIds.Contains(callerAgentId)
-            || request.DefaultContextAgentId == callerAgentId
-            || request.ContextAllowedAgentIds.Contains(callerAgentId);
-        if (!isAssigned)
-            return PermissionDecision.Deny("scope_denied", "The caller is not assigned to the source channel or context.", 2, clearance);
+        var assignment = ResolveAssignment(request, policy, callerAgentId);
+        if (!isAdministrator && assignment is null)
+            return PermissionDecision.Deny("scope_denied", "The caller is not assigned to the source channel, context, or agent role.", 2, clearance);
 
         var requiresOptIn = grant?.RequireSourceOptIn
             ?? policy?.RequireSourceOptIn
@@ -78,7 +69,7 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
         }
 
         return PermissionDecision.Allow(
-            isAdministrator ? "administrator" : "assigned_and_authorized",
+            isAdministrator ? "administrator" : $"{assignment}_assigned_and_authorized",
             2,
             isAdministrator
                 ? PermissionClearance.Independent
@@ -244,10 +235,190 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
         var targetPolicy = await store.GetAsync(action.SubjectId, ct);
         if (!IsAdministrator(caller, callerPolicy))
         {
-            EnsureApprovalRoute(grant.Clearance, caller, callerPolicy, targetPolicy);
+            EnsureApprovalRoute(grant.Clearance, capability, caller, callerPolicy, targetPolicy);
         }
 
         await store.ApproveAsync(caller, action with { Capability = capability, Scope = scope }, ct);
+    }
+
+    public async Task<IReadOnlyList<PermissionPolicyRecord>> ListPoliciesAsync(
+        RequestPrincipal caller,
+        CancellationToken ct = default)
+    {
+        await RequireAdministrationAsync(caller, [], PermissionClearance.Unset, ct);
+        return await store.ListAsync(ct);
+    }
+
+    public async Task<PermissionPolicyRecord> GetPolicyAsync(
+        RequestPrincipal caller,
+        string? subjectId,
+        CancellationToken ct = default)
+    {
+        var target = string.IsNullOrWhiteSpace(subjectId) ? caller.SubjectId : subjectId.Trim();
+        if (!target.Equals(caller.SubjectId, StringComparison.Ordinal))
+            await RequireAdministrationAsync(caller, [], PermissionClearance.Unset, ct);
+        return await store.GetAsync(target, ct)
+            ?? throw new InvalidOperationException("The permission policy was not found.");
+    }
+
+    public async Task<PermissionPolicyRecord> SavePolicyAsync(
+        RequestPrincipal caller,
+        PermissionPolicyRecord policy,
+        CancellationToken ct = default)
+    {
+        await RequireAdministrationAsync(caller, policy.Capabilities, policy.Clearance, ct);
+        await store.SaveAsync(policy, ct);
+        return policy;
+    }
+
+    public async Task<PermissionPolicyRecord> DeletePolicyAsync(
+        RequestPrincipal caller,
+        string? subjectId,
+        CancellationToken ct = default)
+    {
+        var target = string.IsNullOrWhiteSpace(subjectId) ? caller.SubjectId : subjectId.Trim();
+        await RequireAdministrationAsync(caller, [], PermissionClearance.Unset, ct);
+        var policy = await store.GetAsync(target, ct)
+            ?? throw new InvalidOperationException("The permission policy was not found.");
+        await store.DeleteAsync(target, ct);
+        return policy;
+    }
+
+    public async Task<IReadOnlyList<PermissionRoleRecord>> ListRolesAsync(
+        RequestPrincipal caller,
+        CancellationToken ct = default)
+    {
+        await RequireAdministrationAsync(caller, [], PermissionClearance.Unset, ct);
+        return await store.ListRolesAsync(ct);
+    }
+
+    public async Task<PermissionRoleRecord> GetRoleAsync(
+        RequestPrincipal caller,
+        string? roleId,
+        CancellationToken ct = default)
+    {
+        await RequireAdministrationAsync(caller, [], PermissionClearance.Unset, ct);
+        if (string.IsNullOrWhiteSpace(roleId))
+            throw new ArgumentException("roleId is required.");
+        return await store.GetRoleAsync(roleId, ct)
+            ?? throw new InvalidOperationException("The permission role was not found.");
+    }
+
+    public async Task<PermissionRoleRecord> SaveRoleAsync(
+        RequestPrincipal caller,
+        PermissionRoleRecord role,
+        CancellationToken ct = default)
+    {
+        await RequireAdministrationAsync(caller, role.Capabilities, role.Clearance, ct);
+        await store.SaveRoleAsync(role, ct);
+        return role;
+    }
+
+    public async Task<PermissionRoleRecord> DeleteRoleAsync(
+        RequestPrincipal caller,
+        string? roleId,
+        CancellationToken ct = default)
+    {
+        await RequireAdministrationAsync(caller, [], PermissionClearance.Unset, ct);
+        if (string.IsNullOrWhiteSpace(roleId))
+            throw new ArgumentException("roleId is required.");
+        var role = await store.GetRoleAsync(roleId, ct)
+            ?? throw new InvalidOperationException("The permission role was not found.");
+        await store.DeleteRoleAsync(role.RoleId, ct);
+        return role;
+    }
+
+    public async Task<PermissionRoleRecord> AssignRoleAsync(
+        RequestPrincipal caller,
+        JsonElement payload,
+        CancellationToken ct = default)
+    {
+        await RequireAdministrationAsync(caller, [], PermissionClearance.Unset, ct);
+        return await store.AssignRoleAsync(
+            StringValue(payload, "roleId"),
+            StringValue(payload, "subjectId"),
+            BoolValue(payload, "assign"),
+            ct);
+    }
+
+    public async Task<IReadOnlyList<PermissionSetRecord>> ListPermissionSetsAsync(
+        RequestPrincipal caller,
+        CancellationToken ct = default)
+    {
+        await RequireAdministrationAsync(caller, [], PermissionClearance.Unset, ct);
+        return await store.ListPermissionSetsAsync(ct);
+    }
+
+    public async Task<PermissionSetRecord> GetPermissionSetAsync(
+        RequestPrincipal caller,
+        string? permissionSetId,
+        CancellationToken ct = default)
+    {
+        await RequireAdministrationAsync(caller, [], PermissionClearance.Unset, ct);
+        if (string.IsNullOrWhiteSpace(permissionSetId))
+            throw new ArgumentException("permissionSetId is required.");
+        return await store.GetPermissionSetAsync(permissionSetId, ct)
+            ?? throw new InvalidOperationException("The permission set was not found.");
+    }
+
+    public async Task<PermissionSetRecord> SavePermissionSetAsync(
+        RequestPrincipal caller,
+        PermissionSetRecord permissionSet,
+        CancellationToken ct = default)
+    {
+        await RequireAdministrationAsync(caller, permissionSet.Capabilities, PermissionClearance.Unset, ct);
+        await store.SavePermissionSetAsync(permissionSet, ct);
+        return permissionSet;
+    }
+
+    public async Task<PermissionSetRecord> DeletePermissionSetAsync(
+        RequestPrincipal caller,
+        string? permissionSetId,
+        CancellationToken ct = default)
+    {
+        await RequireAdministrationAsync(caller, [], PermissionClearance.Unset, ct);
+        if (string.IsNullOrWhiteSpace(permissionSetId))
+            throw new ArgumentException("permissionSetId is required.");
+        var permissionSet = await store.GetPermissionSetAsync(permissionSetId, ct)
+            ?? throw new InvalidOperationException("The permission set was not found.");
+        await store.DeletePermissionSetAsync(permissionSet.PermissionSetId, ct);
+        return permissionSet;
+    }
+
+    public async Task<PermissionSetRecord> AssignPermissionSetAsync(
+        RequestPrincipal caller,
+        JsonElement payload,
+        CancellationToken ct = default)
+    {
+        await RequireAdministrationAsync(caller, [], PermissionClearance.Unset, ct);
+        return await store.AssignPermissionSetAsync(
+            StringValue(payload, "permissionSetId"),
+            StringValue(payload, "subjectId"),
+            BoolValue(payload, "assign"),
+            ct);
+    }
+
+    private async Task RequireAdministrationAsync(
+        RequestPrincipal caller,
+        IReadOnlyList<string> capabilities,
+        PermissionClearance clearance,
+        CancellationToken ct)
+    {
+        RequireAuthenticated(caller);
+        var callerPolicy = await store.GetAsync(caller.SubjectId, ct);
+        if (IsAdministrator(caller, callerPolicy))
+            return;
+        if (!HasCapability(callerPolicy, ManagePermissionsCapability))
+            throw new UnauthorizedAccessException("The caller lacks permission-management authority.");
+        if (clearance is PermissionClearance.Independent or PermissionClearance.Restricted
+            || clearance > callerPolicy!.Clearance)
+            throw new UnauthorizedAccessException("The caller cannot assign the requested clearance.");
+        foreach (var capability in capabilities)
+        {
+            if (!HasCapability(callerPolicy, capability))
+                throw new UnauthorizedAccessException(
+                    $"The caller cannot assign capability '{capability}'.");
+        }
     }
 
     private async Task EnsureDelegationAuthorityAsync(
@@ -353,10 +524,55 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
             throw new UnauthorizedAccessException("A hard denial blocks this capability.");
     }
 
-    private static string RequestedScope(ContextAccessRequest request) =>
-        request.ContextId is { } contextId
-            ? $"context:{contextId:N}"
-            : $"channel:{request.ChannelId:N}";
+    private async Task<PermissionGrantRecord?> FindUsableGrantForRequestAsync(
+        ContextAccessRequest request,
+        string capability,
+        CancellationToken ct)
+    {
+        foreach (var scope in RequestedScopes(request))
+        {
+            var grant = await FindUsableGrantAsync(
+                request.Principal.SubjectId,
+                capability,
+                scope,
+                ParseAgentId(request.Principal.SubjectId),
+                ct);
+            if (grant is not null)
+                return grant;
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<string> RequestedScopes(ContextAccessRequest request)
+    {
+        if (request.ChannelId != Guid.Empty)
+            yield return $"channel:{request.ChannelId:N}";
+        if (request.ContextId is { } contextId)
+            yield return $"context:{contextId:N}";
+        var agentId = ParseAgentId(request.Principal.SubjectId);
+        if (agentId != Guid.Empty)
+            yield return $"agent:{agentId:N}";
+        yield return "global";
+    }
+
+    private static string? ResolveAssignment(
+        ContextAccessRequest request,
+        PermissionPolicyRecord? policy,
+        Guid callerAgentId)
+    {
+        if (request.OwnerAgentId == callerAgentId
+            || request.AllowedAgentIds.Contains(callerAgentId))
+            return "channel";
+        if (request.DefaultContextAgentId == callerAgentId
+            || request.ContextAllowedAgentIds.Contains(callerAgentId))
+            return "context";
+        if (policy?.Roles is { Count: > 0 }
+            && request.Principal.Roles is { Count: > 0 }
+            && policy.Roles.Any(role => request.Principal.Roles.Contains(role)))
+            return "agent-role";
+        return null;
+    }
 
     private static string NormalizeCapability(string? capability) =>
         string.IsNullOrWhiteSpace(capability)
@@ -391,6 +607,7 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
 
     private static void EnsureApprovalRoute(
         PermissionClearance clearance,
+        string capability,
         RequestPrincipal caller,
         PermissionPolicyRecord? callerPolicy,
         PermissionPolicyRecord? targetPolicy)
@@ -404,6 +621,13 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
 
         if (callerPolicy.Clearance < clearance)
             throw new UnauthorizedAccessException("The approver does not hold the required clearance.");
+
+        if (clearance == PermissionClearance.ApprovedBySameLevelUser
+            && !HasCapability(callerPolicy, capability))
+        {
+            throw new UnauthorizedAccessException(
+                "A same-level approver must hold the approved capability.");
+        }
 
         var listed = clearance switch
         {
@@ -454,6 +678,17 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
     private static bool IsAdministratorRole(string role) =>
         role.Equals("admin", StringComparison.OrdinalIgnoreCase)
         || role.Equals("administrator", StringComparison.OrdinalIgnoreCase);
+
+    private static string StringValue(JsonElement payload, string name) =>
+        payload.TryGetProperty(name, out var value)
+        && value.ValueKind == JsonValueKind.String
+        && !string.IsNullOrWhiteSpace(value.GetString())
+            ? value.GetString()!
+            : throw new ArgumentException($"{name} is required.");
+
+    private static bool BoolValue(JsonElement payload, string name) =>
+        payload.TryGetProperty(name, out var value)
+        && value.ValueKind == JsonValueKind.True;
 
     private static void RequireAuthenticated(RequestPrincipal caller)
     {
