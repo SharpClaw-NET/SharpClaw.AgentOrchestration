@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <AssemblyName>SharpClaw.AgentOrchestration.Contracts</AssemblyName>
+    <RootNamespace>SharpClaw.Modules.AgentOrchestration.Contracts</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SharpClaw.Contracts" />
+  </ItemGroup>
+</Project>

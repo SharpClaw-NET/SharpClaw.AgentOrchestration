@@ -1,18 +1,11 @@
 # SharpClaw Agent Orchestration
 
-SharpClaw Agent Orchestration is a runtime-loadable SharpClaw module package.
-The package id is `SharpClaw.Modules.AgentOrchestration`, the module id is
-`sharpclaw_agent_orchestration`, and SharpClaw loads the sidecar payload from
-the package `sharpclaw` directory through
-`SharpClaw.Modules.AgentOrchestration.dll`.
+This repository provides the package-owned Context, Two Tier Permission, and Agents modules for SharpClaw.
 
-The module contributes the `ao` tool prefix, sub-agent creation and management,
-skill access, custom agent and channel headers, and cross-thread context tools.
-It is enabled by default in `module.json`, so a compatible SharpClaw host can
-discover and activate it without a local source checkout.
+`SharpClaw.Modules.Context` owns Threads, Channels, Contexts, conversation history, and context assembly. `SharpClaw.Modules.TwoTierPermission` owns clearance, scope, denials, delegation, grants, and approvals. `SharpClaw.Modules.Agents` owns Agents, Skills, Memory, profiles, and management tools.
 
-Build and package from the repository root with `dotnet restore`,
-`dotnet build`, `dotnet test`, and `dotnet pack -c Release`. The NuGet package
-intentionally carries the runtime payload under `sharpclaw`, including
-`module.json`, the module assembly, the `.deps.json` file, and package-local
-dependency assemblies required by the sidecar load path.
+The modules use current `SharpClaw.Contracts` module builders, declared storage contracts, `ModuleDocumentStore<T>`, `IModuleStorageGateway`, and `IModuleDbContextFactory`. Jobs and Events remain kernel-owned. The packages use declared module boundaries and contain no host project references.
+
+All coordinated packages use version `0.5.0-beta.1`. The package payload places each module manifest, module assembly, dependency graph, and package-local dependency assemblies under `sharpclaw\`. The package metadata uses this repository and the `AGPL-3.0-only` license.
+
+Run `dotnet restore`, `dotnet build`, `dotnet test`, and `dotnet pack -c Release` from the repository root. Publication is an owner-controlled step and is outside this repository change.

@@ -4,10 +4,13 @@
     <Nullable>enable</Nullable>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
     <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
-    <Version>0.1.1-beta.1</Version>
-    <AssemblyVersion>0.1.1.0</AssemblyVersion>
-    <FileVersion>0.1.1.0</FileVersion>
-    <InformationalVersion>0.1.1-beta.1</InformationalVersion>
+    <Version>0.5.0-beta.1</Version>
+    <AssemblyVersion>0.5.0.0</AssemblyVersion>
+    <FileVersion>0.5.0.0</FileVersion>
+    <InformationalVersion>0.5.0-beta.1</InformationalVersion>
     <NoWarn>$(NoWarn);CS9113;NU1507;NU1510;NETSDK1201</NoWarn>
+    <BaseOutputPath Condition="'$(BaseOutputPath)' == ''">D:\SharpClaw\SharpClaw.AgentOrchestration\bin\$(MSBuildProjectName)\</BaseOutputPath>
+    <BaseIntermediateOutputPath Condition="'$(BaseIntermediateOutputPath)' == ''">D:\SharpClaw\SharpClaw.AgentOrchestration\obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
+    <DefaultItemExcludes>$(DefaultItemExcludes);$(MSBuildProjectDirectory)\bin\**;$(MSBuildProjectDirectory)\obj\**;D:\SharpClaw\SharpClaw.AgentOrchestration\bin\**;D:\SharpClaw\SharpClaw.AgentOrchestration\obj\**</DefaultItemExcludes>
   </PropertyGroup>
 </Project>

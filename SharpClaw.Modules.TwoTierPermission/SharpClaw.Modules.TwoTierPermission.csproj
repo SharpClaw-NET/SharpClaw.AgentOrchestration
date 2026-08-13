@@ -1,15 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
-
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <IsSharpClawModulePackage>true</IsSharpClawModulePackage>
     <IsPackable>true</IsPackable>
-    <PackageId>SharpClaw.Modules.AgentOrchestration</PackageId>
-    <Title>SharpClaw Agent Orchestration Module</Title>
-    <Authors>mkn8rn</Authors>
-    <Company>mkn8rn</Company>
-    <Description>Runtime-loadable SharpClaw module for agent lifecycle, agent management, skill access, cross-thread context tools, and custom agent or channel headers.</Description>
-    <PackageTags>sharpclaw;module;agent;orchestration;skills;context</PackageTags>
+    <PackageId>SharpClaw.Modules.TwoTierPermission</PackageId>
+    <Title>SharpClaw Two Tier Permission Module</Title>
+    <Authors>SharpClaw-NET</Authors>
+    <Description>Runtime-loadable SharpClaw module for two-tier clearance, scope, denial, delegation, grant, and approval policy.</Description>
+    <PackageTags>sharpclaw;module;permission;clearance;approval;authorization</PackageTags>
     <PackageLicenseExpression>AGPL-3.0-only</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageProjectUrl>https://github.com/SharpClaw-NET/SharpClaw.AgentOrchestration</PackageProjectUrl>
@@ -24,24 +22,13 @@
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
-  </ItemGroup>
-
-  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
     <PackageReference Include="SharpClaw.Contracts" />
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\SharpClaw.AgentOrchestration.Contracts\SharpClaw.AgentOrchestration.Contracts.csproj" />
     <Content Include="module.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
-
-  <ItemGroup>
-    <PackageReference Include="Microsoft.EntityFrameworkCore" />
-    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <InternalsVisibleTo Include="SharpClaw.AgentOrchestration.Tests" />
-  </ItemGroup>
-
 </Project>

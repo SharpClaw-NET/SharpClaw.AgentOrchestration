@@ -1,21 +1,27 @@
 <Project Sdk="Microsoft.NET.Sdk">
-
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" />
-    <PackageReference Include="Microsoft.Extensions.Configuration" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
     <PackageReference Include="NUnit" />
     <PackageReference Include="NUnit3TestAdapter" />
     <PackageReference Include="coverlet.collector" />
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\SharpClaw.Modules.AgentOrchestration\SharpClaw.Modules.AgentOrchestration.csproj" />
+    <ProjectReference Include="..\SharpClaw.AgentOrchestration.Contracts\SharpClaw.AgentOrchestration.Contracts.csproj" />
+    <ProjectReference Include="..\SharpClaw.Modules.Context\SharpClaw.Modules.Context.csproj" />
+    <ProjectReference Include="..\SharpClaw.Modules.TwoTierPermission\SharpClaw.Modules.TwoTierPermission.csproj" />
+    <ProjectReference Include="..\SharpClaw.Modules.Agents\SharpClaw.Modules.Agents.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="..\SharpClaw.Modules.Context\module.json" Link="manifests\Context.module.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\SharpClaw.Modules.TwoTierPermission\module.json" Link="manifests\TwoTierPermission.module.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\SharpClaw.Modules.Agents\module.json" Link="manifests\Agents.module.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

@@ -1,4 +1,7 @@
 <Solution>
   <Project Path="SharpClaw.AgentOrchestration.Tests/SharpClaw.AgentOrchestration.Tests.csproj" />
-  <Project Path="SharpClaw.Modules.AgentOrchestration/SharpClaw.Modules.AgentOrchestration.csproj" />
+  <Project Path="SharpClaw.AgentOrchestration.Contracts/SharpClaw.AgentOrchestration.Contracts.csproj" />
+  <Project Path="SharpClaw.Modules.Context/SharpClaw.Modules.Context.csproj" />
+  <Project Path="SharpClaw.Modules.TwoTierPermission/SharpClaw.Modules.TwoTierPermission.csproj" />
+  <Project Path="SharpClaw.Modules.Agents/SharpClaw.Modules.Agents.csproj" />
 </Solution>

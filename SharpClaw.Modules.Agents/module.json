@@ -1,0 +1,35 @@
+{
+  "id": "sharpclaw_agents",
+  "displayName": "SharpClaw Agents",
+  "version": "0.5.0-beta.1",
+  "toolPrefix": "agents",
+  "runtime": "dotnet",
+  "hostMode": "sidecar",
+  "entryAssembly": "SharpClaw.Modules.Agents.dll",
+  "moduleType": "SharpClaw.Modules.Agents.AgentsModule",
+  "minHostVersion": "0.5.0-beta.1",
+  "author": "SharpClaw-NET",
+  "description": "Agents, skills, memory, agent profiles, and management tools.",
+  "license": "AGPL-3.0-only",
+  "enabled": true,
+  "defaultEnabled": true,
+  "exports": [
+    {
+      "contractName": "sharpclaw.agents",
+      "serviceType": "SharpClaw.Modules.AgentOrchestration.Contracts.AgentsModuleContract",
+      "optional": false
+    }
+  ],
+  "requires": [
+    {
+      "contractName": "sharpclaw.context",
+      "serviceType": "SharpClaw.Modules.AgentOrchestration.Contracts.ContextModuleContract",
+      "optional": false
+    },
+    {
+      "contractName": "sharpclaw.permission",
+      "serviceType": "SharpClaw.Modules.AgentOrchestration.Contracts.PermissionModuleContract",
+      "optional": false
+    }
+  ]
+}
