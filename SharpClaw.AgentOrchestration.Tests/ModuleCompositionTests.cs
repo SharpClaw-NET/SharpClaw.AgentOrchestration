@@ -84,7 +84,7 @@ public sealed class ModuleCompositionTests
                     .Select(item => item.Name),
                 Is.EquivalentTo(new[]
                 {
-                    "snapshotId", "aggregateHash", "expectedRecordCount", "importedRecordCount",
+                    "snapshotId", "aggregateHash", "mappingHash", "expectedRecordCount", "importedRecordCount",
                     "completed", "capturedAt",
                 }));
             Assert.That(contextBuilder.Events.Items.OfType<EventDescriptor<ContextThreadChangedEvent>>(), Has.Exactly(1).Items);
@@ -1037,6 +1037,174 @@ public sealed class ModuleCompositionTests
     }
 
     [Test]
+    public async Task ConcurrentExactAgentJobImportsConvergeAcrossCatalogs()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var gateway = new InMemoryStorageGateway();
+        var markerCreatesEntered = new TaskCompletionSource<object?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseMarkerCreates = new TaskCompletionSource<object?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var markerUpsertCount = 0;
+        gateway.BeforeOperationAsync = async (_, storage, operation) =>
+        {
+            if (storage != AgentsCatalog.AgentJobImportsStorage
+                || operation != ModuleStorageOperations.Upsert)
+                return;
+            var count = Interlocked.Increment(ref markerUpsertCount);
+            if (count > 2)
+                return;
+            if (count == 2)
+                markerCreatesEntered.TrySetResult(null);
+            await releaseMarkerCreates.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        };
+
+        var snapshot = new CanonicalJobsImportSnapshot(
+            "snapshot-concurrent-replay",
+            now,
+            [NeutralRecord(now, "queued")],
+            [new("legacy.agent", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1)]);
+        var caller = new RequestPrincipal("importer", IsAuthenticated: true);
+        var catalogA = new AgentsCatalog(gateway, new AllowAllAgentAccessPolicy());
+        var catalogB = new AgentsCatalog(gateway, new AllowAllAgentAccessPolicy());
+        var imports = new[]
+        {
+            catalogA.ImportAgentJobsAsync(caller, snapshot),
+            catalogB.ImportAgentJobsAsync(caller, snapshot),
+        };
+
+        try
+        {
+            await markerCreatesEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            releaseMarkerCreates.TrySetResult(null);
+        }
+
+        var results = await Task.WhenAll(imports).WaitAsync(TimeSpan.FromSeconds(10));
+        var state = await catalogA.GetAgentJobImportStateAsync(snapshot.SnapshotId);
+        var jobs = await catalogA.ListAgentJobsAsync();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(results, Has.Length.EqualTo(2));
+            Assert.That(results.All(result => result.Count == 1), Is.True);
+            Assert.That(state, Is.Not.Null);
+            Assert.That(state!.Completed, Is.True);
+            Assert.That(state.MappingHash, Is.EqualTo(snapshot.MappingHash));
+            Assert.That(jobs, Has.Count.EqualTo(1));
+        });
+    }
+
+    [Test]
+    public async Task ConcurrentDifferentAgentJobImportsFailClosedWithoutExtraRecords()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var gateway = new InMemoryStorageGateway();
+        var markerCreatesEntered = new TaskCompletionSource<object?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseMarkerCreates = new TaskCompletionSource<object?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var markerUpsertCount = 0;
+        gateway.BeforeOperationAsync = async (_, storage, operation) =>
+        {
+            if (storage != AgentsCatalog.AgentJobImportsStorage
+                || operation != ModuleStorageOperations.Upsert)
+                return;
+            var count = Interlocked.Increment(ref markerUpsertCount);
+            if (count > 2)
+                return;
+            if (count == 2)
+                markerCreatesEntered.TrySetResult(null);
+            await releaseMarkerCreates.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        };
+
+        var mappings = new[]
+        {
+            new AgentJobActionMapping("legacy.agent", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1),
+        };
+        var snapshotA = new CanonicalJobsImportSnapshot(
+            "snapshot-concurrent-conflict", now, [NeutralRecord(now, "queued")], mappings);
+        var snapshotB = new CanonicalJobsImportSnapshot(
+            "snapshot-concurrent-conflict", now, [NeutralRecord(now, "queued")], mappings);
+        var caller = new RequestPrincipal("importer", IsAuthenticated: true);
+        var catalogA = new AgentsCatalog(gateway, new AllowAllAgentAccessPolicy());
+        var catalogB = new AgentsCatalog(gateway, new AllowAllAgentAccessPolicy());
+        var imports = new[]
+        {
+            CaptureAsync(() => catalogA.ImportAgentJobsAsync(caller, snapshotA)),
+            CaptureAsync(() => catalogB.ImportAgentJobsAsync(caller, snapshotB)),
+        };
+
+        try
+        {
+            await markerCreatesEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            releaseMarkerCreates.TrySetResult(null);
+        }
+
+        var outcomes = await Task.WhenAll(imports).WaitAsync(TimeSpan.FromSeconds(10));
+        var state = await catalogA.GetAgentJobImportStateAsync(snapshotA.SnapshotId);
+        var jobs = await catalogA.ListAgentJobsAsync();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(outcomes.Count(outcome => outcome is null), Is.EqualTo(1));
+            Assert.That(outcomes.Count(outcome => outcome is AgentJobImportException), Is.EqualTo(1));
+            Assert.That(state, Is.Not.Null);
+            Assert.That(state!.Completed, Is.True);
+            Assert.That(jobs, Has.Count.EqualTo(1));
+            Assert.That(
+                jobs[0].Id == snapshotA.Records[0].SourceId
+                    || jobs[0].Id == snapshotB.Records[0].SourceId,
+                Is.True);
+        });
+    }
+
+    [Test]
+    public async Task AgentJobImportRejectsChangedMissingExtraAndReorderedActionMappings()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var gateway = new InMemoryStorageGateway();
+        var catalog = new AgentsCatalog(gateway, new AllowAllAgentAccessPolicy());
+        var source = NeutralRecord(now, "queued");
+        var primary = new AgentJobActionMapping(
+            "legacy.agent", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1);
+        var secondary = new AgentJobActionMapping(
+            "legacy.unused", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1);
+        var snapshot = new CanonicalJobsImportSnapshot(
+            "snapshot-mapping-authority", now, [source], [primary, secondary]);
+        var caller = new RequestPrincipal("importer", IsAuthenticated: true);
+        await catalog.ImportAgentJobsAsync(caller, snapshot);
+
+        var changed = new CanonicalJobsImportSnapshot(
+            snapshot.SnapshotId,
+            snapshot.CapturedAt,
+            [source],
+            [primary, new("legacy.changed", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1)]);
+        var missing = new CanonicalJobsImportSnapshot(
+            snapshot.SnapshotId, snapshot.CapturedAt, [source], [primary]);
+        var extra = new CanonicalJobsImportSnapshot(
+            snapshot.SnapshotId,
+            snapshot.CapturedAt,
+            [source],
+            [primary, secondary, new("legacy.extra", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1)]);
+        var reordered = new CanonicalJobsImportSnapshot(
+            snapshot.SnapshotId, snapshot.CapturedAt, [source], [secondary, primary]);
+
+        Assert.Multiple(() =>
+        {
+            Assert.ThrowsAsync<AgentJobImportException>(() => catalog.ImportAgentJobsAsync(caller, changed));
+            Assert.ThrowsAsync<AgentJobImportException>(() => catalog.ImportAgentJobsAsync(caller, missing));
+            Assert.ThrowsAsync<AgentJobImportException>(() => catalog.ImportAgentJobsAsync(caller, extra));
+            Assert.ThrowsAsync<AgentJobImportException>(() => catalog.ImportAgentJobsAsync(caller, reordered));
+        });
+    }
+
+    [Test]
     public async Task AgentJobImportRejectsChangedSameIdentityAfterCompletion()
     {
         var now = DateTimeOffset.UtcNow;
@@ -1182,6 +1350,19 @@ public sealed class ModuleCompositionTests
                     Records = [source with { ContextId = Guid.Empty }],
                 }));
         });
+    }
+
+    private static async Task<Exception?> CaptureAsync(Func<Task> operation)
+    {
+        try
+        {
+            await operation();
+            return null;
+        }
+        catch (Exception exception)
+        {
+            return exception;
+        }
     }
 
     private static NeutralAgentJobRecord NeutralRecord(
@@ -1596,22 +1777,26 @@ public sealed class ModuleCompositionTests
     private sealed class InMemoryStorageGateway : IModuleStorageGateway
     {
         private sealed record Entry(JsonElement Value, JsonElement Indexes, long Revision);
+        private readonly object _sync = new();
         private readonly Dictionary<(string Module, string Storage, string Key), Entry> _records = [];
         private int _upsertCount;
 
         public int? FailAfterUpserts { get; set; }
+        public Func<string, string, string, Task>? BeforeOperationAsync { get; set; }
 
         public IReadOnlyList<ModuleStorageContractDescriptor> ListContracts() => [];
 
-        public Task<JsonElement> InvokeAsync(
+        public async Task<JsonElement> InvokeAsync(
             string moduleId,
             string storageName,
             string operation,
             JsonElement parameters,
             CancellationToken ct = default)
         {
+            if (BeforeOperationAsync is not null)
+                await BeforeOperationAsync(moduleId, storageName, operation);
             var prefix = (moduleId, storageName);
-            return Task.FromResult(operation switch
+            return operation switch
             {
                 ModuleStorageOperations.Get => Get(prefix, parameters),
                 ModuleStorageOperations.Upsert => Upsert(prefix, parameters),
@@ -1621,7 +1806,7 @@ public sealed class ModuleCompositionTests
                 ModuleStorageOperations.BatchUpsert => BatchUpsert(prefix, parameters),
                 ModuleStorageOperations.BatchDelete => BatchDelete(prefix, parameters),
                 _ => throw new NotSupportedException(operation),
-            });
+            };
         }
 
         public Task<ModuleStorageMutationAndOutboxResult> CommitMutationAndOutboxAsync(
@@ -1642,83 +1827,100 @@ public sealed class ModuleCompositionTests
 
         private JsonElement Get((string Module, string Storage) prefix, JsonElement parameters)
         {
-            var key = parameters.GetProperty("key").GetString()!;
-            if (!_records.TryGetValue((prefix.Module, prefix.Storage, key), out var entry))
-                return JsonSerializer.SerializeToElement(new { found = false });
-            return JsonSerializer.SerializeToElement(new
+            lock (_sync)
             {
-                found = true,
-                key,
-                value = entry.Value,
-                revision = entry.Revision,
-                indexes = entry.Indexes,
-            });
+                var key = parameters.GetProperty("key").GetString()!;
+                if (!_records.TryGetValue((prefix.Module, prefix.Storage, key), out var entry))
+                    return JsonSerializer.SerializeToElement(new { found = false });
+                return JsonSerializer.SerializeToElement(new
+                {
+                    found = true,
+                    key,
+                    value = entry.Value,
+                    revision = entry.Revision,
+                    indexes = entry.Indexes,
+                });
+            }
         }
 
         private JsonElement Upsert((string Module, string Storage) prefix, JsonElement parameters)
         {
-            if (FailAfterUpserts is { } limit && _upsertCount >= limit)
-                throw new IOException("Injected storage interruption.");
-            _upsertCount++;
-            var key = parameters.GetProperty("key").GetString()!;
-            var id = (prefix.Module, prefix.Storage, key);
-            if (parameters.TryGetProperty("expectedRevision", out var expectedRevision)
-                && expectedRevision.ValueKind == JsonValueKind.Number)
+            lock (_sync)
             {
-                var currentRevision = _records.TryGetValue(id, out var existingEntry)
-                    ? existingEntry.Revision
-                    : 0;
-                if (currentRevision != expectedRevision.GetInt64())
-                    throw new InvalidOperationException("The expected storage revision is stale.");
+                if (FailAfterUpserts is { } limit && _upsertCount >= limit)
+                    throw new IOException("Injected storage interruption.");
+                _upsertCount++;
+                var key = parameters.GetProperty("key").GetString()!;
+                var id = (prefix.Module, prefix.Storage, key);
+                if (parameters.TryGetProperty("expectedRevision", out var expectedRevision)
+                    && expectedRevision.ValueKind == JsonValueKind.Number)
+                {
+                    var currentRevision = _records.TryGetValue(id, out var existingEntry)
+                        ? existingEntry.Revision
+                        : 0;
+                    if (currentRevision != expectedRevision.GetInt64())
+                        throw new InvalidOperationException("The expected storage revision is stale.");
+                }
+                var revision = _records.TryGetValue(id, out var current) ? current.Revision + 1 : 1;
+                var indexes = parameters.TryGetProperty("indexes", out var index) ? index.Clone() : JsonSerializer.SerializeToElement(new { });
+                _records[id] = new(parameters.GetProperty("value").Clone(), indexes, revision);
+                return JsonSerializer.SerializeToElement(new { saved = true, revision });
             }
-            var revision = _records.TryGetValue(id, out var current) ? current.Revision + 1 : 1;
-            var indexes = parameters.TryGetProperty("indexes", out var index) ? index.Clone() : JsonSerializer.SerializeToElement(new { });
-            _records[id] = new(parameters.GetProperty("value").Clone(), indexes, revision);
-            return JsonSerializer.SerializeToElement(new { saved = true, revision });
         }
 
         private JsonElement Delete((string Module, string Storage) prefix, JsonElement parameters)
         {
-            var key = parameters.GetProperty("key").GetString()!;
-            return JsonSerializer.SerializeToElement(new { deleted = _records.Remove((prefix.Module, prefix.Storage, key)) });
+            lock (_sync)
+            {
+                var key = parameters.GetProperty("key").GetString()!;
+                return JsonSerializer.SerializeToElement(new { deleted = _records.Remove((prefix.Module, prefix.Storage, key)) });
+            }
         }
 
-        private JsonElement List((string Module, string Storage) prefix) =>
-            JsonSerializer.SerializeToElement(new
+        private JsonElement List((string Module, string Storage) prefix)
+        {
+            lock (_sync)
             {
-                records = _records.Where(item => item.Key.Module == prefix.Module && item.Key.Storage == prefix.Storage)
-                    .Select(item => new { key = item.Key.Key, value = item.Value.Value, revision = item.Value.Revision, indexes = item.Value.Indexes }),
-            });
+                return JsonSerializer.SerializeToElement(new
+                {
+                    records = _records.Where(item => item.Key.Module == prefix.Module && item.Key.Storage == prefix.Storage)
+                        .Select(item => new { key = item.Key.Key, value = item.Value.Value, revision = item.Value.Revision, indexes = item.Value.Indexes }),
+                });
+            }
+        }
 
         private JsonElement Query((string Module, string Storage) prefix, JsonElement parameters)
         {
-            var records = _records.Where(item => item.Key.Module == prefix.Module && item.Key.Storage == prefix.Storage)
-                .Select(item => new { key = item.Key.Key, entry = item.Value })
-                .ToList();
-            if (parameters.TryGetProperty("filters", out var filters))
+            lock (_sync)
             {
-                foreach (var filter in filters.EnumerateArray())
+                var records = _records.Where(item => item.Key.Module == prefix.Module && item.Key.Storage == prefix.Storage)
+                    .Select(item => new { key = item.Key.Key, entry = item.Value })
+                    .ToList();
+                if (parameters.TryGetProperty("filters", out var filters))
                 {
-                    var indexName = filter.GetProperty("indexName").GetString()!;
-                    var expected = filter.GetProperty("value").ToString();
-                    records = records.Where(item => item.entry.Indexes.TryGetProperty(indexName, out var value)
-                        && value.ToString() == expected).ToList();
+                    foreach (var filter in filters.EnumerateArray())
+                    {
+                        var indexName = filter.GetProperty("indexName").GetString()!;
+                        var expected = filter.GetProperty("value").ToString();
+                        records = records.Where(item => item.entry.Indexes.TryGetProperty(indexName, out var value)
+                            && value.ToString() == expected).ToList();
+                    }
                 }
+                if (parameters.TryGetProperty("orderBy", out var order) && order.ValueKind == JsonValueKind.Object)
+                {
+                    var indexName = order.GetProperty("indexName").GetString()!;
+                    var descending = order.GetProperty("direction").GetString() == ModuleStorageSortDirections.Descending;
+                    records = (descending
+                        ? records.OrderByDescending(item => item.entry.Indexes.TryGetProperty(indexName, out var value) ? value.ToString() : "")
+                        : records.OrderBy(item => item.entry.Indexes.TryGetProperty(indexName, out var value) ? value.ToString() : "")).ToList();
+                }
+                if (parameters.TryGetProperty("limit", out var limit) && limit.ValueKind == JsonValueKind.Number && limit.TryGetInt32(out var count))
+                    records = records.Take(count).ToList();
+                return JsonSerializer.SerializeToElement(new
+                {
+                    records = records.Select(item => new { key = item.key, value = item.entry.Value, revision = item.entry.Revision, indexes = item.entry.Indexes }),
+                });
             }
-            if (parameters.TryGetProperty("orderBy", out var order) && order.ValueKind == JsonValueKind.Object)
-            {
-                var indexName = order.GetProperty("indexName").GetString()!;
-                var descending = order.GetProperty("direction").GetString() == ModuleStorageSortDirections.Descending;
-                records = (descending
-                    ? records.OrderByDescending(item => item.entry.Indexes.TryGetProperty(indexName, out var value) ? value.ToString() : "")
-                    : records.OrderBy(item => item.entry.Indexes.TryGetProperty(indexName, out var value) ? value.ToString() : "")).ToList();
-            }
-            if (parameters.TryGetProperty("limit", out var limit) && limit.ValueKind == JsonValueKind.Number && limit.TryGetInt32(out var count))
-                records = records.Take(count).ToList();
-            return JsonSerializer.SerializeToElement(new
-            {
-                records = records.Select(item => new { key = item.key, value = item.entry.Value, revision = item.entry.Revision, indexes = item.entry.Indexes }),
-            });
         }
 
         private JsonElement BatchUpsert((string Module, string Storage) prefix, JsonElement parameters)

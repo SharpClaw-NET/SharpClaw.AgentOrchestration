@@ -243,6 +243,7 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
             [
                 new("snapshotId", ModuleStorageIndexValueKind.String),
                 new("aggregateHash", ModuleStorageIndexValueKind.String),
+                new("mappingHash", ModuleStorageIndexValueKind.String),
                 new("expectedRecordCount", ModuleStorageIndexValueKind.Number),
                 new("importedRecordCount", ModuleStorageIndexValueKind.Number),
                 new("completed", ModuleStorageIndexValueKind.String),

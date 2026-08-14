@@ -17,7 +17,6 @@ public sealed class AgentsCatalog
 
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web) { PropertyNameCaseInsensitive = true };
-    private static readonly SemaphoreSlim AgentJobImportGate = new(1, 1);
 
     private readonly ModuleDocumentStore<AgentRecord> _agents;
     private readonly ModuleDocumentStore<SkillRecord> _skills;
@@ -58,10 +57,15 @@ public sealed class AgentsCatalog
     public Task<IReadOnlyList<AgentJob>> ListAgentJobsAsync(CancellationToken ct = default) =>
         _agentJobs.ListAsync(ct);
 
-    public Task<AgentJobImportState?> GetAgentJobImportStateAsync(
+    public async Task<AgentJobImportState?> GetAgentJobImportStateAsync(
         string snapshotId,
-        CancellationToken ct = default) =>
-        _agentJobImports.GetAsync(AgentsJobImportIntegrity.ImportKey(snapshotId), ct);
+        CancellationToken ct = default)
+    {
+        var record = await _agentJobImports.GetRecordAsync(
+            AgentsJobImportIntegrity.ImportKey(snapshotId),
+            ct);
+        return record?.Value;
+    }
 
     public async Task<IReadOnlyList<AgentJob>> ImportAgentJobsAsync(
         RequestPrincipal caller,
@@ -70,62 +74,22 @@ public sealed class AgentsCatalog
     {
         await RequireAsync(caller, "manage_agent_jobs", null, ct);
         var plan = AgentsJobImportConverter.Prepare(snapshot);
-        await AgentJobImportGate.WaitAsync(ct);
-        try
+        var importKey = AgentsJobImportIntegrity.ImportKey(snapshot.SnapshotId);
+        var marker = await EnsureImportMarkerAsync(snapshot, importKey, ct);
+        if (marker.State.Completed)
         {
-            var importKey = AgentsJobImportIntegrity.ImportKey(snapshot.SnapshotId);
-            var state = await _agentJobImports.GetAsync(importKey, ct);
-            if (state is not null)
-                EnsureImportManifest(snapshot, state);
-            else
-            {
-                state = new AgentJobImportState(
-                    snapshot.SnapshotId,
-                    snapshot.CapturedAt,
-                    snapshot.ExpectedRecordCount,
-                    snapshot.OrderedSourceIds.ToArray(),
-                    snapshot.SourceHashes.ToArray(),
-                    snapshot.AggregateHash,
-                    0,
-                    false);
-                await _agentJobImports.UpsertAsync(
-                    importKey,
-                    state,
-                    AgentJobImportStateIndexes(state),
-                    ct);
-            }
-
-            if (state.Completed)
-                await VerifyImportedJobsAsync(plan.Jobs, ct);
-            else
-            {
-                foreach (var job in plan.Jobs)
-                    await EnsureImportedJobAsync(job, ct);
-
-                await VerifyImportedJobsAsync(plan.Jobs, ct);
-                var completed = state with
-                {
-                    ImportedRecordCount = plan.Jobs.Count,
-                    Completed = true,
-                };
-                await _agentJobImports.UpsertAsync(
-                    importKey,
-                    completed,
-                    AgentJobImportStateIndexes(completed),
-                    ct);
-                state = await _agentJobImports.GetAsync(importKey, ct)
-                    ?? throw new AgentJobImportException("The import completion marker was not persisted.");
-                EnsureImportManifest(snapshot, state);
-                if (!state.Completed || state.ImportedRecordCount != plan.Jobs.Count)
-                    throw new AgentJobImportException("The import completion marker is incomplete.");
-            }
-
+            await VerifyImportedJobsAsync(plan.Jobs, ct);
             return plan.Jobs;
         }
-        finally
-        {
-            AgentJobImportGate.Release();
-        }
+
+        foreach (var job in plan.Jobs)
+            await EnsureImportedJobAsync(job, ct);
+
+        await VerifyImportedJobsAsync(plan.Jobs, ct);
+        marker = await CompleteImportMarkerAsync(snapshot, plan.Jobs, importKey, ct);
+        if (!marker.State.Completed || marker.State.ImportedRecordCount != plan.Jobs.Count)
+            throw new AgentJobImportException("The import completion marker is incomplete.");
+        return plan.Jobs;
     }
 
     public async Task<AgentJob> RecordAgentJobAsync(
@@ -463,6 +427,131 @@ public sealed class AgentsCatalog
 
     private static string Key(Guid id) => id.ToString("N");
 
+    private sealed record ImportMarkerRecord(AgentJobImportState State, long Revision);
+
+    private async Task<ImportMarkerRecord?> ReadImportMarkerAsync(
+        string importKey,
+        CancellationToken ct)
+    {
+        var record = await _agentJobImports.GetRecordAsync(importKey, ct);
+        if (record is null)
+            return null;
+        if (record.Value is null)
+            throw new AgentJobImportException("The import marker contains no state.");
+        return new ImportMarkerRecord(record.Value, record.Revision);
+    }
+
+    private async Task<ImportMarkerRecord> EnsureImportMarkerAsync(
+        CanonicalJobsImportSnapshot snapshot,
+        string importKey,
+        CancellationToken ct)
+    {
+        var current = await ReadImportMarkerAsync(importKey, ct);
+        if (current is not null)
+        {
+            EnsureImportManifest(snapshot, current.State);
+            return current;
+        }
+
+        var initial = new AgentJobImportState(
+            snapshot.SnapshotId,
+            snapshot.CapturedAt,
+            snapshot.ExpectedRecordCount,
+            snapshot.OrderedSourceIds.ToArray(),
+            snapshot.SourceHashes.ToArray(),
+            snapshot.AggregateHash,
+            snapshot.MappingHash,
+            0,
+            false);
+        try
+        {
+            await _agentJobImports.UpsertAsync(
+                importKey,
+                initial,
+                AgentJobImportStateIndexes(initial),
+                expectedRevision: 0,
+                ct: ct);
+        }
+        catch (Exception)
+        {
+            var raced = await ReadImportMarkerAsync(importKey, ct);
+            if (raced is null)
+                throw;
+            EnsureImportManifest(snapshot, raced.State);
+            return raced;
+        }
+
+        var created = await ReadImportMarkerAsync(importKey, ct)
+            ?? throw new AgentJobImportException("The import marker was not persisted.");
+        EnsureImportManifest(snapshot, created.State);
+        return created;
+    }
+
+    private async Task<ImportMarkerRecord> CompleteImportMarkerAsync(
+        CanonicalJobsImportSnapshot snapshot,
+        IReadOnlyList<AgentJob> jobs,
+        string importKey,
+        CancellationToken ct)
+    {
+        const int maxAttempts = 4;
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            var current = await ReadImportMarkerAsync(importKey, ct)
+                ?? throw new AgentJobImportException("The import marker is missing during completion.");
+            EnsureImportManifest(snapshot, current.State);
+            if (current.State.Completed)
+            {
+                if (current.State.ImportedRecordCount != jobs.Count)
+                    throw new AgentJobImportException("The completed import marker has an invalid record count.");
+                await VerifyImportedJobsAsync(jobs, ct);
+                return current;
+            }
+
+            var completed = current.State with
+            {
+                ImportedRecordCount = jobs.Count,
+                Completed = true,
+            };
+            try
+            {
+                await _agentJobImports.UpsertAsync(
+                    importKey,
+                    completed,
+                    AgentJobImportStateIndexes(completed),
+                    expectedRevision: current.Revision,
+                    ct: ct);
+            }
+            catch (Exception)
+            {
+                var raced = await ReadImportMarkerAsync(importKey, ct);
+                if (raced is null)
+                    throw;
+                EnsureImportManifest(snapshot, raced.State);
+                if (raced.State.Completed)
+                {
+                    if (raced.State.ImportedRecordCount != jobs.Count)
+                        throw new AgentJobImportException(
+                            "The raced completed import marker has an invalid record count.");
+                    await VerifyImportedJobsAsync(jobs, ct);
+                    return raced;
+                }
+                if (attempt == maxAttempts - 1)
+                    throw;
+                continue;
+            }
+
+            var persisted = await ReadImportMarkerAsync(importKey, ct)
+                ?? throw new AgentJobImportException("The import completion marker was not persisted.");
+            EnsureImportManifest(snapshot, persisted.State);
+            if (persisted.State.Completed && persisted.State.ImportedRecordCount == jobs.Count)
+                return persisted;
+            if (attempt == maxAttempts - 1)
+                throw new AgentJobImportException("The import completion marker is incomplete.");
+        }
+
+        throw new AgentJobImportException("The import completion marker did not converge.");
+    }
+
     private static void EnsureImportManifest(
         CanonicalJobsImportSnapshot snapshot,
         AgentJobImportState state)
@@ -482,7 +571,8 @@ public sealed class AgentsCatalog
         CancellationToken ct)
     {
         ValidateAgentJob(job);
-        var existing = await _agentJobs.GetAsync(Key(job.Id), ct);
+        var existingRecord = await _agentJobs.GetRecordAsync(Key(job.Id), ct);
+        var existing = existingRecord?.Value;
         if (existing is not null)
         {
             if (!AgentsJobImportIntegrity.AreEquivalent(job, existing))
@@ -491,13 +581,28 @@ public sealed class AgentsCatalog
             return;
         }
 
-        await _agentJobs.UpsertAsync(
-            Key(job.Id),
-            job,
-            AgentJobIndexes(job),
-            expectedRevision: 0,
-            ct: ct);
-        var persisted = await _agentJobs.GetAsync(Key(job.Id), ct);
+        try
+        {
+            await _agentJobs.UpsertAsync(
+                Key(job.Id),
+                job,
+                AgentJobIndexes(job),
+                expectedRevision: 0,
+                ct: ct);
+        }
+        catch (Exception)
+        {
+            var racedRecord = await _agentJobs.GetRecordAsync(Key(job.Id), ct);
+            var raced = racedRecord?.Value;
+            if (raced is null)
+                throw;
+            if (AgentsJobImportIntegrity.AreEquivalent(job, raced))
+                return;
+            throw new AgentJobImportException(
+                $"Source identity '{job.Id}' was created with different Agent job data.");
+        }
+        var persistedRecord = await _agentJobs.GetRecordAsync(Key(job.Id), ct);
+        var persisted = persistedRecord?.Value;
         if (persisted is null || !AgentsJobImportIntegrity.AreEquivalent(job, persisted))
             throw new AgentJobImportException(
                 $"Source identity '{job.Id}' was not stored as the converted Agent job.");
@@ -509,7 +614,8 @@ public sealed class AgentsCatalog
     {
         foreach (var job in jobs)
         {
-            var persisted = await _agentJobs.GetAsync(Key(job.Id), ct);
+            var persistedRecord = await _agentJobs.GetRecordAsync(Key(job.Id), ct);
+            var persisted = persistedRecord?.Value;
             if (persisted is null)
                 throw new AgentJobImportException(
                     $"Source identity '{job.Id}' is missing from the completed import.");
@@ -577,6 +683,7 @@ public sealed class AgentsCatalog
     {
         snapshotId = state.SnapshotId,
         aggregateHash = state.AggregateHash,
+        mappingHash = state.MappingHash,
         expectedRecordCount = state.ExpectedRecordCount,
         importedRecordCount = state.ImportedRecordCount,
         completed = state.Completed ? "true" : "false",

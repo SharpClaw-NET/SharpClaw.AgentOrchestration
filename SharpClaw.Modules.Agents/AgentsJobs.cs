@@ -127,6 +127,7 @@ public sealed record CanonicalJobsImportSnapshot
         AggregateHash = AgentsJobImportIntegrity.ComputeAggregateHash(
             OrderedSourceIds,
             SourceHashes);
+        MappingHash = AgentsJobImportIntegrity.ComputeMappingHash(ActionMappings);
     }
 
     public CanonicalJobsImportSnapshot(
@@ -136,6 +137,7 @@ public sealed record CanonicalJobsImportSnapshot
         IReadOnlyList<Guid> orderedSourceIds,
         IReadOnlyList<string> sourceHashes,
         string aggregateHash,
+        string mappingHash,
         IReadOnlyList<NeutralAgentJobRecord> records,
         IReadOnlyList<AgentJobActionMapping> actionMappings)
     {
@@ -145,6 +147,7 @@ public sealed record CanonicalJobsImportSnapshot
         OrderedSourceIds = orderedSourceIds ?? throw new ArgumentNullException(nameof(orderedSourceIds));
         SourceHashes = sourceHashes ?? throw new ArgumentNullException(nameof(sourceHashes));
         AggregateHash = aggregateHash;
+        MappingHash = mappingHash;
         Records = records ?? throw new ArgumentNullException(nameof(records));
         ActionMappings = actionMappings ?? throw new ArgumentNullException(nameof(actionMappings));
     }
@@ -155,6 +158,7 @@ public sealed record CanonicalJobsImportSnapshot
     public IReadOnlyList<Guid> OrderedSourceIds { get; init; } = [];
     public IReadOnlyList<string> SourceHashes { get; init; } = [];
     public string AggregateHash { get; init; } = string.Empty;
+    public string MappingHash { get; init; } = string.Empty;
     public IReadOnlyList<NeutralAgentJobRecord> Records { get; init; } = [];
     public IReadOnlyList<AgentJobActionMapping> ActionMappings { get; init; } = [];
 }
@@ -166,6 +170,7 @@ public sealed record AgentJobImportState(
     IReadOnlyList<Guid> OrderedSourceIds,
     IReadOnlyList<string> SourceHashes,
     string AggregateHash,
+    string MappingHash,
     int ImportedRecordCount,
     bool Completed);
 
@@ -188,6 +193,9 @@ public static class AgentsJobImportIntegrity
 
     public static bool AreEquivalent(AgentJob expected, AgentJob actual) =>
         string.Equals(ComputeAgentJobHash(expected), ComputeAgentJobHash(actual), StringComparison.Ordinal);
+
+    public static string ComputeMappingHash(IReadOnlyList<AgentJobActionMapping> orderedMappings) =>
+        ComputeHash(JsonSerializer.Serialize(orderedMappings, HashJsonOptions));
 
     public static string ComputeAggregateHash(
         IReadOnlyList<Guid> orderedSourceIds,
@@ -222,7 +230,8 @@ public static class AgentsJobImportIntegrity
         && state.SourceHashes is not null
         && snapshot.OrderedSourceIds.SequenceEqual(state.OrderedSourceIds)
         && snapshot.SourceHashes.SequenceEqual(state.SourceHashes, StringComparer.Ordinal)
-        && string.Equals(snapshot.AggregateHash, state.AggregateHash, StringComparison.Ordinal);
+        && string.Equals(snapshot.AggregateHash, state.AggregateHash, StringComparison.Ordinal)
+        && string.Equals(snapshot.MappingHash, state.MappingHash, StringComparison.Ordinal);
 
     private static string ComputeHash(string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
@@ -264,10 +273,16 @@ public static class AgentsJobImportConverter
         if (snapshot.OrderedSourceIds.Count != snapshot.ExpectedRecordCount
             || snapshot.SourceHashes.Count != snapshot.ExpectedRecordCount)
             throw new AgentJobImportException("The Jobs import snapshot identity lists are incomplete.");
-        if (string.IsNullOrWhiteSpace(snapshot.AggregateHash))
-            throw new AgentJobImportException("The Jobs import snapshot requires an aggregate hash.");
+        if (string.IsNullOrWhiteSpace(snapshot.AggregateHash)
+            || string.IsNullOrWhiteSpace(snapshot.MappingHash))
+            throw new AgentJobImportException(
+                "The Jobs import snapshot requires record and action mapping hashes.");
 
         var mappings = BuildMappings(snapshot.ActionMappings);
+        var mappingHash = AgentsJobImportIntegrity.ComputeMappingHash(snapshot.ActionMappings);
+        if (!string.Equals(snapshot.MappingHash, mappingHash, StringComparison.Ordinal))
+            throw new AgentJobImportException(
+                "The Jobs import action mapping hash does not match its ordered mappings.");
         var jobs = new List<AgentJob>(snapshot.Records.Count);
         var sourceIds = new HashSet<Guid>();
         for (var index = 0; index < snapshot.Records.Count; index++)

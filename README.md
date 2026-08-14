@@ -6,7 +6,7 @@ This repository provides the package-owned Context, Two Tier Permission, and Age
 
 Agents also accepts a neutral `CanonicalJobsImportSnapshot`. Each source action must have an exact package handler and payload-codec mapping. The converter preserves stable source identities, maps queued and paused records to the canonical handler mode, maps active records to canonical recovery, and rejects unknown actions, codecs, identities, status values, or result authority.
 
-Each import binds its snapshot id, capture time, expected count, ordered source identities, per-source SHA-256 hashes, and ordered aggregate hash. The Agents module stores the manifest and writes completion only after every source identity matches the complete canonical AgentJob record. Exact replay is accepted. Changed, missing, extra, reordered, or conflicting records fail closed. An interrupted import resumes the same incomplete manifest.
+Each import binds its snapshot id, capture time, expected count, ordered source identities, per-source SHA-256 hashes, ordered aggregate hash, and ordered action-mapping hash. The Agents module creates the manifest at revision zero and completes it against the observed revision. Exact replay is accepted. Changed, missing, extra, reordered, or conflicting records and mappings fail closed. An interrupted import resumes the same incomplete manifest.
 
 The modules use current `SharpClaw.Contracts` module builders, declared storage contracts, `ModuleDocumentStore<T>`, and `IModuleStorageGateway`. Jobs and Events remain kernel-owned. The packages use declared module boundaries and contain no host project references.
 
