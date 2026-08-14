@@ -57,6 +57,8 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
         module.Services.AddScoped<PermissionCliHandler>();
 
         module.Contracts.Export<PermissionModuleContract>("sharpclaw.permission");
+        module.Contracts.Export<IContextAccessPolicy>("sharpclaw.context-access");
+        module.Contracts.Export<IAgentAccessPolicy>("sharpclaw.agent-access");
 
         foreach (var storage in StorageContracts)
             module.Storage.Add(storage);

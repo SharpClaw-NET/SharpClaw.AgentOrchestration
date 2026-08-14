@@ -44,7 +44,15 @@ public sealed class ModuleCompositionTests
             Assert.That(permissionBuilder.Contracts.Exports.Select(item => item.ContractName),
                 Does.Contain("sharpclaw.permission"));
             Assert.That(agentsBuilder.Contracts.Requires.Select(item => item.ContractName),
-                Is.EquivalentTo(new[] { "sharpclaw.context", "sharpclaw.permission" }));
+                Is.EquivalentTo(new[] { "sharpclaw.context", "sharpclaw.permission", "sharpclaw.agent-access" }));
+            Assert.That(contextBuilder.Contracts.Requires.Select(item => item.ContractName),
+                Does.Contain("sharpclaw.context-access"));
+            Assert.That(permissionBuilder.Contracts.Exports.Select(item => item.ContractName),
+                Is.SupersetOf(new[] { "sharpclaw.context-access", "sharpclaw.agent-access" }));
+            Assert.That(permissionBuilder.Contracts.Exports
+                .Where(item => item.ContractName is "sharpclaw.context-access" or "sharpclaw.agent-access")
+                .Select(item => item.ServiceType),
+                Is.EquivalentTo(new[] { typeof(IContextAccessPolicy), typeof(IAgentAccessPolicy) }));
             Assert.That(contextBuilder.Services.Any(item => item.ServiceType == typeof(IContextActionExecutor)), Is.True);
             Assert.That(permissionBuilder.Services.Any(item => item.ServiceType == typeof(IPermissionActionExecutor)), Is.True);
             Assert.That(agentsBuilder.Services.Any(item => item.ServiceType == typeof(IAgentsActionExecutor)), Is.True);

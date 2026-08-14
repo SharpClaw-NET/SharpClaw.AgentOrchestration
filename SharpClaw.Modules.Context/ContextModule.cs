@@ -53,6 +53,7 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
 
         module.Contracts.Export<ContextModuleContract>("sharpclaw.context");
         module.Contracts.Require<PermissionModuleContract>("sharpclaw.permission");
+        module.Contracts.Require<IContextAccessPolicy>("sharpclaw.context-access");
 
         foreach (var storage in StorageContracts)
             module.Storage.Add(storage);

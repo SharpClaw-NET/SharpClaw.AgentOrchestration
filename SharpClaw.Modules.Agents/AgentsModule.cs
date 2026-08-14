@@ -60,6 +60,7 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
         module.Contracts.Export<AgentsModuleContract>("sharpclaw.agents");
         module.Contracts.Require<ContextModuleContract>("sharpclaw.context");
         module.Contracts.Require<PermissionModuleContract>("sharpclaw.permission");
+        module.Contracts.Require<IAgentAccessPolicy>("sharpclaw.agent-access");
 
         foreach (var storage in StorageContracts)
             module.Storage.Add(storage);
