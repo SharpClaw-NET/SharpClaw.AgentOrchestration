@@ -246,24 +246,71 @@ public sealed class ModuleCompositionTests
     }
 
     [Test]
-    public async Task ModuleActionPipelineUsesTheHostDispatcher()
+    public async Task ModuleActionPipelineUsesTheActionContextSnapshot()
     {
         var dispatcher = new RecordingActionDispatcher();
-        var pipeline = new ModuleActionPipeline(
-            dispatcher,
-            new ActionPipelineSnapshot("test", []));
+        var pipeline = new ModuleActionPipeline(dispatcher);
         var action = new ContextApiAction(
             ContextApiOperations.ListChannels,
             JsonSerializer.SerializeToElement(new { }),
             RequestPrincipal.Anonymous);
+        var snapshot = new ActionPipelineSnapshot("test", [], [], 16);
+        var context = new ActionContext<ContextApiAction>(
+            Guid.NewGuid(),
+            null,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            0,
+            1,
+            DateTimeOffset.UtcNow.AddMinutes(1),
+            ContextModule.ApiDescriptor.Key,
+            ContextModule.ModuleIdValue,
+            action.Caller,
+            action,
+            ExtensionFeatureSet.Empty,
+            snapshot);
 
         var result = await pipeline.RunRequiredAsync(
             ContextModule.ApiDescriptor,
-            action,
+            context,
             (value, _) => ValueTask.FromResult(JsonSerializer.SerializeToElement(value.Operation)));
 
-        Assert.That(result.GetString(), Is.EqualTo(ContextApiOperations.ListChannels));
-        Assert.That(dispatcher.RequiredCalls, Is.EqualTo(1));
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.GetString(), Is.EqualTo(ContextApiOperations.ListChannels));
+            Assert.That(dispatcher.RequiredCalls, Is.EqualTo(1));
+            Assert.That(dispatcher.Snapshot, Is.SameAs(snapshot));
+        });
+    }
+
+    [Test]
+    public void ApplicationGatewaysDoNotRequestAHostSnapshot()
+    {
+        var gatewayTypes = new[]
+        {
+            typeof(ContextActionGateway),
+            typeof(PermissionActionGateway),
+            typeof(AgentsActionGateway),
+        };
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(
+                typeof(ModuleActionPipeline).GetConstructors().Single().GetParameters()
+                    .Select(parameter => parameter.ParameterType),
+                Is.EqualTo(new[] { typeof(IActionDispatcher) }));
+            foreach (var gatewayType in gatewayTypes)
+            {
+                Assert.That(
+                    gatewayType.GetConstructors().Single().GetParameters()
+                        .Select(parameter => parameter.ParameterType),
+                    Does.Not.Contain(typeof(ActionPipelineSnapshot)));
+                Assert.That(
+                    gatewayType.GetConstructors().Single().GetParameters()
+                        .Select(parameter => parameter.ParameterType),
+                    Does.Not.Contain(typeof(IModuleActionPipeline)));
+            }
+        });
     }
 
     [Test]
@@ -461,7 +508,6 @@ public sealed class ModuleCompositionTests
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
 
         var contextGateway = new ContextActionGateway(
-            new PassthroughActionPipeline(),
             new ContextApiActionExecutor(store));
         var handler = new ContextToolHandler(contextGateway);
         using var arguments = JsonDocument.Parse($$"""{"channelId":"{{current.Id:D}}"}""");
@@ -1728,19 +1774,10 @@ public sealed class ModuleCompositionTests
             Contributors.Add(typeof(TContributor));
     }
 
-    private sealed class PassthroughActionPipeline : IModuleActionPipeline
-    {
-        public ValueTask<TResult> RunRequiredAsync<TAction, TResult>(
-            ActionDescriptor<TAction, TResult> descriptor,
-            TAction action,
-            Func<TAction, CancellationToken, ValueTask<TResult>> terminal,
-            CancellationToken ct = default) =>
-            terminal(action, ct);
-    }
-
     private sealed class RecordingActionDispatcher : IActionDispatcher
     {
         public int RequiredCalls { get; private set; }
+        public ActionPipelineSnapshot? Snapshot { get; private set; }
 
         public ValueTask<IActionOutcome<TResult>> RunAsync<TAction, TResult>(
             ActionDescriptor<TAction, TResult> descriptor,
@@ -1760,6 +1797,7 @@ public sealed class ModuleCompositionTests
             CancellationToken ct)
         {
             RequiredCalls++;
+            Snapshot = snapshot;
             return await terminal(action, ct);
         }
     }

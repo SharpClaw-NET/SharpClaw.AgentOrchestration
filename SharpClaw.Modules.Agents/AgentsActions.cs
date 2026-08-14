@@ -204,7 +204,6 @@ public interface IAgentsActionGateway
 }
 
 public sealed class AgentsActionGateway(
-    IModuleActionPipeline pipeline,
     AgentsApiActionExecutor executor) : IAgentsActionGateway
 {
     public ValueTask<JsonElement> ExecuteAsync(
@@ -214,10 +213,6 @@ public sealed class AgentsActionGateway(
         CancellationToken ct = default)
     {
         var action = new AgentsApiAction(operation, payload, caller);
-        return pipeline.RunRequiredAsync(
-            AgentsModule.ApiDescriptor,
-            action,
-            (value, token) => executor.ExecuteAsync(value, token),
-            ct);
+        return executor.ExecuteAsync(action, ct);
     }
 }
