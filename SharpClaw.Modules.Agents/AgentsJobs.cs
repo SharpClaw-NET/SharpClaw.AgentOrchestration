@@ -1,3 +1,6 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using SharpClaw.Contracts.Modules;
 
 namespace SharpClaw.Modules.Agents;
@@ -97,13 +100,133 @@ public sealed record AgentJobActionMapping(
     string PayloadCodec);
 
 /// <summary>Neutral import envelope for one canonical Jobs snapshot.</summary>
-public sealed record CanonicalJobsImportSnapshot(
+public sealed record CanonicalJobsImportSnapshot
+{
+    public CanonicalJobsImportSnapshot(
+        string snapshotId,
+        DateTimeOffset capturedAt,
+        IReadOnlyList<NeutralAgentJobRecord> records,
+        IReadOnlyList<AgentJobActionMapping> actionMappings)
+    {
+        ArgumentNullException.ThrowIfNull(records);
+        ArgumentNullException.ThrowIfNull(actionMappings);
+
+        SnapshotId = snapshotId;
+        CapturedAt = capturedAt;
+        Records = records.ToArray();
+        ActionMappings = actionMappings.ToArray();
+        ExpectedRecordCount = Records.Count;
+        OrderedSourceIds = Records
+            .Select(record => record?.SourceId ?? Guid.Empty)
+            .ToArray();
+        SourceHashes = Records
+            .Select(record => record is null
+                ? string.Empty
+                : AgentsJobImportIntegrity.ComputeSourceHash(record))
+            .ToArray();
+        AggregateHash = AgentsJobImportIntegrity.ComputeAggregateHash(
+            OrderedSourceIds,
+            SourceHashes);
+    }
+
+    public CanonicalJobsImportSnapshot(
+        string snapshotId,
+        DateTimeOffset capturedAt,
+        int expectedRecordCount,
+        IReadOnlyList<Guid> orderedSourceIds,
+        IReadOnlyList<string> sourceHashes,
+        string aggregateHash,
+        IReadOnlyList<NeutralAgentJobRecord> records,
+        IReadOnlyList<AgentJobActionMapping> actionMappings)
+    {
+        SnapshotId = snapshotId;
+        CapturedAt = capturedAt;
+        ExpectedRecordCount = expectedRecordCount;
+        OrderedSourceIds = orderedSourceIds ?? throw new ArgumentNullException(nameof(orderedSourceIds));
+        SourceHashes = sourceHashes ?? throw new ArgumentNullException(nameof(sourceHashes));
+        AggregateHash = aggregateHash;
+        Records = records ?? throw new ArgumentNullException(nameof(records));
+        ActionMappings = actionMappings ?? throw new ArgumentNullException(nameof(actionMappings));
+    }
+
+    public string SnapshotId { get; init; } = string.Empty;
+    public DateTimeOffset CapturedAt { get; init; }
+    public int ExpectedRecordCount { get; init; }
+    public IReadOnlyList<Guid> OrderedSourceIds { get; init; } = [];
+    public IReadOnlyList<string> SourceHashes { get; init; } = [];
+    public string AggregateHash { get; init; } = string.Empty;
+    public IReadOnlyList<NeutralAgentJobRecord> Records { get; init; } = [];
+    public IReadOnlyList<AgentJobActionMapping> ActionMappings { get; init; } = [];
+}
+
+public sealed record AgentJobImportState(
     string SnapshotId,
     DateTimeOffset CapturedAt,
-    IReadOnlyList<NeutralAgentJobRecord> Records,
-    IReadOnlyList<AgentJobActionMapping> ActionMappings);
+    int ExpectedRecordCount,
+    IReadOnlyList<Guid> OrderedSourceIds,
+    IReadOnlyList<string> SourceHashes,
+    string AggregateHash,
+    int ImportedRecordCount,
+    bool Completed);
+
+public sealed record AgentJobImportPlan(
+    CanonicalJobsImportSnapshot Snapshot,
+    IReadOnlyList<AgentJob> Jobs);
 
 public sealed class AgentJobImportException(string message) : InvalidOperationException(message);
+
+public static class AgentsJobImportIntegrity
+{
+    private static readonly JsonSerializerOptions HashJsonOptions =
+        new(JsonSerializerDefaults.General);
+
+    public static string ComputeSourceHash(NeutralAgentJobRecord source) =>
+        ComputeHash(JsonSerializer.Serialize(source, HashJsonOptions));
+
+    public static string ComputeAgentJobHash(AgentJob job) =>
+        ComputeHash(JsonSerializer.Serialize(job, HashJsonOptions));
+
+    public static bool AreEquivalent(AgentJob expected, AgentJob actual) =>
+        string.Equals(ComputeAgentJobHash(expected), ComputeAgentJobHash(actual), StringComparison.Ordinal);
+
+    public static string ComputeAggregateHash(
+        IReadOnlyList<Guid> orderedSourceIds,
+        IReadOnlyList<string> sourceHashes)
+    {
+        if (orderedSourceIds.Count != sourceHashes.Count)
+            throw new ArgumentException("Source identities and hashes must have equal counts.");
+
+        var builder = new StringBuilder();
+        builder.Append(orderedSourceIds.Count).Append('\n');
+        for (var index = 0; index < orderedSourceIds.Count; index++)
+        {
+            builder.Append(orderedSourceIds[index].ToString("D"))
+                .Append(':')
+                .Append(sourceHashes[index])
+                .Append('\n');
+        }
+
+        return ComputeHash(builder.ToString());
+    }
+
+    public static string ImportKey(string snapshotId) =>
+        $"snapshot:{ComputeHash(snapshotId)}";
+
+    public static bool ManifestMatches(
+        CanonicalJobsImportSnapshot snapshot,
+        AgentJobImportState state) =>
+        string.Equals(snapshot.SnapshotId, state.SnapshotId, StringComparison.Ordinal)
+        && snapshot.CapturedAt == state.CapturedAt
+        && snapshot.ExpectedRecordCount == state.ExpectedRecordCount
+        && state.OrderedSourceIds is not null
+        && state.SourceHashes is not null
+        && snapshot.OrderedSourceIds.SequenceEqual(state.OrderedSourceIds)
+        && snapshot.SourceHashes.SequenceEqual(state.SourceHashes, StringComparer.Ordinal)
+        && string.Equals(snapshot.AggregateHash, state.AggregateHash, StringComparison.Ordinal);
+
+    private static string ComputeHash(string value) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+}
 
 public static class AgentsJobImportConverter
 {
@@ -119,7 +242,10 @@ public static class AgentsJobImportConverter
             [mapping])).Single();
     }
 
-    public static IReadOnlyList<AgentJob> Convert(CanonicalJobsImportSnapshot snapshot)
+    public static IReadOnlyList<AgentJob> Convert(CanonicalJobsImportSnapshot snapshot) =>
+        Prepare(snapshot).Jobs;
+
+    public static AgentJobImportPlan Prepare(CanonicalJobsImportSnapshot snapshot)
     {
         if (snapshot is null)
             throw new AgentJobImportException("The Jobs import snapshot is required.");
@@ -127,21 +253,46 @@ public static class AgentsJobImportConverter
             throw new AgentJobImportException("The Jobs import snapshot requires an id.");
         if (snapshot.CapturedAt == default)
             throw new AgentJobImportException("The Jobs import snapshot requires a capture time.");
-        if (snapshot.Records is null || snapshot.ActionMappings is null)
+        if (snapshot.ExpectedRecordCount < 0
+            || snapshot.Records is null
+            || snapshot.ActionMappings is null
+            || snapshot.OrderedSourceIds is null
+            || snapshot.SourceHashes is null)
             throw new AgentJobImportException("The Jobs import snapshot is incomplete.");
+        if (snapshot.ExpectedRecordCount != snapshot.Records.Count)
+            throw new AgentJobImportException("The Jobs import snapshot record count is not authoritative.");
+        if (snapshot.OrderedSourceIds.Count != snapshot.ExpectedRecordCount
+            || snapshot.SourceHashes.Count != snapshot.ExpectedRecordCount)
+            throw new AgentJobImportException("The Jobs import snapshot identity lists are incomplete.");
+        if (string.IsNullOrWhiteSpace(snapshot.AggregateHash))
+            throw new AgentJobImportException("The Jobs import snapshot requires an aggregate hash.");
 
         var mappings = BuildMappings(snapshot.ActionMappings);
         var jobs = new List<AgentJob>(snapshot.Records.Count);
         var sourceIds = new HashSet<Guid>();
-        foreach (var source in snapshot.Records)
+        for (var index = 0; index < snapshot.Records.Count; index++)
         {
+            var source = snapshot.Records[index];
             if (source is null)
                 throw new AgentJobImportException("The Jobs import snapshot contains a null source record.");
             if (!sourceIds.Add(source.SourceId))
                 throw new AgentJobImportException($"The source id '{source.SourceId}' occurs more than once.");
+            if (snapshot.OrderedSourceIds[index] != source.SourceId)
+                throw new AgentJobImportException("The Jobs import source order does not match its identity list.");
+            var sourceHash = AgentsJobImportIntegrity.ComputeSourceHash(source);
+            if (!string.Equals(snapshot.SourceHashes[index], sourceHash, StringComparison.Ordinal))
+                throw new AgentJobImportException(
+                    $"The source hash for '{source.SourceId}' does not match its record.");
             jobs.Add(Convert(source, mappings));
         }
-        return jobs;
+
+        var aggregateHash = AgentsJobImportIntegrity.ComputeAggregateHash(
+            snapshot.OrderedSourceIds,
+            snapshot.SourceHashes);
+        if (!string.Equals(snapshot.AggregateHash, aggregateHash, StringComparison.Ordinal))
+            throw new AgentJobImportException("The Jobs import aggregate hash does not match its ordered records.");
+
+        return new AgentJobImportPlan(snapshot, jobs);
     }
 
     private static AgentJob Convert(

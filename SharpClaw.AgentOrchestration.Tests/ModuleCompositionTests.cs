@@ -40,7 +40,7 @@ public sealed class ModuleCompositionTests
             Assert.That(permissionBuilder.Storage.Items.Select(item => item.StorageName), Is.EquivalentTo(
                 new[] { "policies", "grants", "approvals", "roles", "permission_sets" }));
             Assert.That(agentsBuilder.Storage.Items.Select(item => item.StorageName), Is.EquivalentTo(
-                new[] { "agents", "skills", "memory", "costs", "synchronization", "agent_jobs" }));
+                new[] { "agents", "skills", "memory", "costs", "synchronization", "agent_jobs", "agent_job_imports" }));
             Assert.That(permissionBuilder.Contracts.Exports.Select(item => item.ContractName),
                 Does.Contain("sharpclaw.permission"));
             Assert.That(agentsBuilder.Contracts.Requires.Select(item => item.ContractName),
@@ -78,6 +78,14 @@ public sealed class ModuleCompositionTests
                     "agentId", "callerIdentity", "actionIdentity", "resource", "canonicalJobId",
                     "channelId", "contextId", "permissionIdentity", "status", "handlerKey", "payloadCodec",
                     "recoveryMode", "createdAt", "updatedAt",
+                }));
+            Assert.That(
+                AgentsModule.StorageContracts.Single(item => item.StorageName == AgentsCatalog.AgentJobImportsStorage).Indexes!
+                    .Select(item => item.Name),
+                Is.EquivalentTo(new[]
+                {
+                    "snapshotId", "aggregateHash", "expectedRecordCount", "importedRecordCount",
+                    "completed", "capturedAt",
                 }));
             Assert.That(contextBuilder.Events.Items.OfType<EventDescriptor<ContextThreadChangedEvent>>(), Has.Exactly(1).Items);
             Assert.That(permissionBuilder.Events.Items.OfType<EventDescriptor<PermissionChangedEvent>>(), Has.Exactly(1).Items);
@@ -994,6 +1002,146 @@ public sealed class ModuleCompositionTests
     }
 
     [Test]
+    public async Task AgentJobImportAcceptsExactReplayAndPersistsCompletionMarker()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var gateway = new InMemoryStorageGateway();
+        var catalog = new AgentsCatalog(gateway, new AllowAllAgentAccessPolicy());
+        var source = NeutralRecord(now, "queued");
+        var snapshot = new CanonicalJobsImportSnapshot(
+            "snapshot-replay",
+            now,
+            [source],
+            [new("legacy.agent", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1)]);
+        var caller = new RequestPrincipal("importer", IsAuthenticated: true);
+
+        var first = await catalog.ImportAgentJobsAsync(caller, snapshot);
+        var second = await catalog.ImportAgentJobsAsync(caller, snapshot);
+        var state = await catalog.GetAgentJobImportStateAsync(snapshot.SnapshotId);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(first, Has.Count.EqualTo(1));
+            Assert.That(second, Has.Count.EqualTo(1));
+            Assert.That(
+                AgentsJobImportIntegrity.AreEquivalent(first[0], second[0]),
+                Is.True);
+            Assert.That(state, Is.Not.Null);
+            Assert.That(state!.Completed, Is.True);
+            Assert.That(state.ImportedRecordCount, Is.EqualTo(1));
+            Assert.That(state.ExpectedRecordCount, Is.EqualTo(1));
+            Assert.That(state.OrderedSourceIds, Is.EqualTo(new[] { source.SourceId }));
+            Assert.That(state.SourceHashes, Is.EqualTo(snapshot.SourceHashes));
+            Assert.That(state.AggregateHash, Is.EqualTo(snapshot.AggregateHash));
+        });
+    }
+
+    [Test]
+    public async Task AgentJobImportRejectsChangedSameIdentityAfterCompletion()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var gateway = new InMemoryStorageGateway();
+        var catalog = new AgentsCatalog(gateway, new AllowAllAgentAccessPolicy());
+        var source = NeutralRecord(now, "queued");
+        var snapshot = new CanonicalJobsImportSnapshot(
+            "snapshot-conflict",
+            now,
+            [source],
+            [new("legacy.agent", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1)]);
+        var caller = new RequestPrincipal("importer", IsAuthenticated: true);
+        await catalog.ImportAgentJobsAsync(caller, snapshot);
+
+        var changed = new CanonicalJobsImportSnapshot(
+            snapshot.SnapshotId,
+            snapshot.CapturedAt,
+            [source with { PayloadJson = """{"prompt":"changed"}""" }],
+            snapshot.ActionMappings);
+
+        Assert.ThrowsAsync<AgentJobImportException>(() =>
+            catalog.ImportAgentJobsAsync(caller, changed));
+        Assert.That(
+            (await catalog.GetAgentJobAsync(source.SourceId))!.PayloadJson,
+            Is.EqualTo("""{"prompt":"hello"}"""));
+    }
+
+    [Test]
+    public async Task AgentJobImportRejectsMissingExtraAndReorderedReplay()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var gateway = new InMemoryStorageGateway();
+        var catalog = new AgentsCatalog(gateway, new AllowAllAgentAccessPolicy());
+        var sources = new[] { NeutralRecord(now, "queued"), NeutralRecord(now, "paused") };
+        var mappings = new[]
+        {
+            new AgentJobActionMapping("legacy.agent", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1),
+        };
+        var snapshot = new CanonicalJobsImportSnapshot("snapshot-shape", now, sources, mappings);
+        var caller = new RequestPrincipal("importer", IsAuthenticated: true);
+        await catalog.ImportAgentJobsAsync(caller, snapshot);
+
+        var missing = new CanonicalJobsImportSnapshot(
+            snapshot.SnapshotId,
+            snapshot.CapturedAt,
+            [sources[0]],
+            mappings);
+        var extra = new CanonicalJobsImportSnapshot(
+            snapshot.SnapshotId,
+            snapshot.CapturedAt,
+            [.. sources, NeutralRecord(now, "queued")],
+            mappings);
+        var reordered = new CanonicalJobsImportSnapshot(
+            snapshot.SnapshotId,
+            snapshot.CapturedAt,
+            sources.Reverse().ToArray(),
+            mappings);
+
+        Assert.Multiple(() =>
+        {
+            Assert.ThrowsAsync<AgentJobImportException>(() =>
+                catalog.ImportAgentJobsAsync(caller, missing));
+            Assert.ThrowsAsync<AgentJobImportException>(() =>
+                catalog.ImportAgentJobsAsync(caller, extra));
+            Assert.ThrowsAsync<AgentJobImportException>(() =>
+                catalog.ImportAgentJobsAsync(caller, reordered));
+        });
+    }
+
+    [Test]
+    public async Task AgentJobImportResumesAfterInterruptedWrite()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var gateway = new InMemoryStorageGateway { FailAfterUpserts = 2 };
+        var catalog = new AgentsCatalog(gateway, new AllowAllAgentAccessPolicy());
+        var sources = new[] { NeutralRecord(now, "queued"), NeutralRecord(now, "paused") };
+        var snapshot = new CanonicalJobsImportSnapshot(
+            "snapshot-interrupted",
+            now,
+            sources,
+            [new("legacy.agent", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1)]);
+        var caller = new RequestPrincipal("importer", IsAuthenticated: true);
+
+        Assert.ThrowsAsync<IOException>(() =>
+            catalog.ImportAgentJobsAsync(caller, snapshot));
+        var interrupted = await catalog.GetAgentJobImportStateAsync(snapshot.SnapshotId);
+        Assert.That(interrupted, Is.Not.Null);
+        Assert.That(interrupted!.Completed, Is.False);
+        Assert.That(await catalog.GetAgentJobAsync(sources[0].SourceId), Is.Not.Null);
+        Assert.That(await catalog.GetAgentJobAsync(sources[1].SourceId), Is.Null);
+
+        gateway.FailAfterUpserts = null;
+        var resumed = await catalog.ImportAgentJobsAsync(caller, snapshot);
+        var completed = await catalog.GetAgentJobImportStateAsync(snapshot.SnapshotId);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(resumed, Has.Count.EqualTo(2));
+            Assert.That(completed, Is.Not.Null);
+            Assert.That(completed!.Completed, Is.True);
+            Assert.That(completed.ImportedRecordCount, Is.EqualTo(2));
+        });
+    }
+
+    [Test]
     public void AgentJobImportFailsClosedForMissingMappingPayloadAndRecoveryData()
     {
         var now = DateTimeOffset.UtcNow;
@@ -1449,6 +1597,9 @@ public sealed class ModuleCompositionTests
     {
         private sealed record Entry(JsonElement Value, JsonElement Indexes, long Revision);
         private readonly Dictionary<(string Module, string Storage, string Key), Entry> _records = [];
+        private int _upsertCount;
+
+        public int? FailAfterUpserts { get; set; }
 
         public IReadOnlyList<ModuleStorageContractDescriptor> ListContracts() => [];
 
@@ -1506,6 +1657,9 @@ public sealed class ModuleCompositionTests
 
         private JsonElement Upsert((string Module, string Storage) prefix, JsonElement parameters)
         {
+            if (FailAfterUpserts is { } limit && _upsertCount >= limit)
+                throw new IOException("Injected storage interruption.");
+            _upsertCount++;
             var key = parameters.GetProperty("key").GetString()!;
             var id = (prefix.Module, prefix.Storage, key);
             var revision = _records.TryGetValue(id, out var current) ? current.Revision + 1 : 1;

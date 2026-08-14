@@ -239,6 +239,15 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
                 new("createdAt", ModuleStorageIndexValueKind.DateTime),
                 new("updatedAt", ModuleStorageIndexValueKind.DateTime),
             ]),
+        Storage(AgentsCatalog.AgentJobImportsStorage, "Agent job import manifests and completion markers.",
+            [
+                new("snapshotId", ModuleStorageIndexValueKind.String),
+                new("aggregateHash", ModuleStorageIndexValueKind.String),
+                new("expectedRecordCount", ModuleStorageIndexValueKind.Number),
+                new("importedRecordCount", ModuleStorageIndexValueKind.Number),
+                new("completed", ModuleStorageIndexValueKind.String),
+                new("capturedAt", ModuleStorageIndexValueKind.DateTime),
+            ]),
     ];
 
     private static ModuleStorageContractDescriptor Storage(
