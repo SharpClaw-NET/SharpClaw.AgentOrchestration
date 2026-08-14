@@ -943,6 +943,9 @@ public sealed class ModuleCompositionTests
             [new("legacy.agent", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1)]);
 
         var jobs = AgentsJobImportConverter.Convert(snapshot);
+        var single = AgentsJobImportConverter.Convert(
+            new JobActionInput<NeutralAgentJobRecord>(queued),
+            new("legacy.agent", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1));
 
         Assert.Multiple(() =>
         {
@@ -955,6 +958,8 @@ public sealed class ModuleCompositionTests
             Assert.That(jobs[2].ResultJson, Is.EqualTo("{\"ok\":true}"));
             Assert.That(jobs.All(job => job.HandlerKey == AgentJobHandlerKeys.Canonical), Is.True);
             Assert.That(jobs.All(job => job.PayloadCodec == AgentJobPayloadCodecs.JsonV1), Is.True);
+            Assert.That(single.Id, Is.EqualTo(queued.SourceId));
+            Assert.That(single.RecoveryMode, Is.EqualTo(AgentJobRecoveryModes.CanonicalHandler));
         });
     }
 

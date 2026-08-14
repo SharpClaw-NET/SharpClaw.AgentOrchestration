@@ -107,6 +107,18 @@ public sealed class AgentJobImportException(string message) : InvalidOperationEx
 
 public static class AgentsJobImportConverter
 {
+    public static AgentJob Convert(
+        JobActionInput<NeutralAgentJobRecord> input,
+        AgentJobActionMapping mapping)
+    {
+        input.Deconstruct(out var source);
+        return Convert(new CanonicalJobsImportSnapshot(
+            "single-record",
+            source.CreatedAt,
+            [source],
+            [mapping])).Single();
+    }
+
     public static IReadOnlyList<AgentJob> Convert(CanonicalJobsImportSnapshot snapshot)
     {
         if (snapshot is null)
