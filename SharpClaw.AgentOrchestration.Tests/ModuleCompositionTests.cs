@@ -1662,6 +1662,15 @@ public sealed class ModuleCompositionTests
             _upsertCount++;
             var key = parameters.GetProperty("key").GetString()!;
             var id = (prefix.Module, prefix.Storage, key);
+            if (parameters.TryGetProperty("expectedRevision", out var expectedRevision)
+                && expectedRevision.ValueKind == JsonValueKind.Number)
+            {
+                var currentRevision = _records.TryGetValue(id, out var existingEntry)
+                    ? existingEntry.Revision
+                    : 0;
+                if (currentRevision != expectedRevision.GetInt64())
+                    throw new InvalidOperationException("The expected storage revision is stale.");
+            }
             var revision = _records.TryGetValue(id, out var current) ? current.Revision + 1 : 1;
             var indexes = parameters.TryGetProperty("indexes", out var index) ? index.Clone() : JsonSerializer.SerializeToElement(new { });
             _records[id] = new(parameters.GetProperty("value").Clone(), indexes, revision);

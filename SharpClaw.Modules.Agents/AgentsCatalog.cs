@@ -491,7 +491,12 @@ public sealed class AgentsCatalog
             return;
         }
 
-        await _agentJobs.UpsertAsync(Key(job.Id), job, AgentJobIndexes(job), ct);
+        await _agentJobs.UpsertAsync(
+            Key(job.Id),
+            job,
+            AgentJobIndexes(job),
+            expectedRevision: 0,
+            ct: ct);
         var persisted = await _agentJobs.GetAsync(Key(job.Id), ct);
         if (persisted is null || !AgentsJobImportIntegrity.AreEquivalent(job, persisted))
             throw new AgentJobImportException(
