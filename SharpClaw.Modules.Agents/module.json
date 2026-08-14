@@ -9,7 +9,7 @@
   "moduleType": "SharpClaw.Modules.Agents.AgentsModule",
   "minHostVersion": "0.5.0-beta.1",
   "author": "SharpClaw-NET",
-  "description": "Agents, skills, memory, agent profiles, and management tools.",
+  "description": "Agents, skills, memory, module-owned AgentJob definitions, and management tools.",
   "license": "AGPL-3.0-only",
   "enabled": true,
   "defaultEnabled": true,

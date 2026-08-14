@@ -14,6 +14,9 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
     public const string AccessSkillTool = "agents_access_skill";
     public const string WriteMemoryTool = "agents_write_memory";
     public const string SearchMemoryTool = "agents_search_memory";
+    public const string RecordAgentJobAction = "agents.job.record";
+    public const string AttachCanonicalJobAction = "agents.job.attach";
+    public const string CompleteAgentJobAction = "agents.job.complete";
     public const string AgentChangedEvent = "agents.agent.changed";
     public const string SkillChangedEvent = "agents.skill.changed";
     public const string MemoryChangedEvent = "agents.memory.changed";
@@ -48,6 +51,7 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
         module.Services.AddScoped<IAgentsActionGateway, AgentsActionGateway>();
         module.Services.AddScoped<IModuleActionPipeline, ModuleActionPipeline>();
         module.Services.AddScoped<IAgentsActionExecutor, AgentsActionExecutor>();
+        module.Services.AddScoped<IAgentsJobActionExecutor, AgentsJobActionExecutor>();
         module.Services.AddScoped<AgentsCreateAuthorizationHook>();
         module.Services.AddScoped<AgentsCliHandler>();
         module.Services.AddScoped<AgentChatProfileResolver>();
@@ -100,6 +104,27 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
             new("agents.memory.search"), 1, "agents.memory",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
             true, false, RepeatPolicy, null, TimeSpan.FromSeconds(10))
+        {
+            SafePoints = SafePoints,
+        });
+        module.Actions.Add(new ActionDescriptor<AgentsRecordJobAction, AgentJob>(
+            new(RecordAgentJobAction), 1, "agents.jobs",
+            ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
+            true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
+        {
+            SafePoints = SafePoints,
+        });
+        module.Actions.Add(new ActionDescriptor<AgentsAttachCanonicalJobAction, AgentJob>(
+            new(AttachCanonicalJobAction), 1, "agents.jobs",
+            ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
+            true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
+        {
+            SafePoints = SafePoints,
+        });
+        module.Actions.Add(new ActionDescriptor<AgentsCompleteJobAction, AgentJob>(
+            new(CompleteAgentJobAction), 1, "agents.jobs",
+            ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
+            true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
             SafePoints = SafePoints,
         });
@@ -189,6 +214,20 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
             [new("agentId", ModuleStorageIndexValueKind.String), new("updatedAt", ModuleStorageIndexValueKind.DateTime)]),
         Storage(AgentsCatalog.SynchronizationStorage, "Agent provider synchronization state.",
             [new("agentId", ModuleStorageIndexValueKind.String), new("updatedAt", ModuleStorageIndexValueKind.DateTime)]),
+        Storage(AgentsCatalog.AgentJobsStorage, "Agent-owned job definitions and canonical Jobs references.",
+            [
+                new("agentId", ModuleStorageIndexValueKind.String),
+                new("callerIdentity", ModuleStorageIndexValueKind.String),
+                new("actionIdentity", ModuleStorageIndexValueKind.String),
+                new("resource", ModuleStorageIndexValueKind.String),
+                new("canonicalJobId", ModuleStorageIndexValueKind.String),
+                new("channelId", ModuleStorageIndexValueKind.String),
+                new("contextId", ModuleStorageIndexValueKind.String),
+                new("permissionIdentity", ModuleStorageIndexValueKind.String),
+                new("status", ModuleStorageIndexValueKind.String),
+                new("createdAt", ModuleStorageIndexValueKind.DateTime),
+                new("updatedAt", ModuleStorageIndexValueKind.DateTime),
+            ]),
     ];
 
     private static ModuleStorageContractDescriptor Storage(

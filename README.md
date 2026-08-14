@@ -2,7 +2,7 @@
 
 This repository provides the package-owned Context, Two Tier Permission, and Agents modules for SharpClaw.
 
-`SharpClaw.Modules.Context` owns Threads, Channels, Contexts, conversation history, and context assembly. `SharpClaw.Modules.TwoTierPermission` owns clearance, scope, denials, delegation, grants, and approvals. `SharpClaw.Modules.Agents` owns Agents, Skills, Memory, profiles, and management tools.
+`SharpClaw.Modules.Context` owns Threads, Channels, Contexts, conversation history, and context assembly. `SharpClaw.Modules.TwoTierPermission` owns clearance, scope, denials, delegation, grants, and approvals. `SharpClaw.Modules.Agents` owns Agents, Skills, Memory, profiles, management tools, and module-owned `AgentJob` definitions. The module stores the canonical Jobs identity after kernel scheduling and projects canonical completion through typed module actions.
 
 The modules use current `SharpClaw.Contracts` module builders, declared storage contracts, `ModuleDocumentStore<T>`, and `IModuleStorageGateway`. Jobs and Events remain kernel-owned. The packages use declared module boundaries and contain no host project references.
 

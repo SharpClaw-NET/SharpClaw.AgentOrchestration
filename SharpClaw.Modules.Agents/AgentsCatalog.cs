@@ -12,6 +12,7 @@ public sealed class AgentsCatalog
     public const string MemoryStorage = "memory";
     public const string CostsStorage = "costs";
     public const string SynchronizationStorage = "synchronization";
+    public const string AgentJobsStorage = "agent_jobs";
 
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web) { PropertyNameCaseInsensitive = true };
@@ -21,6 +22,7 @@ public sealed class AgentsCatalog
     private readonly ModuleDocumentStore<MemoryRecord> _memory;
     private readonly ModuleDocumentStore<AgentCostRecord> _costs;
     private readonly ModuleDocumentStore<AgentSynchronizationRecord> _synchronization;
+    private readonly ModuleDocumentStore<AgentJob> _agentJobs;
     private readonly IAgentAccessPolicy _access;
 
     public AgentsCatalog(IModuleStorageGateway gateway, IAgentAccessPolicy access)
@@ -31,6 +33,7 @@ public sealed class AgentsCatalog
         _memory = new(gateway, ModuleId, MemoryStorage, $"{ModuleId}:{MemoryStorage}", JsonOptions);
         _costs = new(gateway, ModuleId, CostsStorage, $"{ModuleId}:{CostsStorage}", JsonOptions);
         _synchronization = new(gateway, ModuleId, SynchronizationStorage, $"{ModuleId}:{SynchronizationStorage}", JsonOptions);
+        _agentJobs = new(gateway, ModuleId, AgentJobsStorage, $"{ModuleId}:{AgentJobsStorage}", JsonOptions);
     }
 
     public Task<AgentRecord?> GetAgentAsync(Guid id, CancellationToken ct = default) =>
@@ -44,6 +47,94 @@ public sealed class AgentsCatalog
 
     public Task<IReadOnlyList<SkillRecord>> ListSkillsAsync(CancellationToken ct = default) =>
         _skills.ListAsync(ct);
+
+    public Task<AgentJob?> GetAgentJobAsync(Guid id, CancellationToken ct = default) =>
+        _agentJobs.GetAsync(Key(id), ct);
+
+    public Task<IReadOnlyList<AgentJob>> ListAgentJobsAsync(CancellationToken ct = default) =>
+        _agentJobs.ListAsync(ct);
+
+    public async Task<AgentJob> RecordAgentJobAsync(
+        RequestPrincipal caller,
+        AgentJob job,
+        CancellationToken ct = default)
+    {
+        await RequireAsync(caller, "manage_agent_jobs", job.AgentId, ct);
+        ValidateAgentJob(job);
+        var now = DateTimeOffset.UtcNow;
+        var stored = job with
+        {
+            Id = job.Id == Guid.Empty ? Guid.NewGuid() : job.Id,
+            CreatedAt = job.CreatedAt == default ? now : job.CreatedAt,
+            UpdatedAt = now,
+            ResultAuthority = string.IsNullOrWhiteSpace(job.ResultAuthority)
+                ? AgentJob.CanonicalResultAuthority
+                : job.ResultAuthority,
+        };
+        await _agentJobs.UpsertAsync(Key(stored.Id), stored, AgentJobIndexes(stored), ct);
+        return stored;
+    }
+
+    public async Task<AgentJob> AttachCanonicalJobAsync(
+        RequestPrincipal caller,
+        Guid agentJobId,
+        Guid canonicalJobId,
+        CancellationToken ct = default)
+    {
+        if (canonicalJobId == Guid.Empty)
+            throw new ArgumentException("A canonical job id is required.", nameof(canonicalJobId));
+        var current = await GetAgentJobAsync(agentJobId, ct)
+            ?? throw new InvalidOperationException("The Agent job was not found.");
+        await RequireAsync(caller, "manage_agent_jobs", current.AgentId, ct);
+        if (current.CanonicalJobId is { } existing && existing != canonicalJobId)
+            throw new InvalidOperationException("The Agent job already references a different canonical job.");
+        var updated = current with
+        {
+            CanonicalJobId = canonicalJobId,
+            UpdatedAt = DateTimeOffset.UtcNow,
+            ResultAuthority = AgentJob.CanonicalResultAuthority,
+        };
+        await _agentJobs.UpsertAsync(Key(updated.Id), updated, AgentJobIndexes(updated), ct);
+        return updated;
+    }
+
+    public async Task<AgentJob> ProjectCanonicalCompletionAsync(
+        RequestPrincipal caller,
+        Guid agentJobId,
+        Guid canonicalJobId,
+        string status,
+        string? resultJson,
+        string? error,
+        long inputTokens,
+        long outputTokens,
+        DateTimeOffset completedAt,
+        CancellationToken ct = default)
+    {
+        if (canonicalJobId == Guid.Empty)
+            throw new ArgumentException("A canonical job id is required.", nameof(canonicalJobId));
+        if (string.IsNullOrWhiteSpace(status))
+            throw new ArgumentException("A canonical job status is required.", nameof(status));
+        if (inputTokens < 0 || outputTokens < 0)
+            throw new ArgumentOutOfRangeException(nameof(inputTokens), "Token counts cannot be negative.");
+        var current = await GetAgentJobAsync(agentJobId, ct)
+            ?? throw new InvalidOperationException("The Agent job was not found.");
+        await RequireAsync(caller, "manage_agent_jobs", current.AgentId, ct);
+        if (current.CanonicalJobId != canonicalJobId)
+            throw new InvalidOperationException("The completion does not match the stored canonical job.");
+        var updated = current with
+        {
+            Status = status.Trim(),
+            ResultJson = resultJson,
+            Error = error,
+            InputTokens = inputTokens,
+            OutputTokens = outputTokens,
+            CompletedAt = completedAt,
+            UpdatedAt = DateTimeOffset.UtcNow,
+            ResultAuthority = AgentJob.CanonicalResultAuthority,
+        };
+        await _agentJobs.UpsertAsync(Key(updated.Id), updated, AgentJobIndexes(updated), ct);
+        return updated;
+    }
 
     public async Task<AgentRecord> DeleteAgentAsync(
         RequestPrincipal caller,
@@ -297,4 +388,41 @@ public sealed class AgentsCatalog
             || role.Equals("administrator", StringComparison.OrdinalIgnoreCase)) == true;
 
     private static string Key(Guid id) => id.ToString("N");
+
+    private static void ValidateAgentJob(AgentJob job)
+    {
+        if (job.AgentId == Guid.Empty)
+            throw new ArgumentException("An Agent job requires an agent id.", nameof(job));
+        if (string.IsNullOrWhiteSpace(job.CallerIdentity))
+            throw new ArgumentException("An Agent job requires caller identity.", nameof(job));
+        if (string.IsNullOrWhiteSpace(job.ActionIdentity))
+            throw new ArgumentException("An Agent job requires action identity.", nameof(job));
+        if (string.IsNullOrWhiteSpace(job.Resource))
+            throw new ArgumentException("An Agent job requires a resource.", nameof(job));
+        if (string.IsNullOrWhiteSpace(job.Status))
+            throw new ArgumentException("An Agent job requires a status.", nameof(job));
+        if (string.IsNullOrWhiteSpace(job.PermissionIdentity))
+            throw new ArgumentException("An Agent job requires permission identity.", nameof(job));
+        if (job.InputTokens < 0 || job.OutputTokens < 0)
+            throw new ArgumentOutOfRangeException(nameof(job), "Token counts cannot be negative.");
+        if (job.ApprovalIdentities is null || job.ApprovalIdentities.Any(string.IsNullOrWhiteSpace))
+            throw new ArgumentException("Approval identities cannot be empty.", nameof(job));
+        if (!string.Equals(job.ResultAuthority, AgentJob.CanonicalResultAuthority, StringComparison.Ordinal))
+            throw new ArgumentException("Agent job results must use canonical Jobs authority.", nameof(job));
+    }
+
+    private static object AgentJobIndexes(AgentJob job) => new
+    {
+        agentId = job.AgentId.ToString("N"),
+        callerIdentity = job.CallerIdentity,
+        actionIdentity = job.ActionIdentity,
+        resource = job.Resource,
+        canonicalJobId = job.CanonicalJobId?.ToString("N") ?? string.Empty,
+        channelId = job.ChannelId?.ToString("N") ?? string.Empty,
+        contextId = job.ContextId?.ToString("N") ?? string.Empty,
+        permissionIdentity = job.PermissionIdentity,
+        status = job.Status,
+        createdAt = job.CreatedAt,
+        updatedAt = job.UpdatedAt,
+    };
 }

@@ -40,7 +40,7 @@ public sealed class ModuleCompositionTests
             Assert.That(permissionBuilder.Storage.Items.Select(item => item.StorageName), Is.EquivalentTo(
                 new[] { "policies", "grants", "approvals", "roles", "permission_sets" }));
             Assert.That(agentsBuilder.Storage.Items.Select(item => item.StorageName), Is.EquivalentTo(
-                new[] { "agents", "skills", "memory", "costs", "synchronization" }));
+                new[] { "agents", "skills", "memory", "costs", "synchronization", "agent_jobs" }));
             Assert.That(permissionBuilder.Contracts.Exports.Select(item => item.ContractName),
                 Does.Contain("sharpclaw.permission"));
             Assert.That(agentsBuilder.Contracts.Requires.Select(item => item.ContractName),
@@ -48,6 +48,7 @@ public sealed class ModuleCompositionTests
             Assert.That(contextBuilder.Services.Any(item => item.ServiceType == typeof(IContextActionExecutor)), Is.True);
             Assert.That(permissionBuilder.Services.Any(item => item.ServiceType == typeof(IPermissionActionExecutor)), Is.True);
             Assert.That(agentsBuilder.Services.Any(item => item.ServiceType == typeof(IAgentsActionExecutor)), Is.True);
+            Assert.That(agentsBuilder.Services.Any(item => item.ServiceType == typeof(IAgentsJobActionExecutor)), Is.True);
             Assert.That(contextBuilder.Actions.Items.OfType<ActionDescriptor<ContextCreateThreadAction, ContextThreadRecord>>().Single().SafePoints,
                 Is.Not.Empty);
             Assert.That(
@@ -60,6 +61,20 @@ public sealed class ModuleCompositionTests
                 Is.Not.Empty);
             Assert.That(agentsBuilder.Actions.Items.OfType<ActionDescriptor<AgentsSaveSkillAction, SkillRecord>>().Single().SafePoints,
                 Is.Not.Empty);
+            Assert.That(agentsBuilder.Actions.Items.OfType<ActionDescriptor<AgentsRecordJobAction, AgentJob>>().Single().Key.Value,
+                Is.EqualTo(AgentsModule.RecordAgentJobAction));
+            Assert.That(agentsBuilder.Actions.Items.OfType<ActionDescriptor<AgentsAttachCanonicalJobAction, AgentJob>>().Single().Key.Value,
+                Is.EqualTo(AgentsModule.AttachCanonicalJobAction));
+            Assert.That(agentsBuilder.Actions.Items.OfType<ActionDescriptor<AgentsCompleteJobAction, AgentJob>>().Single().Key.Value,
+                Is.EqualTo(AgentsModule.CompleteAgentJobAction));
+            Assert.That(
+                AgentsModule.StorageContracts.Single(item => item.StorageName == AgentsCatalog.AgentJobsStorage).Indexes!
+                    .Select(item => item.Name),
+                Is.EquivalentTo(new[]
+                {
+                    "agentId", "callerIdentity", "actionIdentity", "resource", "canonicalJobId",
+                    "channelId", "contextId", "permissionIdentity", "status", "createdAt", "updatedAt",
+                }));
             Assert.That(contextBuilder.Events.Items.OfType<EventDescriptor<ContextThreadChangedEvent>>(), Has.Exactly(1).Items);
             Assert.That(permissionBuilder.Events.Items.OfType<EventDescriptor<PermissionChangedEvent>>(), Has.Exactly(1).Items);
             Assert.That(agentsBuilder.Events.Items.OfType<EventDescriptor<MemoryChangedEvent>>(), Has.Exactly(1).Items);
@@ -808,6 +823,97 @@ public sealed class ModuleCompositionTests
     }
 
     [Test]
+    public async Task AgentsOwnAgentJobStateAndProjectCanonicalCompletion()
+    {
+        var gateway = new InMemoryStorageGateway();
+        var catalog = new AgentsCatalog(gateway, new AllowAllAgentAccessPolicy());
+        var executor = new AgentsJobActionExecutor(catalog);
+        var caller = new RequestPrincipal("caller", IsAuthenticated: true);
+        var agentId = Guid.NewGuid();
+        var channelId = Guid.NewGuid();
+        var contextId = Guid.NewGuid();
+        var createdAt = DateTimeOffset.UtcNow.AddMinutes(-2);
+        var job = new AgentJob(
+            Guid.NewGuid(), agentId, "caller", "agent.respond", "conversation",
+            "{\"script\":true}", "{\"prompt\":\"hello\"}", "D:\\work",
+            "queued", "Independent", 11, 7, ["approver-1", "approver-2"],
+            channelId, contextId, "permission-1", createdAt, createdAt, null, null,
+            null, null, null);
+
+        var recorded = await executor.RecordAsync(new(job, caller));
+        var canonicalJobId = Guid.NewGuid();
+        var attached = await executor.AttachCanonicalJobAsync(
+            new(recorded.Id, canonicalJobId, caller));
+        var completedAt = DateTimeOffset.UtcNow;
+        var completed = await executor.CompleteAsync(new(
+            recorded.Id,
+            canonicalJobId,
+            "completed",
+            "{\"answer\":\"ok\"}",
+            null,
+            19,
+            13,
+            completedAt,
+            caller));
+        var restartedCatalog = new AgentsCatalog(gateway, new AllowAllAgentAccessPolicy());
+        var restored = await restartedCatalog.GetAgentJobAsync(recorded.Id);
+        var listed = await restartedCatalog.ListAgentJobsAsync();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(attached.CanonicalJobId, Is.EqualTo(canonicalJobId));
+            Assert.That(completed.Status, Is.EqualTo("completed"));
+            Assert.That(restored, Is.Not.Null);
+            Assert.That(listed.Select(item => item.Id), Does.Contain(recorded.Id));
+            Assert.That(restored!.AgentId, Is.EqualTo(agentId));
+            Assert.That(restored.CallerIdentity, Is.EqualTo("caller"));
+            Assert.That(restored.ActionIdentity, Is.EqualTo("agent.respond"));
+            Assert.That(restored.Resource, Is.EqualTo("conversation"));
+            Assert.That(restored.ScriptJson, Is.EqualTo("{\"script\":true}"));
+            Assert.That(restored.PayloadJson, Is.EqualTo("{\"prompt\":\"hello\"}"));
+            Assert.That(restored.WorkingDirectory, Is.EqualTo("D:\\work"));
+            Assert.That(restored.Clearance, Is.EqualTo("Independent"));
+            Assert.That(restored.InputTokens, Is.EqualTo(19));
+            Assert.That(restored.OutputTokens, Is.EqualTo(13));
+            Assert.That(restored.ApprovalIdentities, Is.EquivalentTo(new[] { "approver-1", "approver-2" }));
+            Assert.That(restored.ChannelId, Is.EqualTo(channelId));
+            Assert.That(restored.ContextId, Is.EqualTo(contextId));
+            Assert.That(restored.PermissionIdentity, Is.EqualTo("permission-1"));
+            Assert.That(restored.CanonicalJobId, Is.EqualTo(canonicalJobId));
+            Assert.That(restored.ResultJson, Is.EqualTo("{\"answer\":\"ok\"}"));
+            Assert.That(restored.Error, Is.Null);
+            Assert.That(restored.CompletedAt, Is.EqualTo(completedAt));
+            Assert.That(restored.ResultAuthority, Is.EqualTo(AgentJob.CanonicalResultAuthority));
+        });
+    }
+
+    [Test]
+    public async Task AgentsRejectCanonicalIdentityMismatchAndIncompleteDefinitions()
+    {
+        var catalog = new AgentsCatalog(new InMemoryStorageGateway(), new AllowAllAgentAccessPolicy());
+        var caller = new RequestPrincipal("caller", IsAuthenticated: true);
+        var job = new AgentJob(
+            Guid.NewGuid(), Guid.NewGuid(), "caller", "agent.respond", "conversation",
+            "{}", "{}", "D:\\work", "queued", "Unset", 0, 0, [], null, null,
+            "permission-1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, null, null, null, null, null);
+        var recorded = await catalog.RecordAgentJobAsync(caller, job);
+        var canonicalJobId = Guid.NewGuid();
+        await catalog.AttachCanonicalJobAsync(caller, recorded.Id, canonicalJobId);
+
+        Assert.Multiple(() =>
+        {
+            Assert.ThrowsAsync<InvalidOperationException>(() =>
+                catalog.AttachCanonicalJobAsync(caller, recorded.Id, Guid.NewGuid()));
+            Assert.ThrowsAsync<InvalidOperationException>(() =>
+                catalog.ProjectCanonicalCompletionAsync(
+                    caller, recorded.Id, Guid.NewGuid(), "failed", null, "unknown", 0, 0,
+                    DateTimeOffset.UtcNow));
+            Assert.ThrowsAsync<ArgumentException>(() =>
+                catalog.RecordAgentJobAsync(caller, job with { ActionIdentity = " " }));
+        });
+    }
+
+    [Test]
     public async Task DirectChatAndStoreCommitRequireContextAuthorization()
     {
         var gateway = new InMemoryStorageGateway();
@@ -1169,6 +1275,16 @@ public sealed class ModuleCompositionTests
             RequiredCalls++;
             return await terminal(action, ct);
         }
+    }
+
+    private sealed class AllowAllAgentAccessPolicy : IAgentAccessPolicy
+    {
+        public ValueTask<ContextAccessDecision> EvaluateAgentAsync(
+            RequestPrincipal principal,
+            string capability,
+            Guid? targetAgentId,
+            CancellationToken ct = default) =>
+            ValueTask.FromResult(ContextAccessDecision.Allow());
     }
 
     private sealed class InMemoryStorageGateway : IModuleStorageGateway
