@@ -54,6 +54,21 @@ public sealed class AgentsCatalog
     public Task<IReadOnlyList<AgentJob>> ListAgentJobsAsync(CancellationToken ct = default) =>
         _agentJobs.ListAsync(ct);
 
+    public async Task<IReadOnlyList<AgentJob>> ImportAgentJobsAsync(
+        RequestPrincipal caller,
+        CanonicalJobsImportSnapshot snapshot,
+        CancellationToken ct = default)
+    {
+        await RequireAsync(caller, "manage_agent_jobs", null, ct);
+        var jobs = AgentsJobImportConverter.Convert(snapshot);
+        foreach (var job in jobs)
+        {
+            ValidateAgentJob(job);
+            await _agentJobs.UpsertAsync(Key(job.Id), job, AgentJobIndexes(job), ct);
+        }
+        return jobs;
+    }
+
     public async Task<AgentJob> RecordAgentJobAsync(
         RequestPrincipal caller,
         AgentJob job,
@@ -409,6 +424,20 @@ public sealed class AgentsCatalog
             throw new ArgumentException("Approval identities cannot be empty.", nameof(job));
         if (!string.Equals(job.ResultAuthority, AgentJob.CanonicalResultAuthority, StringComparison.Ordinal))
             throw new ArgumentException("Agent job results must use canonical Jobs authority.", nameof(job));
+        if (!string.Equals(job.HandlerKey, AgentJobHandlerKeys.Canonical, StringComparison.Ordinal))
+            throw new ArgumentException("Agent job handler authority is not supported.", nameof(job));
+        if (!string.Equals(job.PayloadCodec, AgentJobPayloadCodecs.JsonV1, StringComparison.Ordinal))
+            throw new ArgumentException("Agent job payload codec is not supported.", nameof(job));
+        if (!job.RecoveryMode.Equals(
+                AgentJobRecoveryModes.CanonicalHandler,
+                StringComparison.Ordinal)
+            && !job.RecoveryMode.Equals(
+                AgentJobRecoveryModes.CanonicalRecovery,
+                StringComparison.Ordinal)
+            && !job.RecoveryMode.Equals(
+                AgentJobRecoveryModes.Terminal,
+                StringComparison.Ordinal))
+            throw new ArgumentException("Agent job recovery mode is not supported.", nameof(job));
     }
 
     private static object AgentJobIndexes(AgentJob job) => new
@@ -422,6 +451,9 @@ public sealed class AgentsCatalog
         contextId = job.ContextId?.ToString("N") ?? string.Empty,
         permissionIdentity = job.PermissionIdentity,
         status = job.Status,
+        handlerKey = job.HandlerKey,
+        payloadCodec = job.PayloadCodec,
+        recoveryMode = job.RecoveryMode,
         createdAt = job.CreatedAt,
         updatedAt = job.UpdatedAt,
     };

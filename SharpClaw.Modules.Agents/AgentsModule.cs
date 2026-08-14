@@ -17,6 +17,7 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
     public const string RecordAgentJobAction = "agents.job.record";
     public const string AttachCanonicalJobAction = "agents.job.attach";
     public const string CompleteAgentJobAction = "agents.job.complete";
+    public const string ImportAgentJobsAction = "agents.job.import";
     public const string AgentChangedEvent = "agents.agent.changed";
     public const string SkillChangedEvent = "agents.skill.changed";
     public const string MemoryChangedEvent = "agents.memory.changed";
@@ -128,6 +129,13 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
         {
             SafePoints = SafePoints,
         });
+        module.Actions.Add(new ActionDescriptor<AgentsImportJobsAction, IReadOnlyList<AgentJob>>(
+            new(ImportAgentJobsAction), 1, "agents.jobs",
+            ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
+            true, true, RepeatPolicy, null, TimeSpan.FromMinutes(2))
+        {
+            SafePoints = SafePoints,
+        });
         module.Hooks.For(new SharpClawActionKey("agents.create"))
             .Use<AgentsCreateAuthorizationHook>(new HookOrdering("agents.create.authorization"));
 
@@ -225,6 +233,9 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
                 new("contextId", ModuleStorageIndexValueKind.String),
                 new("permissionIdentity", ModuleStorageIndexValueKind.String),
                 new("status", ModuleStorageIndexValueKind.String),
+                new("handlerKey", ModuleStorageIndexValueKind.String),
+                new("payloadCodec", ModuleStorageIndexValueKind.String),
+                new("recoveryMode", ModuleStorageIndexValueKind.String),
                 new("createdAt", ModuleStorageIndexValueKind.DateTime),
                 new("updatedAt", ModuleStorageIndexValueKind.DateTime),
             ]),

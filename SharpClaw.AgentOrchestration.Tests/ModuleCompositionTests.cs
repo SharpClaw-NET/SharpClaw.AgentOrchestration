@@ -67,13 +67,17 @@ public sealed class ModuleCompositionTests
                 Is.EqualTo(AgentsModule.AttachCanonicalJobAction));
             Assert.That(agentsBuilder.Actions.Items.OfType<ActionDescriptor<AgentsCompleteJobAction, AgentJob>>().Single().Key.Value,
                 Is.EqualTo(AgentsModule.CompleteAgentJobAction));
+            Assert.That(agentsBuilder.Actions.Items
+                .OfType<ActionDescriptor<AgentsImportJobsAction, IReadOnlyList<AgentJob>>>()
+                .Single().Key.Value, Is.EqualTo(AgentsModule.ImportAgentJobsAction));
             Assert.That(
                 AgentsModule.StorageContracts.Single(item => item.StorageName == AgentsCatalog.AgentJobsStorage).Indexes!
                     .Select(item => item.Name),
                 Is.EquivalentTo(new[]
                 {
                     "agentId", "callerIdentity", "actionIdentity", "resource", "canonicalJobId",
-                    "channelId", "contextId", "permissionIdentity", "status", "createdAt", "updatedAt",
+                    "channelId", "contextId", "permissionIdentity", "status", "handlerKey", "payloadCodec",
+                    "recoveryMode", "createdAt", "updatedAt",
                 }));
             Assert.That(contextBuilder.Events.Items.OfType<EventDescriptor<ContextThreadChangedEvent>>(), Has.Exactly(1).Items);
             Assert.That(permissionBuilder.Events.Items.OfType<EventDescriptor<PermissionChangedEvent>>(), Has.Exactly(1).Items);
@@ -912,6 +916,155 @@ public sealed class ModuleCompositionTests
                 catalog.RecordAgentJobAsync(caller, job with { ActionIdentity = " " }));
         });
     }
+
+    [Test]
+    public void AgentJobImportConverterPreservesQueuedAndRecoveryBoundaries()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var canonicalJobId = Guid.NewGuid();
+        var queued = NeutralRecord(now, "queued");
+        var active = NeutralRecord(
+            now,
+            "active",
+            canonicalJobId: canonicalJobId,
+            startedAt: now.AddMinutes(-1),
+            resultAuthority: AgentJob.CanonicalResultAuthority);
+        var terminal = NeutralRecord(
+            now,
+            "completed",
+            canonicalJobId: canonicalJobId,
+            completedAt: now,
+            resultJson: "{\"ok\":true}",
+            resultAuthority: AgentJob.CanonicalResultAuthority);
+        var snapshot = new CanonicalJobsImportSnapshot(
+            "snapshot-1",
+            now,
+            [queued, active, terminal],
+            [new("legacy.agent", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1)]);
+
+        var jobs = AgentsJobImportConverter.Convert(snapshot);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(jobs[0].RecoveryMode, Is.EqualTo(AgentJobRecoveryModes.CanonicalHandler));
+            Assert.That(jobs[0].CanonicalJobId, Is.Null);
+            Assert.That(jobs[0].PayloadJson, Is.EqualTo("{\"prompt\":\"hello\"}"));
+            Assert.That(jobs[1].RecoveryMode, Is.EqualTo(AgentJobRecoveryModes.CanonicalRecovery));
+            Assert.That(jobs[1].CanonicalJobId, Is.EqualTo(canonicalJobId));
+            Assert.That(jobs[2].RecoveryMode, Is.EqualTo(AgentJobRecoveryModes.Terminal));
+            Assert.That(jobs[2].ResultJson, Is.EqualTo("{\"ok\":true}"));
+            Assert.That(jobs.All(job => job.HandlerKey == AgentJobHandlerKeys.Canonical), Is.True);
+            Assert.That(jobs.All(job => job.PayloadCodec == AgentJobPayloadCodecs.JsonV1), Is.True);
+        });
+    }
+
+    [Test]
+    public async Task AgentJobImportActionPersistsOnlyMappedRecords()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var gateway = new InMemoryStorageGateway();
+        var catalog = new AgentsCatalog(gateway, new AllowAllAgentAccessPolicy());
+        var executor = new AgentsJobActionExecutor(catalog);
+        var source = NeutralRecord(now, "paused");
+        var snapshot = new CanonicalJobsImportSnapshot(
+            "snapshot-2",
+            now,
+            [source],
+            [new("legacy.agent", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1)]);
+
+        var imported = await executor.ImportAsync(new(
+            snapshot,
+            new RequestPrincipal("importer", IsAuthenticated: true)));
+        var persisted = await new AgentsCatalog(gateway, new AllowAllAgentAccessPolicy())
+            .GetAgentJobAsync(source.SourceId);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(imported, Has.Count.EqualTo(1));
+            Assert.That(imported[0].RecoveryMode, Is.EqualTo(AgentJobRecoveryModes.CanonicalHandler));
+            Assert.That(persisted, Is.Not.Null);
+            Assert.That(persisted!.Id, Is.EqualTo(source.SourceId));
+            Assert.That(persisted.Status, Is.EqualTo("paused"));
+        });
+    }
+
+    [Test]
+    public void AgentJobImportFailsClosedForMissingMappingPayloadAndRecoveryData()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var source = NeutralRecord(now, "queued");
+        var baseSnapshot = new CanonicalJobsImportSnapshot(
+            "snapshot-3",
+            now,
+            [source],
+            [new("legacy.agent", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1)]);
+
+        Assert.Multiple(() =>
+        {
+            Assert.Throws<AgentJobImportException>(() => AgentsJobImportConverter.Convert(
+                baseSnapshot with { ActionMappings = [] }));
+            Assert.Throws<AgentJobImportException>(() => AgentsJobImportConverter.Convert(
+                baseSnapshot with
+                {
+                    Records = [source with { PayloadJson = "not-json" }],
+                }));
+            Assert.Throws<AgentJobImportException>(() => AgentsJobImportConverter.Convert(
+                baseSnapshot with
+                {
+                    Records = [source with { Status = "active" }],
+                }));
+            Assert.Throws<AgentJobImportException>(() => AgentsJobImportConverter.Convert(
+                baseSnapshot with
+                {
+                    ActionMappings = [new("legacy.agent", "untrusted.handler", AgentJobPayloadCodecs.JsonV1)],
+                }));
+            Assert.Throws<AgentJobImportException>(() => AgentsJobImportConverter.Convert(
+                baseSnapshot with
+                {
+                    Records = [source with { ResultAuthority = "untrusted.results" }],
+                }));
+            Assert.Throws<AgentJobImportException>(() => AgentsJobImportConverter.Convert(
+                baseSnapshot with
+                {
+                    Records = [source with { ContextId = Guid.Empty }],
+                }));
+        });
+    }
+
+    private static NeutralAgentJobRecord NeutralRecord(
+        DateTimeOffset now,
+        string status,
+        Guid? canonicalJobId = null,
+        DateTimeOffset? startedAt = null,
+        DateTimeOffset? completedAt = null,
+        string? resultJson = null,
+        string? error = null,
+        string resultAuthority = "") =>
+        new(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "caller",
+            "legacy.agent",
+            "conversation",
+            "{\"script\":true}",
+            "{\"prompt\":\"hello\"}",
+            "D:\\work",
+            status,
+            "Independent",
+            4,
+            5,
+            ["approver"],
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "permission-1",
+            now.AddMinutes(-2),
+            now,
+            startedAt,
+            completedAt,
+            canonicalJobId,
+            resultJson,
+            error,
+            resultAuthority);
 
     [Test]
     public async Task DirectChatAndStoreCommitRequireContextAuthorization()

@@ -6,7 +6,7 @@
     <PackageId>SharpClaw.Modules.Agents</PackageId>
     <Title>SharpClaw Agents Module</Title>
     <Authors>SharpClaw-NET</Authors>
-    <Description>Runtime-loadable SharpClaw module for agents, skills, memory, AgentJob definitions, and management tools.</Description>
+    <Description>Runtime-loadable SharpClaw module for agents, skills, memory, AgentJob definitions, canonical Jobs import, and management tools.</Description>
     <PackageTags>sharpclaw;module;agents;skills;memory;profiles;agent-jobs</PackageTags>
     <PackageLicenseExpression>AGPL-3.0-only</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
