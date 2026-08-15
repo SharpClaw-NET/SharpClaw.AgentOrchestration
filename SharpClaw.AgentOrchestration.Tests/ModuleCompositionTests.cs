@@ -103,8 +103,12 @@ public sealed class ModuleCompositionTests
             Assert.That(permissionBuilder.Events.Items.OfType<EventDescriptor<PermissionChangedEvent>>(), Has.Exactly(1).Items);
             Assert.That(agentsBuilder.Events.Items.OfType<EventDescriptor<MemoryChangedEvent>>(), Has.Exactly(1).Items);
             Assert.That(contextBuilder.Hooks.Items.Any(item => item.StartsWith("context.conversation.commit", StringComparison.Ordinal)), Is.True);
+            Assert.That(contextBuilder.Hooks.Items,
+                Does.Contain("permission.context-access:ContextPermissionActionHook:permission.context-access.host-entry"));
             Assert.That(permissionBuilder.Hooks.Items.Any(item => item.StartsWith("permission.grant", StringComparison.Ordinal)), Is.True);
             Assert.That(agentsBuilder.Hooks.Items.Any(item => item.StartsWith("agents.create", StringComparison.Ordinal)), Is.True);
+            Assert.That(agentsBuilder.Hooks.Items,
+                Does.Contain("permission.agent-access:AgentsPermissionActionHook:permission.agent-access.host-entry"));
         });
     }
 
@@ -132,6 +136,14 @@ public sealed class ModuleCompositionTests
                 Assert.That(root.GetProperty("defaultEnabled").GetBoolean(), Is.True);
                 Assert.That(root.GetProperty("hostMode").GetString(), Is.EqualTo("sidecar"));
                 Assert.That(root.GetProperty("requestedHooks").GetArrayLength(), Is.GreaterThan(0));
+                var hookTargets = root.GetProperty("requestedHooks")
+                    .EnumerateArray()
+                    .Select(hook => hook.GetProperty("target").GetString())
+                    .ToArray();
+                if (item.Item2 == "sharpclaw_context")
+                    Assert.That(hookTargets, Does.Contain("permission.context-access"));
+                if (item.Item2 == "sharpclaw_agents")
+                    Assert.That(hookTargets, Does.Contain("permission.agent-access"));
             });
         }
     }

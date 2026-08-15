@@ -31,6 +31,10 @@
     {
       "target": "context.conversation.commit",
       "effects": ["Inspect", "Cancel"]
+    },
+    {
+      "target": "permission.context-access",
+      "effects": ["Inspect", "Observe"]
     }
   ]
 }

@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using SharpClaw.Contracts.Modules;
 using SharpClaw.Contracts.Persistence;
+using SharpClaw.ModuleSDK;
 using SharpClaw.Modules.AgentOrchestration.Contracts;
 
 namespace SharpClaw.Modules.Agents;
@@ -55,6 +56,7 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
         module.Services.AddScoped<IAgentsActionExecutor, AgentsActionExecutor>();
         module.Services.AddScoped<IAgentsJobActionExecutor, AgentsJobActionExecutor>();
         module.Services.AddScoped<AgentsCreateAuthorizationHook>();
+        module.Services.AddScoped<AgentsPermissionActionHook>();
         module.Services.AddScoped<AgentsCliHandler>();
         module.Services.AddScoped<AgentChatProfileResolver>();
 
@@ -139,6 +141,10 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
         });
         module.Hooks.For(new SharpClawActionKey("agents.create"))
             .Use<AgentsCreateAuthorizationHook>(new HookOrdering("agents.create.authorization"));
+        module.Hooks.For(PermissionActionDescriptors.AgentAccess)
+            .Use<AgentsPermissionActionHook>(
+                ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
+                new HookOrdering("permission.agent-access.host-entry"));
 
         module.Events.Add(new EventDescriptor<AgentChangedEvent>(
             new(AgentChangedEvent), 1, "agents",

@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using SharpClaw.Contracts.Modules;
 using SharpClaw.Contracts.Persistence;
+using SharpClaw.ModuleSDK;
 using SharpClaw.Modules.AgentOrchestration.Contracts;
 
 namespace SharpClaw.Modules.Context;
@@ -50,6 +51,7 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
         module.Services.AddScoped<IPermissionActionEntry, HostPermissionActionEntry>();
         module.Services.AddScoped<IModuleActionPipeline, ModuleActionPipeline>();
         module.Services.AddScoped<ContextCommitAuthorizationHook>();
+        module.Services.AddScoped<ContextPermissionActionHook>();
         module.Services.AddScoped<ContextCliHandler>();
 
         module.Contracts.Export<ContextModuleContract>("sharpclaw.context");
@@ -83,6 +85,10 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
         });
         module.Hooks.For(new SharpClawActionKey("context.conversation.commit"))
             .Use<ContextCommitAuthorizationHook>(new HookOrdering("context.conversation.commit.authorization"));
+        module.Hooks.For(PermissionActionDescriptors.ContextAccess)
+            .Use<ContextPermissionActionHook>(
+                ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
+                new HookOrdering("permission.context-access.host-entry"));
 
         module.Events.Add(new EventDescriptor<ContextThreadChangedEvent>(
             new(ThreadChangedEvent), 1, "context.thread",

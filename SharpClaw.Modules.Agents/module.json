@@ -36,6 +36,10 @@
     {
       "target": "agents.create",
       "effects": ["Inspect", "Cancel"]
+    },
+    {
+      "target": "permission.agent-access",
+      "effects": ["Inspect", "Observe"]
     }
   ]
 }
