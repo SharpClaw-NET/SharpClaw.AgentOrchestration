@@ -44,10 +44,6 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
     {
         module.Services.AddScoped<PermissionPolicyStore>();
         module.Services.AddScoped<TwoTierPermissionPolicy>();
-        module.Services.AddScoped<IContextAccessPolicy>(sp =>
-            sp.GetRequiredService<TwoTierPermissionPolicy>());
-        module.Services.AddScoped<IAgentAccessPolicy>(sp =>
-            sp.GetRequiredService<TwoTierPermissionPolicy>());
         module.Services.AddScoped<PermissionToolHandler>();
         module.Services.AddScoped<IPermissionActionExecutor, PermissionActionExecutor>();
         module.Services.AddScoped<PermissionApiActionExecutor>();
@@ -57,13 +53,13 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
         module.Services.AddScoped<PermissionCliHandler>();
 
         module.Contracts.Export<PermissionModuleContract>("sharpclaw.permission");
-        module.Contracts.Export<IContextAccessPolicy>("sharpclaw.context-access");
-        module.Contracts.Export<IAgentAccessPolicy>("sharpclaw.agent-access");
 
         foreach (var storage in StorageContracts)
             module.Storage.Add(storage);
 
         module.Actions.Add(ApiDescriptor);
+        module.Actions.Add(PermissionActionDescriptors.ContextAccess);
+        module.Actions.Add(PermissionActionDescriptors.AgentAccess);
 
         module.Actions.Add(new ActionDescriptor<PermissionEvaluateAction, PermissionDecision>(
             new("permission.evaluate"), 1, "permission",

@@ -45,6 +45,22 @@ public sealed class PermissionActionExecutor(
         CancellationToken ct = default) =>
         policy.EvaluateCapabilityAsync(caller, action, ct);
 
+    public ValueTask<PermissionDecision> EvaluateAsync(
+        PermissionContextAccessAction action,
+        CancellationToken ct = default) =>
+        policy.EvaluateDetailedAsync(
+            action.Request with { Principal = action.Caller },
+            ct);
+
+    public ValueTask<PermissionDecision> EvaluateAsync(
+        PermissionAgentAccessAction action,
+        CancellationToken ct = default) =>
+        policy.EvaluateAgentDetailedAsync(
+            action.Caller,
+            action.Capability,
+            action.TargetAgentId,
+            ct);
+
     public async Task<bool> GrantAsync(
         RequestPrincipal caller,
         PermissionGrantAction action,

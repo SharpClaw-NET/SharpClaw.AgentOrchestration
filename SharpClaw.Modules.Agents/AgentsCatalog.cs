@@ -25,11 +25,11 @@ public sealed class AgentsCatalog
     private readonly ModuleDocumentStore<AgentSynchronizationRecord> _synchronization;
     private readonly ModuleDocumentStore<AgentJob> _agentJobs;
     private readonly ModuleDocumentStore<AgentJobImportState> _agentJobImports;
-    private readonly IAgentAccessPolicy _access;
+    private readonly IPermissionActionEntry _permission;
 
-    public AgentsCatalog(IModuleStorageGateway gateway, IAgentAccessPolicy access)
+    public AgentsCatalog(IModuleStorageGateway gateway, IPermissionActionEntry permission)
     {
-        _access = access;
+        _permission = permission;
         _agents = new(gateway, ModuleId, AgentsStorage, $"{ModuleId}:{AgentsStorage}", JsonOptions);
         _skills = new(gateway, ModuleId, SkillsStorage, $"{ModuleId}:{SkillsStorage}", JsonOptions);
         _memory = new(gateway, ModuleId, MemoryStorage, $"{ModuleId}:{MemoryStorage}", JsonOptions);
@@ -241,7 +241,7 @@ public sealed class AgentsCatalog
     {
         var agent = await GetAgentAsync(agentId, ct)
             ?? throw new InvalidOperationException("The agent was not found.");
-        var access = await _access.EvaluateAgentAsync(caller, "read_agent_cost", agentId, ct);
+        var access = await _permission.EvaluateAgentAsync(caller, "read_agent_cost", agentId, ct);
         if (!access.Allowed && !IsAdministrator(caller))
             throw new UnauthorizedAccessException("The caller cannot read agent cost data.");
         return await _costs.GetAsync(Key(agent.Id), ct)
@@ -357,7 +357,7 @@ public sealed class AgentsCatalog
         SkillRecord skill,
         CancellationToken ct)
     {
-        var accessDecision = await _access.EvaluateAgentAsync(caller, "access_skills", null, ct);
+        var accessDecision = await _permission.EvaluateAgentAsync(caller, "access_skills", null, ct);
         if (!accessDecision.Allowed && !IsAdministrator(caller))
             throw new UnauthorizedAccessException("The caller cannot access this skill.");
         if (skill.AllowedAgentIds.Count > 0
@@ -416,7 +416,7 @@ public sealed class AgentsCatalog
         Guid? targetAgentId,
         CancellationToken ct)
     {
-        var decision = await _access.EvaluateAgentAsync(caller, capability, targetAgentId, ct);
+        var decision = await _permission.EvaluateAgentAsync(caller, capability, targetAgentId, ct);
         if (!decision.Allowed)
             throw new UnauthorizedAccessException(decision.Message);
     }

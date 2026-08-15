@@ -44,18 +44,18 @@ public sealed class ModuleCompositionTests
             Assert.That(permissionBuilder.Contracts.Exports.Select(item => item.ContractName),
                 Does.Contain("sharpclaw.permission"));
             Assert.That(agentsBuilder.Contracts.Requires.Select(item => item.ContractName),
-                Is.EquivalentTo(new[] { "sharpclaw.context", "sharpclaw.permission", "sharpclaw.agent-access" }));
+                Is.EquivalentTo(new[] { "sharpclaw.context", "sharpclaw.permission" }));
             Assert.That(contextBuilder.Contracts.Requires.Select(item => item.ContractName),
-                Does.Contain("sharpclaw.context-access"));
+                Does.Not.Contain("sharpclaw.context-access"));
             Assert.That(permissionBuilder.Contracts.Exports.Select(item => item.ContractName),
-                Is.SupersetOf(new[] { "sharpclaw.context-access", "sharpclaw.agent-access" }));
-            Assert.That(permissionBuilder.Contracts.Exports
-                .Where(item => item.ContractName is "sharpclaw.context-access" or "sharpclaw.agent-access")
-                .Select(item => item.ServiceType),
-                Is.EquivalentTo(new[] { typeof(IContextAccessPolicy), typeof(IAgentAccessPolicy) }));
+                Does.Not.Contain("sharpclaw.context-access"));
+            Assert.That(permissionBuilder.Contracts.Exports.Select(item => item.ContractName),
+                Does.Not.Contain("sharpclaw.agent-access"));
             Assert.That(contextBuilder.Services.Any(item => item.ServiceType == typeof(IContextActionExecutor)), Is.True);
+            Assert.That(contextBuilder.Services.Any(item => item.ServiceType == typeof(IPermissionActionEntry)), Is.True);
             Assert.That(permissionBuilder.Services.Any(item => item.ServiceType == typeof(IPermissionActionExecutor)), Is.True);
             Assert.That(agentsBuilder.Services.Any(item => item.ServiceType == typeof(IAgentsActionExecutor)), Is.True);
+            Assert.That(agentsBuilder.Services.Any(item => item.ServiceType == typeof(IPermissionActionEntry)), Is.True);
             Assert.That(agentsBuilder.Services.Any(item => item.ServiceType == typeof(IAgentsJobActionExecutor)), Is.True);
             Assert.That(contextBuilder.Actions.Items.OfType<ActionDescriptor<ContextCreateThreadAction, ContextThreadRecord>>().Single().SafePoints,
                 Is.Not.Empty);
@@ -67,6 +67,10 @@ public sealed class ModuleCompositionTests
                 Is.EqualTo(ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel));
             Assert.That(permissionBuilder.Actions.Items.OfType<ActionDescriptor<PermissionGrantAction, bool>>().Single().SafePoints,
                 Is.Not.Empty);
+            Assert.That(permissionBuilder.Actions.Items,
+                Does.Contain(PermissionActionDescriptors.ContextAccess));
+            Assert.That(permissionBuilder.Actions.Items,
+                Does.Contain(PermissionActionDescriptors.AgentAccess));
             Assert.That(agentsBuilder.Actions.Items.OfType<ActionDescriptor<AgentsSaveSkillAction, SkillRecord>>().Single().SafePoints,
                 Is.Not.Empty);
             Assert.That(agentsBuilder.Actions.Items.OfType<ActionDescriptor<AgentsRecordJobAction, AgentJob>>().Single().Key.Value,
@@ -501,7 +505,7 @@ public sealed class ModuleCompositionTests
             RequireSourceOptIn: true,
             [], null, DateTimeOffset.UtcNow));
 
-        var store = new ContextStore(gateway, permission);
+        var store = new ContextStore(gateway, new PolicyPermissionActionEntry(permission));
         var current = new ContextChannelRecord(
             Guid.NewGuid(), "Current", agentId, null, [], [], false,
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
@@ -573,7 +577,7 @@ public sealed class ModuleCompositionTests
             caller.SubjectId, [], ["read_cross_thread_history", ContextAccessCapabilities.CreateThread], [],
             PermissionClearance.Independent, true, [], null, DateTimeOffset.UtcNow));
 
-        var store = new ContextStore(gateway, permission);
+        var store = new ContextStore(gateway, new PolicyPermissionActionEntry(permission));
         var current = new ContextChannelRecord(
             Guid.NewGuid(), "Current", agentId, null, [], [], false,
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
@@ -610,7 +614,7 @@ public sealed class ModuleCompositionTests
             new RequestPrincipal("subject"),
             new PermissionEvaluateAction("subject", "read_memory", "global", false))).Allowed, Is.True);
 
-        var agents = new AgentsActionExecutor(new AgentsCatalog(gateway, permission));
+        var agents = new AgentsActionExecutor(new AgentsCatalog(gateway, new PolicyPermissionActionEntry(permission)));
         var agent = await agents.CreateAsync(admin,
             new AgentsCreateAction("Executor Agent", Guid.NewGuid(), "provider", "model", null));
         var skill = await agents.SaveSkillAsync(admin,
@@ -620,7 +624,7 @@ public sealed class ModuleCompositionTests
         Assert.That(await agents.AccessSkillAsync(admin, new AgentsAccessSkillAction(skill.Id)),
             Does.Contain("use the skill"));
 
-        var contextStore = new ContextStore(gateway, permission);
+        var contextStore = new ContextStore(gateway, new PolicyPermissionActionEntry(permission));
         var channel = new ContextChannelRecord(
             Guid.NewGuid(), "Executor Channel", agent.Id, null, [], [], false,
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
@@ -866,7 +870,7 @@ public sealed class ModuleCompositionTests
         var gateway = new InMemoryStorageGateway();
         var permissionStore = new PermissionPolicyStore(gateway);
         var permission = new TwoTierPermissionPolicy(permissionStore);
-        var catalog = new AgentsCatalog(gateway, permission);
+        var catalog = new AgentsCatalog(gateway, new PolicyPermissionActionEntry(permission));
         var admin = new RequestPrincipal("admin", Roles: new HashSet<string>(["admin"]));
         var agent = await catalog.CreateAgentAsync(admin, new(
             "Test Agent", Guid.NewGuid(), "provider", "model", "prompt"));
@@ -1477,7 +1481,7 @@ public sealed class ModuleCompositionTests
             null,
             DateTimeOffset.UtcNow));
 
-        var store = new ContextStore(gateway, permission);
+        var store = new ContextStore(gateway, new PolicyPermissionActionEntry(permission));
         var resolver = new ContextConversationResolver(store);
         var selection = await resolver.ResolveAsync(
             new ChatTurnInput("hello", Caller: caller),
@@ -1810,14 +1814,42 @@ public sealed class ModuleCompositionTests
         }
     }
 
-    private sealed class AllowAllAgentAccessPolicy : IAgentAccessPolicy
+    private sealed class AllowAllAgentAccessPolicy : IPermissionActionEntry
     {
+        public ValueTask<ContextAccessDecision> EvaluateContextAsync(
+            RequestPrincipal caller,
+            ContextAccessRequest request,
+            CancellationToken ct = default) =>
+            ValueTask.FromResult(ContextAccessDecision.Allow());
+
         public ValueTask<ContextAccessDecision> EvaluateAgentAsync(
             RequestPrincipal principal,
             string capability,
             Guid? targetAgentId,
             CancellationToken ct = default) =>
             ValueTask.FromResult(ContextAccessDecision.Allow());
+    }
+
+    private sealed class PolicyPermissionActionEntry(
+        TwoTierPermissionPolicy policy) : IPermissionActionEntry
+    {
+        public async ValueTask<ContextAccessDecision> EvaluateContextAsync(
+            RequestPrincipal caller,
+            ContextAccessRequest request,
+            CancellationToken ct = default)
+        {
+            var decision = await policy.EvaluateDetailedAsync(request with { Principal = caller }, ct);
+            return decision.Allowed
+                ? ContextAccessDecision.Allow(decision.Code)
+                : ContextAccessDecision.Deny(decision.Code, decision.Message);
+        }
+
+        public ValueTask<ContextAccessDecision> EvaluateAgentAsync(
+            RequestPrincipal caller,
+            string capability,
+            Guid? targetAgentId,
+            CancellationToken ct = default) =>
+            policy.EvaluateAgentAsync(caller, capability, targetAgentId, ct);
     }
 
     private sealed class InMemoryStorageGateway : IModuleStorageGateway

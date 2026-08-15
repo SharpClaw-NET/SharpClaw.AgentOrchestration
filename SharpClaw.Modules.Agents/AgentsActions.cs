@@ -80,7 +80,7 @@ public sealed class AgentsActionExecutor(
 
 public sealed class AgentsApiActionExecutor(
     AgentsCatalog catalog,
-    IAgentAccessPolicy access)
+    IPermissionActionEntry permission)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -159,7 +159,7 @@ public sealed class AgentsApiActionExecutor(
             return;
         if (!caller.IsAuthenticated)
             throw new UnauthorizedAccessException("Authentication is required.");
-        var decision = await access.EvaluateAgentAsync(caller, capability, targetAgentId, ct);
+        var decision = await permission.EvaluateAgentAsync(caller, capability, targetAgentId, ct);
         if (!decision.Allowed)
             throw new UnauthorizedAccessException(decision.Message);
     }

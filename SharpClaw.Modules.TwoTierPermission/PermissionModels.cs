@@ -1,18 +1,8 @@
 using System.Text.Json;
 using SharpClaw.Contracts.Modules;
+using SharpClaw.Modules.AgentOrchestration.Contracts;
 
 namespace SharpClaw.Modules.TwoTierPermission;
-
-public enum PermissionClearance
-{
-    Unset = 0,
-    ApprovedBySameLevelUser = 1,
-    ApprovedByWhitelistedUser = 2,
-    ApprovedByPermittedAgent = 3,
-    ApprovedByWhitelistedAgent = 4,
-    Independent = 5,
-    Restricted = 6,
-}
 
 public sealed record PermissionPolicyRecord(
     string SubjectId,
@@ -80,27 +70,6 @@ public sealed record PermissionApiAction(
     string Operation,
     JsonElement Payload,
     RequestPrincipal Caller);
-
-public sealed record PermissionDecision(
-    bool Allowed,
-    string Code,
-    string Message,
-    int Tier,
-    PermissionClearance Clearance)
-{
-    public static PermissionDecision Deny(
-        string code,
-    string message,
-    int tier,
-        PermissionClearance clearance = PermissionClearance.Restricted) =>
-        new(false, code, message, tier, clearance);
-
-    public static PermissionDecision Allow(
-        string code,
-        int tier,
-        PermissionClearance clearance) =>
-        new(true, code, "Permission granted.", tier, clearance);
-}
 
 public sealed record PermissionEvaluateAction(
     string SubjectId,

@@ -47,6 +47,7 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
     public void Configure(ISharpClawModuleBuilder module)
     {
         module.Services.AddScoped<AgentsCatalog>();
+        module.Services.AddScoped<IPermissionActionEntry, HostPermissionActionEntry>();
         module.Services.AddScoped<AgentsToolHandler>();
         module.Services.AddScoped<AgentsApiActionExecutor>();
         module.Services.AddScoped<IAgentsActionGateway, AgentsActionGateway>();
@@ -60,7 +61,6 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
         module.Contracts.Export<AgentsModuleContract>("sharpclaw.agents");
         module.Contracts.Require<ContextModuleContract>("sharpclaw.context");
         module.Contracts.Require<PermissionModuleContract>("sharpclaw.permission");
-        module.Contracts.Require<IAgentAccessPolicy>("sharpclaw.agent-access");
 
         foreach (var storage in StorageContracts)
             module.Storage.Add(storage);

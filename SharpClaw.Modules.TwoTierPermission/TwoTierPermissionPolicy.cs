@@ -5,7 +5,6 @@ using SharpClaw.Modules.AgentOrchestration.Contracts;
 namespace SharpClaw.Modules.TwoTierPermission;
 
 public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
-    : IContextAccessPolicy, IAgentAccessPolicy
 {
     private const string ManagePermissionsCapability = "manage_permissions";
     private const string ApprovePermissionsCapability = "approve_permissions";
@@ -120,16 +119,28 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
         Guid? targetAgentId,
         CancellationToken ct = default)
     {
+        var decision = await EvaluateAgentDetailedAsync(principal, capability, targetAgentId, ct);
+        return decision.Allowed
+            ? ContextAccessDecision.Allow(decision.Code)
+            : ContextAccessDecision.Deny(decision.Code, decision.Message);
+    }
+
+    public async ValueTask<PermissionDecision> EvaluateAgentDetailedAsync(
+        RequestPrincipal principal,
+        string capability,
+        Guid? targetAgentId,
+        CancellationToken ct = default)
+    {
         if (!principal.IsAuthenticated)
-            return ContextAccessDecision.Deny("unauthenticated", "Authentication is required.");
+            return PermissionDecision.Deny("unauthenticated", "Authentication is required.", 1);
 
         var policy = await store.GetAsync(principal.SubjectId, ct);
         if (IsAdministrator(principal, policy))
-            return ContextAccessDecision.Allow("administrator");
+            return PermissionDecision.Allow("administrator", 2, PermissionClearance.Independent);
         if (policy?.ExpiresAt is { } expiry && expiry <= DateTimeOffset.UtcNow)
-            return ContextAccessDecision.Deny("policy_expired", "The permission policy has expired.");
+            return PermissionDecision.Deny("policy_expired", "The permission policy has expired.", 1);
         if (policy?.HardDeniedCapabilities.Any(item => IsSameCapability(item, capability)) == true)
-            return ContextAccessDecision.Deny("hard_denial", "A hard denial blocks this capability.");
+            return PermissionDecision.Deny("hard_denial", "A hard denial blocks this capability.", 1);
         var normalizedCapability = NormalizeCapability(capability);
         var targetScope = targetAgentId is { } scopeAgentId
             ? $"agent:{scopeAgentId:N}"
@@ -144,17 +155,17 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
             policy?.Clearance ?? PermissionClearance.Unset,
             grant?.Clearance);
         if (!IsUsableClearance(clearance))
-            return ContextAccessDecision.Deny("clearance_denied", "The caller has no usable clearance.");
+            return PermissionDecision.Deny("clearance_denied", "The caller has no usable clearance.", 1, clearance);
         if (!HasCapability(policy, normalizedCapability) && grant is null)
-            return ContextAccessDecision.Deny("capability_denied", "The caller lacks the required agent capability.");
+            return PermissionDecision.Deny("capability_denied", "The caller lacks the required agent capability.", 1, clearance);
         if (targetAgentId is { } changedAgentId
             && Guid.TryParse(principal.SubjectId, out var callerId)
             && changedAgentId != callerId
             && !HasCapability(policy, "manage_agents"))
         {
-            return ContextAccessDecision.Deny("scope_denied", "The caller cannot change another agent.");
+            return PermissionDecision.Deny("scope_denied", "The caller cannot change another agent.", 2, clearance);
         }
-        return ContextAccessDecision.Allow("agent_capability");
+        return PermissionDecision.Allow("agent_capability", 2, clearance);
     }
 
     public async Task GrantAsync(

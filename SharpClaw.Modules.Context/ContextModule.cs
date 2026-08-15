@@ -47,13 +47,13 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
         module.Services.AddScoped<IContextActionExecutor, ContextActionExecutor>();
         module.Services.AddScoped<ContextApiActionExecutor>();
         module.Services.AddScoped<IContextActionGateway, ContextActionGateway>();
+        module.Services.AddScoped<IPermissionActionEntry, HostPermissionActionEntry>();
         module.Services.AddScoped<IModuleActionPipeline, ModuleActionPipeline>();
         module.Services.AddScoped<ContextCommitAuthorizationHook>();
         module.Services.AddScoped<ContextCliHandler>();
 
         module.Contracts.Export<ContextModuleContract>("sharpclaw.context");
         module.Contracts.Require<PermissionModuleContract>("sharpclaw.permission");
-        module.Contracts.Require<IContextAccessPolicy>("sharpclaw.context-access");
 
         foreach (var storage in StorageContracts)
             module.Storage.Add(storage);

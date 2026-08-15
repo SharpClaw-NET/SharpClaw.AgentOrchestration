@@ -20,17 +20,17 @@ public sealed class ContextStore : IConversationStore
     private readonly ModuleDocumentStore<ContextRecord> _contexts;
     private readonly ModuleDocumentStore<ContextThreadRecord> _threads;
     private readonly ModuleDocumentStore<ContextMessageRecord> _messages;
-    private readonly IContextAccessPolicy _policy;
+    private readonly IPermissionActionEntry _permission;
 
     public ContextStore(
         IModuleStorageGateway gateway,
-        IContextAccessPolicy policy)
+        IPermissionActionEntry permission)
     {
         _channels = new(gateway, ModuleId, ChannelsStorage, $"{ModuleId}:{ChannelsStorage}", JsonOptions);
         _contexts = new(gateway, ModuleId, ContextsStorage, $"{ModuleId}:{ContextsStorage}", JsonOptions);
         _threads = new(gateway, ModuleId, ThreadsStorage, $"{ModuleId}:{ThreadsStorage}", JsonOptions);
         _messages = new(gateway, ModuleId, MessagesStorage, $"{ModuleId}:{MessagesStorage}", JsonOptions);
-        _policy = policy;
+        _permission = permission;
     }
 
     internal Task<ContextChannelRecord?> GetChannelAsync(Guid id, CancellationToken ct = default) =>
@@ -842,7 +842,7 @@ public sealed class ContextStore : IConversationStore
         RequireAuthenticatedAgent(caller);
         if (!context.Enabled)
             throw new UnauthorizedAccessException("The context is disabled.");
-        var decision = await _policy.EvaluateAsync(new ContextAccessRequest(
+        var decision = await _permission.EvaluateContextAsync(caller, new ContextAccessRequest(
             caller,
             Guid.Empty,
             null,
@@ -877,7 +877,7 @@ public sealed class ContextStore : IConversationStore
         ContextRecord? context,
         string capability,
         CancellationToken ct) =>
-        _policy.EvaluateAsync(new ContextAccessRequest(
+        _permission.EvaluateContextAsync(principal, new ContextAccessRequest(
             principal,
             channel.Id,
             channel.OwnerAgentId,

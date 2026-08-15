@@ -18,16 +18,6 @@
       "contractName": "sharpclaw.permission",
       "serviceType": "SharpClaw.Modules.AgentOrchestration.Contracts.PermissionModuleContract",
       "optional": false
-    },
-    {
-      "contractName": "sharpclaw.context-access",
-      "serviceType": "SharpClaw.Modules.AgentOrchestration.Contracts.IContextAccessPolicy",
-      "optional": false
-    },
-    {
-      "contractName": "sharpclaw.agent-access",
-      "serviceType": "SharpClaw.Modules.AgentOrchestration.Contracts.IAgentAccessPolicy",
-      "optional": false
     }
   ],
   "requestedHooks": [
