@@ -308,6 +308,27 @@ public sealed class ModuleCompositionTests
     }
 
     [Test]
+    public async Task ApplicationGatewaysUseTheHostActionEntry()
+    {
+        var host = new RecordingHostActionEntry();
+        var caller = new RequestPrincipal("probe", IsAuthenticated: true);
+        var payload = JsonSerializer.SerializeToElement(new { });
+
+        await new ContextActionGateway(new HostModuleActionEntry(host))
+            .ExecuteAsync(caller, ContextApiOperations.ListChannels, payload);
+        await new PermissionActionGateway(new HostModuleActionEntry(host))
+            .ExecuteAsync(caller, PermissionApiOperations.ListPolicies, payload);
+        await new AgentsActionGateway(new HostModuleActionEntry(host))
+            .ExecuteAsync(caller, AgentsApiOperations.ListAgents, payload);
+
+        Assert.That(host.Keys, Is.EqualTo([
+            ContextModule.ApiDescriptor.Key.Value,
+            TwoTierPermissionModule.ApiDescriptor.Key.Value,
+            AgentsModule.ApiDescriptor.Key.Value,
+        ]));
+    }
+
+    [Test]
     public void ApplicationGatewaysDoNotRequestAHostSnapshot()
     {
         var gatewayTypes = new[]
@@ -325,6 +346,10 @@ public sealed class ModuleCompositionTests
                 Is.EqualTo(new[] { typeof(IActionDispatcher) }));
             foreach (var gatewayType in gatewayTypes)
             {
+                Assert.That(
+                    gatewayType.GetConstructors().Single().GetParameters()
+                        .Select(parameter => parameter.ParameterType),
+                    Does.Contain(typeof(HostModuleActionEntry)));
                 Assert.That(
                     gatewayType.GetConstructors().Single().GetParameters()
                         .Select(parameter => parameter.ParameterType),
@@ -531,7 +556,7 @@ public sealed class ModuleCompositionTests
             Guid.NewGuid(), thread.Id, source.Id, "user", "retained history", "tester",
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
 
-        var contextGateway = new ContextActionGateway(
+        var contextGateway = new DelegatingContextActionGateway(
             new ContextApiActionExecutor(store));
         var handler = new ContextToolHandler(contextGateway);
         using var arguments = JsonDocument.Parse($$"""{"channelId":"{{current.Id:D}}"}""");
@@ -1826,6 +1851,34 @@ public sealed class ModuleCompositionTests
         }
     }
 
+    private sealed class RecordingHostActionEntry : IHostActionEntry
+    {
+        public List<string> Keys { get; } = [];
+
+        public ValueTask<IActionOutcome<TResult>> InvokeAsync<TAction, TResult>(
+            HostActionEntryRequest<TAction, TResult> request,
+            CancellationToken ct)
+        {
+            Keys.Add(request.Descriptor.Key.Value);
+            var result = typeof(TResult) == typeof(JsonElement)
+                ? (TResult)(object)JsonSerializer.SerializeToElement(new { accepted = true })
+                : default!;
+            return ValueTask.FromResult<IActionOutcome<TResult>>(
+                new HostActionOutcome<TResult>(ActionOutcomeKind.Completed, result));
+        }
+    }
+
+    private sealed class HostActionOutcome<TResult>(
+        ActionOutcomeKind kind,
+        TResult result) : IActionOutcome<TResult>
+    {
+        public ActionOutcomeKind Kind { get; } = kind;
+        public TResult Result { get; } = result;
+        public ContinuationToken? Continuation => null;
+        public ExecutionError? Error => null;
+        public ActionUncertainty? Uncertainty => null;
+    }
+
     private sealed class AllowAllAgentAccessPolicy : IPermissionActionEntry
     {
         public ValueTask<ContextAccessDecision> EvaluateContextAsync(
@@ -1862,6 +1915,17 @@ public sealed class ModuleCompositionTests
             Guid? targetAgentId,
             CancellationToken ct = default) =>
             policy.EvaluateAgentAsync(caller, capability, targetAgentId, ct);
+    }
+
+    private sealed class DelegatingContextActionGateway(
+        ContextApiActionExecutor executor) : IContextActionGateway
+    {
+        public ValueTask<JsonElement> ExecuteAsync(
+            RequestPrincipal caller,
+            string operation,
+            JsonElement payload,
+            CancellationToken ct = default) =>
+            executor.ExecuteAsync(new ContextApiAction(operation, payload, caller), ct);
     }
 
     private sealed class InMemoryStorageGateway : IModuleStorageGateway

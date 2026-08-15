@@ -177,7 +177,7 @@ public interface IContextActionGateway
 }
 
 public sealed class ContextActionGateway(
-    ContextApiActionExecutor executor) : IContextActionGateway
+    HostModuleActionEntry entry) : IContextActionGateway
 {
     public ValueTask<JsonElement> ExecuteAsync(
         RequestPrincipal caller,
@@ -186,7 +186,7 @@ public sealed class ContextActionGateway(
         CancellationToken ct = default)
     {
         var action = new ContextApiAction(operation, payload, caller);
-        return executor.ExecuteAsync(action, ct);
+        return entry.InvokeAsync(ContextModule.ApiDescriptor, action, caller, ct);
     }
 }
 

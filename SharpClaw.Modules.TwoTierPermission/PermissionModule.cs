@@ -48,6 +48,7 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
         module.Services.AddScoped<IPermissionActionExecutor, PermissionActionExecutor>();
         module.Services.AddScoped<PermissionApiActionExecutor>();
         module.Services.AddScoped<IPermissionActionGateway, PermissionActionGateway>();
+        module.Services.AddScoped<HostModuleActionEntry>();
         module.Services.AddScoped<IModuleActionPipeline, ModuleActionPipeline>();
         module.Services.AddScoped<PermissionGrantAuthorizationHook>();
         module.Services.AddScoped<PermissionCliHandler>();

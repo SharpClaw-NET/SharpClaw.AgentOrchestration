@@ -187,7 +187,7 @@ public interface IPermissionActionGateway
 }
 
 public sealed class PermissionActionGateway(
-    PermissionApiActionExecutor executor) : IPermissionActionGateway
+    HostModuleActionEntry entry) : IPermissionActionGateway
 {
     public ValueTask<JsonElement> ExecuteAsync(
         RequestPrincipal caller,
@@ -196,6 +196,6 @@ public sealed class PermissionActionGateway(
         CancellationToken ct = default)
     {
         var action = new PermissionApiAction(operation, payload, caller);
-        return executor.ExecuteAsync(action, ct);
+        return entry.InvokeAsync(TwoTierPermissionModule.ApiDescriptor, action, caller, ct);
     }
 }
