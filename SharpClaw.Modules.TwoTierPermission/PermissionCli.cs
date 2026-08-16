@@ -47,7 +47,7 @@ public sealed class PermissionCliHandler(IPermissionActionGateway gateway) : IMo
         {
             var payload = BuildPayload(command.Operation, invocation.Arguments);
             var result = await gateway.ExecuteAsync(
-                invocation.Caller,
+                invocation.HostActionContext,
                 command.Operation,
                 payload,
                 ct);

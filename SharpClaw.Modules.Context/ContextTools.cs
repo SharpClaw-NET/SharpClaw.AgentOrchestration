@@ -11,8 +11,9 @@ public sealed class ContextToolHandler(
         ToolInvocation invocation,
         CancellationToken ct)
     {
-        if (!invocation.Caller.IsAuthenticated
-            || !Guid.TryParse(invocation.Caller.SubjectId, out var agentId)
+        var caller = invocation.HostActionContext.Caller;
+        if (!caller.IsAuthenticated
+            || !Guid.TryParse(caller.SubjectId, out var agentId)
             || agentId == Guid.Empty)
             return ToolResult.Error("The caller subject must be an agent GUID.");
 
@@ -31,7 +32,7 @@ public sealed class ContextToolHandler(
 
         using var payload = JsonDocument.Parse($$"""{"channelId":"{{channelId:D}}"}""");
         var result = await gateway.ExecuteAsync(
-            invocation.Caller,
+            invocation.HostActionContext,
             ContextApiOperations.ListThreads,
             payload.RootElement,
             ct);
@@ -53,7 +54,7 @@ public sealed class ContextToolHandler(
         try
         {
             var result = await gateway.ExecuteAsync(
-                invocation.Caller,
+                invocation.HostActionContext,
                 ContextApiOperations.ReadHistory,
                 payload.RootElement,
                 ct);

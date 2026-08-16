@@ -1,4 +1,7 @@
 using System.Text.Json;
+using System.Reflection;
+using System.Text;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using NUnit.Framework;
 using SharpClaw.Contracts.Modules;
@@ -52,10 +55,10 @@ public sealed class ModuleCompositionTests
             Assert.That(permissionBuilder.Contracts.Exports.Select(item => item.ContractName),
                 Does.Not.Contain("sharpclaw.agent-access"));
             Assert.That(contextBuilder.Services.Any(item => item.ServiceType == typeof(IContextActionExecutor)), Is.True);
-            Assert.That(contextBuilder.Services.Any(item => item.ServiceType == typeof(IPermissionActionEntry)), Is.True);
+            Assert.That(contextBuilder.Services.Any(item => item.ServiceType == typeof(HostPermissionActionEntry)), Is.True);
             Assert.That(permissionBuilder.Services.Any(item => item.ServiceType == typeof(IPermissionActionExecutor)), Is.True);
             Assert.That(agentsBuilder.Services.Any(item => item.ServiceType == typeof(IAgentsActionExecutor)), Is.True);
-            Assert.That(agentsBuilder.Services.Any(item => item.ServiceType == typeof(IPermissionActionEntry)), Is.True);
+            Assert.That(agentsBuilder.Services.Any(item => item.ServiceType == typeof(HostPermissionActionEntry)), Is.True);
             Assert.That(agentsBuilder.Services.Any(item => item.ServiceType == typeof(IAgentsJobActionExecutor)), Is.True);
             Assert.That(contextBuilder.Actions.Items.OfType<ActionDescriptor<ContextCreateThreadAction, ContextThreadRecord>>().Single().SafePoints,
                 Is.Not.Empty);
@@ -245,6 +248,46 @@ public sealed class ModuleCompositionTests
     }
 
     [Test]
+    public void TypedIngressActionsBindTheirPublishedSchemas()
+    {
+        Assert.Multiple(() =>
+        {
+            Assert.That(ContextModule.ApiDescriptor.InputSchema, Is.EqualTo(new JsonSchemaReference(
+                "sharpclaw.kernel.action.input.context.api.dispatch",
+                1,
+                "941361CD8AD62ECC21CD1B23957542A777266F05009DD3A8849608C8F52FD961")));
+            Assert.That(ContextModule.ApiDescriptor.ResultSchema, Is.EqualTo(new JsonSchemaReference(
+                "sharpclaw.kernel.action.result.context.api.dispatch",
+                1,
+                "8EB000590FB81F540B757EE45A1DB72EF84BF921444663E7AAF07B0F2711CB8D")));
+            Assert.That(TwoTierPermissionModule.ApiDescriptor.InputSchema, Is.EqualTo(new JsonSchemaReference(
+                "sharpclaw.kernel.action.input.permission.api.dispatch",
+                1,
+                "9730C734344C8CDCC030B54D093217D8AD4038346CC0AB54494A00FD1A346D43")));
+            Assert.That(TwoTierPermissionModule.ApiDescriptor.ResultSchema, Is.EqualTo(new JsonSchemaReference(
+                "sharpclaw.kernel.action.result.permission.api.dispatch",
+                1,
+                "6FC66027153DC70AF18F195B681CFA9EC51D26D0528ADC664BBC10395E07A379")));
+            Assert.That(AgentsModule.ApiDescriptor.InputSchema, Is.EqualTo(new JsonSchemaReference(
+                "sharpclaw.kernel.action.input.agents.api.dispatch",
+                1,
+                "27B5426804CE4372B54F88B8516A9E545DCF4023778CB8CD8BB9413309544628")));
+            Assert.That(AgentsModule.ApiDescriptor.ResultSchema, Is.EqualTo(new JsonSchemaReference(
+                "sharpclaw.kernel.action.result.agents.api.dispatch",
+                1,
+                "EBF621A68F0061626C140836F73212CB5D24ABF6D6FE9FAE994E6C3BA794FB65")));
+            Assert.That(PermissionActionDescriptors.ContextAccess.InputSchema, Is.EqualTo(new JsonSchemaReference(
+                "sharpclaw.kernel.action.input.permission.context-access",
+                1,
+                "EF52C526C7B77C146B2D16A61B3BB1728BC4F8500763C8EF1A21FC65B981283B")));
+            Assert.That(PermissionActionDescriptors.AgentAccess.ResultSchema, Is.EqualTo(new JsonSchemaReference(
+                "sharpclaw.kernel.action.result.permission.agent-access",
+                1,
+                "E2C4F31D2F6A8637E1AF2BA13B276A313BCC451E78E87EEE6B06F468D01C4287")));
+        });
+    }
+
+    [Test]
     public void CliCommandsCoverTheOwnerAdministrationMatrices()
     {
         Assert.Multiple(() =>
@@ -277,7 +320,7 @@ public sealed class ModuleCompositionTests
         var action = new ContextApiAction(
             ContextApiOperations.ListChannels,
             JsonSerializer.SerializeToElement(new { }),
-            RequestPrincipal.Anonymous);
+            TestHostActionContext.Create(RequestPrincipal.Anonymous));
         var snapshot = new ActionPipelineSnapshot("test", [], [], 16);
         var context = new ActionContext<ContextApiAction>(
             Guid.NewGuid(),
@@ -312,20 +355,116 @@ public sealed class ModuleCompositionTests
     {
         var host = new RecordingHostActionEntry();
         var caller = new RequestPrincipal("probe", IsAuthenticated: true);
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
         var payload = JsonSerializer.SerializeToElement(new { });
 
         await new ContextActionGateway(new HostModuleActionEntry(host))
-            .ExecuteAsync(caller, ContextApiOperations.ListChannels, payload);
+            .ExecuteAsync(hostContext, ContextApiOperations.ListChannels, payload);
         await new PermissionActionGateway(new HostModuleActionEntry(host))
-            .ExecuteAsync(caller, PermissionApiOperations.ListPolicies, payload);
+            .ExecuteAsync(hostContext, PermissionApiOperations.ListPolicies, payload);
         await new AgentsActionGateway(new HostModuleActionEntry(host))
-            .ExecuteAsync(caller, AgentsApiOperations.ListAgents, payload);
+            .ExecuteAsync(hostContext, AgentsApiOperations.ListAgents, payload);
 
         Assert.That(host.Keys, Is.EqualTo([
             ContextModule.ApiDescriptor.Key.Value,
             TwoTierPermissionModule.ApiDescriptor.Key.Value,
             AgentsModule.ApiDescriptor.Key.Value,
         ]));
+        Assert.That(host.Contexts, Has.Exactly(3).Items);
+        Assert.That(host.Contexts, Is.All.SameAs(hostContext));
+    }
+
+    [Test]
+    public async Task ContextCliPassesTheIssuedAuthorityContextToTheTypedAction()
+    {
+        var gateway = new RecordingContextGateway();
+        var handler = new ContextCliHandler(gateway);
+        var hostContext = TestHostActionContext.Create(
+            new RequestPrincipal(Guid.NewGuid().ToString("D"), IsAuthenticated: true),
+            HostActionEntryIngress.Cli);
+
+        var result = await handler.ExecuteAsync(
+            new ModuleCliInvocation(
+                Guid.NewGuid(),
+                "ctx-channel-list",
+                [],
+                hostContext),
+            default);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.Succeeded, Is.True);
+            Assert.That(gateway.Contexts, Has.Exactly(1).Items);
+            Assert.That(gateway.Contexts.Single(), Is.SameAs(hostContext));
+            Assert.That(gateway.Operations.Single(), Is.EqualTo(ContextApiOperations.ListChannels));
+        });
+    }
+
+    [Test]
+    public async Task ContextToolPassesTheIssuedAuthorityContextToTheTypedAction()
+    {
+        var gateway = new RecordingContextGateway();
+        var handler = new ContextToolHandler(gateway);
+        var hostContext = TestHostActionContext.Create(
+            new RequestPrincipal(Guid.NewGuid().ToString("D"), IsAuthenticated: true),
+            HostActionEntryIngress.Tool);
+        using var arguments = JsonDocument.Parse($$"""{"channelId":"{{Guid.NewGuid():D}}"}""");
+
+        var result = await handler.InvokeAsync(
+            new ToolInvocation(
+                Guid.NewGuid(),
+                null,
+                "call",
+                ContextModule.ListThreadsTool,
+                arguments.RootElement,
+                hostContext),
+            default);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.IsError, Is.False);
+            Assert.That(gateway.Contexts, Has.Exactly(1).Items);
+            Assert.That(gateway.Contexts.Single(), Is.SameAs(hostContext));
+            Assert.That(gateway.Operations.Single(), Is.EqualTo(ContextApiOperations.ListThreads));
+        });
+    }
+
+    [Test]
+    public async Task ContextEndpointPassesTheIssuedAuthorityContextToTheTypedAction()
+    {
+        var gateway = new RecordingContextGateway();
+        var hostContext = TestHostActionContext.Create(
+            new RequestPrincipal(Guid.NewGuid().ToString("D"), IsAuthenticated: true),
+            HostActionEntryIngress.Endpoint);
+        var invocation = new HostEndpointInvocation(
+            Guid.NewGuid(),
+            ContextEndpointContribution.CreateThreadRoute,
+            hostContext);
+        var services = new ServiceCollection()
+            .AddSingleton(invocation)
+            .BuildServiceProvider();
+        var httpContext = new DefaultHttpContext
+        {
+            RequestServices = services,
+        };
+        httpContext.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes("{}"));
+        httpContext.Request.ContentType = "application/json";
+        var dispatch = typeof(ContextEndpointContribution).GetMethod(
+            "DispatchAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.That(dispatch, Is.Not.Null);
+        var task = (Task<IResult>)dispatch!.Invoke(
+            null,
+            [ContextApiOperations.CreateThread, httpContext, gateway, default(CancellationToken)])!;
+        await task;
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(gateway.Contexts, Has.Exactly(1).Items);
+            Assert.That(gateway.Contexts.Single(), Is.SameAs(hostContext));
+            Assert.That(gateway.Operations.Single(), Is.EqualTo(ContextApiOperations.CreateThread));
+        });
     }
 
     [Test]
@@ -535,6 +674,7 @@ public sealed class ModuleCompositionTests
         var permission = new TwoTierPermissionPolicy(policyStore);
         var agentId = Guid.NewGuid();
         var caller = new RequestPrincipal(agentId.ToString("D"), Roles: new HashSet<string>());
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
         await policyStore.SaveAsync(new PermissionPolicyRecord(
             caller.SubjectId,
             [], ["read_cross_thread_history", ContextAccessCapabilities.CreateThread], [],
@@ -542,7 +682,7 @@ public sealed class ModuleCompositionTests
             RequireSourceOptIn: true,
             [], null, DateTimeOffset.UtcNow));
 
-        var store = new ContextStore(gateway, new PolicyPermissionActionEntry(permission));
+        var store = new ContextStore(gateway, PolicyEntry(permission));
         var current = new ContextChannelRecord(
             Guid.NewGuid(), "Current", agentId, null, [], [], false,
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
@@ -551,7 +691,11 @@ public sealed class ModuleCompositionTests
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
         await store.SaveChannelAsync(current);
         await store.SaveChannelAsync(source);
-        var thread = await store.CreateThreadAsync(caller, source.Id, "Source thread");
+        var thread = await store.CreateThreadAsync(
+            caller,
+            source.Id,
+            "Source thread",
+            hostContext: hostContext);
         await store.AppendMessageAsync(new ContextMessageRecord(
             Guid.NewGuid(), thread.Id, source.Id, "user", "retained history", "tester",
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
@@ -562,7 +706,7 @@ public sealed class ModuleCompositionTests
         using var arguments = JsonDocument.Parse($$"""{"channelId":"{{current.Id:D}}"}""");
         var result = await handler.InvokeAsync(new ToolInvocation(
             Guid.NewGuid(), null, "call", ContextModule.ListThreadsTool,
-            arguments.RootElement, caller, ExtensionFeatureSet.Empty), default);
+            arguments.RootElement, TestHostActionContext.Create(caller)), default);
 
         Assert.That(result.IsError, Is.False);
         Assert.That(result.Content, Does.Contain(thread.Id.ToString("D")));
@@ -570,7 +714,7 @@ public sealed class ModuleCompositionTests
         using var readArguments = JsonDocument.Parse($$"""{"channelId":"{{current.Id:D}}","threadId":"{{thread.Id:D}}","maxMessages":10}""");
         var read = await handler.InvokeAsync(new ToolInvocation(
             Guid.NewGuid(), null, "call", ContextModule.ReadHistoryTool,
-            readArguments.RootElement, caller, ExtensionFeatureSet.Empty), default);
+            readArguments.RootElement, TestHostActionContext.Create(caller)), default);
         Assert.That(read.Content, Does.Contain("retained history"));
     }
 
@@ -610,11 +754,12 @@ public sealed class ModuleCompositionTests
         var permission = new TwoTierPermissionPolicy(policyStore);
         var agentId = Guid.NewGuid();
         var caller = new RequestPrincipal(agentId.ToString("D"));
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
         await policyStore.SaveAsync(new PermissionPolicyRecord(
             caller.SubjectId, [], ["read_cross_thread_history", ContextAccessCapabilities.CreateThread], [],
             PermissionClearance.Independent, true, [], null, DateTimeOffset.UtcNow));
 
-        var store = new ContextStore(gateway, new PolicyPermissionActionEntry(permission));
+        var store = new ContextStore(gateway, PolicyEntry(permission));
         var current = new ContextChannelRecord(
             Guid.NewGuid(), "Current", agentId, null, [], [], false,
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
@@ -630,9 +775,17 @@ public sealed class ModuleCompositionTests
         await store.SaveChannelAsync(current);
         await store.SaveContextAsync(context);
         await store.SaveChannelAsync(source);
-        var thread = await store.CreateThreadAsync(caller, source.Id, "Assigned thread", context.Id);
+        var thread = await store.CreateThreadAsync(
+            caller,
+            source.Id,
+            "Assigned thread",
+            context.Id,
+            hostContext: hostContext);
 
-        var visible = await store.ListAccessibleThreadsAsync(caller, current.Id);
+        var visible = await store.ListAccessibleThreadsAsync(
+            caller,
+            current.Id,
+            hostContext: hostContext);
 
         Assert.That(visible.Select(item => item.ThreadId), Does.Contain(thread.Id));
     }
@@ -644,6 +797,7 @@ public sealed class ModuleCompositionTests
         var permissionStore = new PermissionPolicyStore(gateway);
         var permission = new TwoTierPermissionPolicy(permissionStore);
         var admin = new RequestPrincipal(Guid.NewGuid().ToString("D"), Roles: new HashSet<string>(["admin"]));
+        var hostContext = TestHostActionContext.Create(admin, HostActionEntryIngress.CrossModule);
         var permissionExecutor = new PermissionActionExecutor(permission);
         Assert.That(await permissionExecutor.GrantAsync(admin,
             new PermissionGrantAction("subject", "read_memory", "global", PermissionClearance.Independent)), Is.True);
@@ -651,26 +805,33 @@ public sealed class ModuleCompositionTests
             new RequestPrincipal("subject"),
             new PermissionEvaluateAction("subject", "read_memory", "global", false))).Allowed, Is.True);
 
-        var agents = new AgentsActionExecutor(new AgentsCatalog(gateway, new PolicyPermissionActionEntry(permission)));
+        var agents = new AgentsActionExecutor(new AgentsCatalog(gateway, PolicyEntry(permission)));
         var agent = await agents.CreateAsync(admin,
-            new AgentsCreateAction("Executor Agent", Guid.NewGuid(), "provider", "model", null));
+            new AgentsCreateAction("Executor Agent", Guid.NewGuid(), "provider", "model", null),
+            hostContext: hostContext);
         var skill = await agents.SaveSkillAsync(admin,
             new AgentsSaveSkillAction(new SkillRecord(
                 Guid.NewGuid(), "Executor Skill", null, "use the skill", [agent.Id],
-                DateTimeOffset.UtcNow, DateTimeOffset.UtcNow)));
-        Assert.That(await agents.AccessSkillAsync(admin, new AgentsAccessSkillAction(skill.Id)),
+                DateTimeOffset.UtcNow, DateTimeOffset.UtcNow)),
+            hostContext: hostContext);
+        Assert.That(await agents.AccessSkillAsync(
+                admin,
+                new AgentsAccessSkillAction(skill.Id),
+                hostContext: hostContext),
             Does.Contain("use the skill"));
 
-        var contextStore = new ContextStore(gateway, new PolicyPermissionActionEntry(permission));
+        var contextStore = new ContextStore(gateway, PolicyEntry(permission));
         var channel = new ContextChannelRecord(
             Guid.NewGuid(), "Executor Channel", agent.Id, null, [], [], false,
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
         await contextStore.SaveChannelAsync(channel);
         var contextExecutor = new ContextActionExecutor(contextStore);
         var thread = await contextExecutor.CreateThreadAsync(admin,
-            new ContextCreateThreadAction(channel.Id, "Executor Thread"));
+            new ContextCreateThreadAction(channel.Id, "Executor Thread"),
+            hostContext: hostContext);
         Assert.That(await contextExecutor.CommitExchangeAsync(admin,
-            new ContextCommitExchangeAction(thread.Id, "question", "answer")), Is.True);
+            new ContextCommitExchangeAction(thread.Id, "question", "answer"),
+            hostContext: hostContext), Is.True);
         Assert.That((await contextStore.ReadAllMessagesAsync(thread.Id)).Select(item => item.Content),
             Is.EquivalentTo(new[] { "question", "answer" }));
     }
@@ -907,23 +1068,32 @@ public sealed class ModuleCompositionTests
         var gateway = new InMemoryStorageGateway();
         var permissionStore = new PermissionPolicyStore(gateway);
         var permission = new TwoTierPermissionPolicy(permissionStore);
-        var catalog = new AgentsCatalog(gateway, new PolicyPermissionActionEntry(permission));
+        var catalog = new AgentsCatalog(gateway, PolicyEntry(permission));
         var admin = new RequestPrincipal("admin", Roles: new HashSet<string>(["admin"]));
+        var adminContext = TestHostActionContext.Create(admin, HostActionEntryIngress.CrossModule);
         var agent = await catalog.CreateAgentAsync(admin, new(
-            "Test Agent", Guid.NewGuid(), "provider", "model", "prompt"));
+            "Test Agent", Guid.NewGuid(), "provider", "model", "prompt"),
+            hostContext: adminContext);
         await catalog.SaveSkillAsync(admin, new SkillRecord(
             Guid.NewGuid(), "Skill", "Description", "Instruction", [agent.Id],
-            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow),
+            hostContext: adminContext);
         var owner = new RequestPrincipal(agent.Id.ToString("D"));
+        var ownerContext = TestHostActionContext.Create(owner, HostActionEntryIngress.CrossModule);
         await permissionStore.SaveAsync(new PermissionPolicyRecord(
             owner.SubjectId, [], ["write_memory", "read_memory"], [],
             PermissionClearance.Independent, false, [], null, DateTimeOffset.UtcNow));
         var memory = await catalog.WriteMemoryAsync(owner, new(
-            agent.Id, "preference", "Use concise answers", ["profile"]));
+            agent.Id, "preference", "Use concise answers", ["profile"]),
+            hostContext: ownerContext);
 
         Assert.That((await catalog.ListAgentsAsync()).Single().Name, Is.EqualTo("Test Agent"));
         Assert.That((await catalog.ListSkillsAsync()).Single().SkillText, Is.EqualTo("Instruction"));
-        Assert.That((await catalog.SearchMemoryAsync(owner, agent.Id, "concise")).Single().Id, Is.EqualTo(memory.Id));
+        Assert.That((await catalog.SearchMemoryAsync(
+            owner,
+            agent.Id,
+            "concise",
+            hostContext: ownerContext)).Single().Id, Is.EqualTo(memory.Id));
         Assert.That((await new AgentChatProfileResolver(catalog).ResolveAsync(
             new ChatTurnContext(Guid.NewGuid(), new ChatTurnInput("hi", Caller: owner),
                 new ConversationSelection(Guid.NewGuid())), default)).ModelName, Is.EqualTo("model"));
@@ -933,9 +1103,10 @@ public sealed class ModuleCompositionTests
     public async Task AgentsOwnAgentJobStateAndProjectCanonicalCompletion()
     {
         var gateway = new InMemoryStorageGateway();
-        var catalog = new AgentsCatalog(gateway, new AllowAllAgentAccessPolicy());
+        var catalog = new AgentsCatalog(gateway, AllowAllEntry());
         var executor = new AgentsJobActionExecutor(catalog);
         var caller = new RequestPrincipal("caller", IsAuthenticated: true);
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
         var agentId = Guid.NewGuid();
         var channelId = Guid.NewGuid();
         var contextId = Guid.NewGuid();
@@ -947,10 +1118,10 @@ public sealed class ModuleCompositionTests
             channelId, contextId, "permission-1", createdAt, createdAt, null, null,
             null, null, null);
 
-        var recorded = await executor.RecordAsync(new(job, caller));
+        var recorded = await executor.RecordAsync(new(job, caller, hostContext));
         var canonicalJobId = Guid.NewGuid();
         var attached = await executor.AttachCanonicalJobAsync(
-            new(recorded.Id, canonicalJobId, caller));
+            new(recorded.Id, canonicalJobId, caller, hostContext));
         var completedAt = DateTimeOffset.UtcNow;
         var completed = await executor.CompleteAsync(new(
             recorded.Id,
@@ -961,8 +1132,9 @@ public sealed class ModuleCompositionTests
             19,
             13,
             completedAt,
-            caller));
-        var restartedCatalog = new AgentsCatalog(gateway, new AllowAllAgentAccessPolicy());
+            caller,
+            hostContext));
+        var restartedCatalog = new AgentsCatalog(gateway, AllowAllEntry());
         var restored = await restartedCatalog.GetAgentJobAsync(recorded.Id);
         var listed = await restartedCatalog.ListAgentJobsAsync();
 
@@ -997,26 +1169,39 @@ public sealed class ModuleCompositionTests
     [Test]
     public async Task AgentsRejectCanonicalIdentityMismatchAndIncompleteDefinitions()
     {
-        var catalog = new AgentsCatalog(new InMemoryStorageGateway(), new AllowAllAgentAccessPolicy());
+        var catalog = new AgentsCatalog(new InMemoryStorageGateway(), AllowAllEntry());
         var caller = new RequestPrincipal("caller", IsAuthenticated: true);
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
         var job = new AgentJob(
             Guid.NewGuid(), Guid.NewGuid(), "caller", "agent.respond", "conversation",
             "{}", "{}", "D:\\work", "queued", "Unset", 0, 0, [], null, null,
             "permission-1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, null, null, null, null, null);
-        var recorded = await catalog.RecordAgentJobAsync(caller, job);
+        var recorded = await catalog.RecordAgentJobAsync(caller, job, hostContext: hostContext);
         var canonicalJobId = Guid.NewGuid();
-        await catalog.AttachCanonicalJobAsync(caller, recorded.Id, canonicalJobId);
+        await catalog.AttachCanonicalJobAsync(
+            caller,
+            recorded.Id,
+            canonicalJobId,
+            hostContext: hostContext);
 
         Assert.Multiple(() =>
         {
             Assert.ThrowsAsync<InvalidOperationException>(() =>
-                catalog.AttachCanonicalJobAsync(caller, recorded.Id, Guid.NewGuid()));
+                catalog.AttachCanonicalJobAsync(
+                    caller,
+                    recorded.Id,
+                    Guid.NewGuid(),
+                    hostContext: hostContext));
             Assert.ThrowsAsync<InvalidOperationException>(() =>
                 catalog.ProjectCanonicalCompletionAsync(
                     caller, recorded.Id, Guid.NewGuid(), "failed", null, "unknown", 0, 0,
-                    DateTimeOffset.UtcNow));
+                    DateTimeOffset.UtcNow,
+                    hostContext: hostContext));
             Assert.ThrowsAsync<ArgumentException>(() =>
-                catalog.RecordAgentJobAsync(caller, job with { ActionIdentity = " " }));
+                catalog.RecordAgentJobAsync(
+                    caller,
+                    job with { ActionIdentity = " " },
+                    hostContext: hostContext));
         });
     }
 
@@ -1071,7 +1256,7 @@ public sealed class ModuleCompositionTests
     {
         var now = DateTimeOffset.UtcNow;
         var gateway = new InMemoryStorageGateway();
-        var catalog = new AgentsCatalog(gateway, new AllowAllAgentAccessPolicy());
+        var catalog = new AgentsCatalog(gateway, AllowAllEntry());
         var executor = new AgentsJobActionExecutor(catalog);
         var source = NeutralRecord(now, "paused");
         var snapshot = new CanonicalJobsImportSnapshot(
@@ -1080,10 +1265,12 @@ public sealed class ModuleCompositionTests
             [source],
             [new("legacy.agent", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1)]);
 
+        var importer = new RequestPrincipal("importer", IsAuthenticated: true);
         var imported = await executor.ImportAsync(new(
             snapshot,
-            new RequestPrincipal("importer", IsAuthenticated: true)));
-        var persisted = await new AgentsCatalog(gateway, new AllowAllAgentAccessPolicy())
+            importer,
+            TestHostActionContext.Create(importer, HostActionEntryIngress.CrossModule)));
+        var persisted = await new AgentsCatalog(gateway, AllowAllEntry())
             .GetAgentJobAsync(source.SourceId);
 
         Assert.Multiple(() =>
@@ -1101,7 +1288,7 @@ public sealed class ModuleCompositionTests
     {
         var now = DateTimeOffset.UtcNow;
         var gateway = new InMemoryStorageGateway();
-        var catalog = new AgentsCatalog(gateway, new AllowAllAgentAccessPolicy());
+        var catalog = new AgentsCatalog(gateway, AllowAllEntry());
         var source = NeutralRecord(now, "queued");
         var snapshot = new CanonicalJobsImportSnapshot(
             "snapshot-replay",
@@ -1109,9 +1296,10 @@ public sealed class ModuleCompositionTests
             [source],
             [new("legacy.agent", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1)]);
         var caller = new RequestPrincipal("importer", IsAuthenticated: true);
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
 
-        var first = await catalog.ImportAgentJobsAsync(caller, snapshot);
-        var second = await catalog.ImportAgentJobsAsync(caller, snapshot);
+        var first = await catalog.ImportAgentJobsAsync(caller, snapshot, hostContext: hostContext);
+        var second = await catalog.ImportAgentJobsAsync(caller, snapshot, hostContext: hostContext);
         var state = await catalog.GetAgentJobImportStateAsync(snapshot.SnapshotId);
 
         Assert.Multiple(() =>
@@ -1160,12 +1348,13 @@ public sealed class ModuleCompositionTests
             [NeutralRecord(now, "queued")],
             [new("legacy.agent", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1)]);
         var caller = new RequestPrincipal("importer", IsAuthenticated: true);
-        var catalogA = new AgentsCatalog(gateway, new AllowAllAgentAccessPolicy());
-        var catalogB = new AgentsCatalog(gateway, new AllowAllAgentAccessPolicy());
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
+        var catalogA = new AgentsCatalog(gateway, AllowAllEntry());
+        var catalogB = new AgentsCatalog(gateway, AllowAllEntry());
         var imports = new[]
         {
-            catalogA.ImportAgentJobsAsync(caller, snapshot),
-            catalogB.ImportAgentJobsAsync(caller, snapshot),
+            catalogA.ImportAgentJobsAsync(caller, snapshot, hostContext: hostContext),
+            catalogB.ImportAgentJobsAsync(caller, snapshot, hostContext: hostContext),
         };
 
         try
@@ -1224,12 +1413,13 @@ public sealed class ModuleCompositionTests
         var snapshotB = new CanonicalJobsImportSnapshot(
             "snapshot-concurrent-conflict", now, [NeutralRecord(now, "queued")], mappings);
         var caller = new RequestPrincipal("importer", IsAuthenticated: true);
-        var catalogA = new AgentsCatalog(gateway, new AllowAllAgentAccessPolicy());
-        var catalogB = new AgentsCatalog(gateway, new AllowAllAgentAccessPolicy());
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
+        var catalogA = new AgentsCatalog(gateway, AllowAllEntry());
+        var catalogB = new AgentsCatalog(gateway, AllowAllEntry());
         var imports = new[]
         {
-            CaptureAsync(() => catalogA.ImportAgentJobsAsync(caller, snapshotA)),
-            CaptureAsync(() => catalogB.ImportAgentJobsAsync(caller, snapshotB)),
+            CaptureAsync(() => catalogA.ImportAgentJobsAsync(caller, snapshotA, hostContext: hostContext)),
+            CaptureAsync(() => catalogB.ImportAgentJobsAsync(caller, snapshotB, hostContext: hostContext)),
         };
 
         try
@@ -1264,7 +1454,7 @@ public sealed class ModuleCompositionTests
     {
         var now = DateTimeOffset.UtcNow;
         var gateway = new InMemoryStorageGateway();
-        var catalog = new AgentsCatalog(gateway, new AllowAllAgentAccessPolicy());
+        var catalog = new AgentsCatalog(gateway, AllowAllEntry());
         var source = NeutralRecord(now, "queued");
         var primary = new AgentJobActionMapping(
             "legacy.agent", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1);
@@ -1273,7 +1463,8 @@ public sealed class ModuleCompositionTests
         var snapshot = new CanonicalJobsImportSnapshot(
             "snapshot-mapping-authority", now, [source], [primary, secondary]);
         var caller = new RequestPrincipal("importer", IsAuthenticated: true);
-        await catalog.ImportAgentJobsAsync(caller, snapshot);
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
+        await catalog.ImportAgentJobsAsync(caller, snapshot, hostContext: hostContext);
 
         var changed = new CanonicalJobsImportSnapshot(
             snapshot.SnapshotId,
@@ -1292,10 +1483,14 @@ public sealed class ModuleCompositionTests
 
         Assert.Multiple(() =>
         {
-            Assert.ThrowsAsync<AgentJobImportException>(() => catalog.ImportAgentJobsAsync(caller, changed));
-            Assert.ThrowsAsync<AgentJobImportException>(() => catalog.ImportAgentJobsAsync(caller, missing));
-            Assert.ThrowsAsync<AgentJobImportException>(() => catalog.ImportAgentJobsAsync(caller, extra));
-            Assert.ThrowsAsync<AgentJobImportException>(() => catalog.ImportAgentJobsAsync(caller, reordered));
+            Assert.ThrowsAsync<AgentJobImportException>(() =>
+                catalog.ImportAgentJobsAsync(caller, changed, hostContext: hostContext));
+            Assert.ThrowsAsync<AgentJobImportException>(() =>
+                catalog.ImportAgentJobsAsync(caller, missing, hostContext: hostContext));
+            Assert.ThrowsAsync<AgentJobImportException>(() =>
+                catalog.ImportAgentJobsAsync(caller, extra, hostContext: hostContext));
+            Assert.ThrowsAsync<AgentJobImportException>(() =>
+                catalog.ImportAgentJobsAsync(caller, reordered, hostContext: hostContext));
         });
     }
 
@@ -1304,7 +1499,7 @@ public sealed class ModuleCompositionTests
     {
         var now = DateTimeOffset.UtcNow;
         var gateway = new InMemoryStorageGateway();
-        var catalog = new AgentsCatalog(gateway, new AllowAllAgentAccessPolicy());
+        var catalog = new AgentsCatalog(gateway, AllowAllEntry());
         var source = NeutralRecord(now, "queued");
         var snapshot = new CanonicalJobsImportSnapshot(
             "snapshot-conflict",
@@ -1312,7 +1507,8 @@ public sealed class ModuleCompositionTests
             [source],
             [new("legacy.agent", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1)]);
         var caller = new RequestPrincipal("importer", IsAuthenticated: true);
-        await catalog.ImportAgentJobsAsync(caller, snapshot);
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
+        await catalog.ImportAgentJobsAsync(caller, snapshot, hostContext: hostContext);
 
         var changed = new CanonicalJobsImportSnapshot(
             snapshot.SnapshotId,
@@ -1321,7 +1517,7 @@ public sealed class ModuleCompositionTests
             snapshot.ActionMappings);
 
         Assert.ThrowsAsync<AgentJobImportException>(() =>
-            catalog.ImportAgentJobsAsync(caller, changed));
+            catalog.ImportAgentJobsAsync(caller, changed, hostContext: hostContext));
         Assert.That(
             (await catalog.GetAgentJobAsync(source.SourceId))!.PayloadJson,
             Is.EqualTo("""{"prompt":"hello"}"""));
@@ -1332,7 +1528,7 @@ public sealed class ModuleCompositionTests
     {
         var now = DateTimeOffset.UtcNow;
         var gateway = new InMemoryStorageGateway();
-        var catalog = new AgentsCatalog(gateway, new AllowAllAgentAccessPolicy());
+        var catalog = new AgentsCatalog(gateway, AllowAllEntry());
         var sources = new[] { NeutralRecord(now, "queued"), NeutralRecord(now, "paused") };
         var mappings = new[]
         {
@@ -1340,7 +1536,8 @@ public sealed class ModuleCompositionTests
         };
         var snapshot = new CanonicalJobsImportSnapshot("snapshot-shape", now, sources, mappings);
         var caller = new RequestPrincipal("importer", IsAuthenticated: true);
-        await catalog.ImportAgentJobsAsync(caller, snapshot);
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
+        await catalog.ImportAgentJobsAsync(caller, snapshot, hostContext: hostContext);
 
         var missing = new CanonicalJobsImportSnapshot(
             snapshot.SnapshotId,
@@ -1361,11 +1558,11 @@ public sealed class ModuleCompositionTests
         Assert.Multiple(() =>
         {
             Assert.ThrowsAsync<AgentJobImportException>(() =>
-                catalog.ImportAgentJobsAsync(caller, missing));
+                catalog.ImportAgentJobsAsync(caller, missing, hostContext: hostContext));
             Assert.ThrowsAsync<AgentJobImportException>(() =>
-                catalog.ImportAgentJobsAsync(caller, extra));
+                catalog.ImportAgentJobsAsync(caller, extra, hostContext: hostContext));
             Assert.ThrowsAsync<AgentJobImportException>(() =>
-                catalog.ImportAgentJobsAsync(caller, reordered));
+                catalog.ImportAgentJobsAsync(caller, reordered, hostContext: hostContext));
         });
     }
 
@@ -1374,7 +1571,7 @@ public sealed class ModuleCompositionTests
     {
         var now = DateTimeOffset.UtcNow;
         var gateway = new InMemoryStorageGateway { FailAfterUpserts = 2 };
-        var catalog = new AgentsCatalog(gateway, new AllowAllAgentAccessPolicy());
+        var catalog = new AgentsCatalog(gateway, AllowAllEntry());
         var sources = new[] { NeutralRecord(now, "queued"), NeutralRecord(now, "paused") };
         var snapshot = new CanonicalJobsImportSnapshot(
             "snapshot-interrupted",
@@ -1382,9 +1579,10 @@ public sealed class ModuleCompositionTests
             sources,
             [new("legacy.agent", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1)]);
         var caller = new RequestPrincipal("importer", IsAuthenticated: true);
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
 
         Assert.ThrowsAsync<IOException>(() =>
-            catalog.ImportAgentJobsAsync(caller, snapshot));
+            catalog.ImportAgentJobsAsync(caller, snapshot, hostContext: hostContext));
         var interrupted = await catalog.GetAgentJobImportStateAsync(snapshot.SnapshotId);
         Assert.That(interrupted, Is.Not.Null);
         Assert.That(interrupted!.Completed, Is.False);
@@ -1392,7 +1590,7 @@ public sealed class ModuleCompositionTests
         Assert.That(await catalog.GetAgentJobAsync(sources[1].SourceId), Is.Null);
 
         gateway.FailAfterUpserts = null;
-        var resumed = await catalog.ImportAgentJobsAsync(caller, snapshot);
+        var resumed = await catalog.ImportAgentJobsAsync(caller, snapshot, hostContext: hostContext);
         var completed = await catalog.GetAgentJobImportStateAsync(snapshot.SnapshotId);
 
         Assert.Multiple(() =>
@@ -1496,7 +1694,7 @@ public sealed class ModuleCompositionTests
             resultAuthority);
 
     [Test]
-    public async Task DirectChatAndStoreCommitRequireContextAuthorization()
+    public async Task DirectChatFailsClosedWithoutHostActionContext()
     {
         var gateway = new InMemoryStorageGateway();
         var policyStore = new PermissionPolicyStore(gateway);
@@ -1518,58 +1716,16 @@ public sealed class ModuleCompositionTests
             null,
             DateTimeOffset.UtcNow));
 
-        var store = new ContextStore(gateway, new PolicyPermissionActionEntry(permission));
+        var store = new ContextStore(gateway, PolicyEntry(permission));
         var resolver = new ContextConversationResolver(store);
-        var selection = await resolver.ResolveAsync(
-            new ChatTurnInput("hello", Caller: caller),
-            default);
-        Assert.That(selection.Created, Is.True);
+        Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await resolver.ResolveAsync(
+                new ChatTurnInput("hello", Caller: caller),
+                default));
 
         var anonymous = new RequestPrincipal("", IsAuthenticated: false);
         Assert.ThrowsAsync<UnauthorizedAccessException>(async () =>
             await resolver.ResolveAsync(new ChatTurnInput("blocked", Caller: anonymous), default));
-
-        var denied = new RequestPrincipal(Guid.NewGuid().ToString("D"));
-        Assert.ThrowsAsync<UnauthorizedAccessException>(async () =>
-            await resolver.ResolveAsync(
-                new ChatTurnInput("blocked", selection.ConversationId, denied),
-                default));
-
-        var turn = new ChatTurnContext(
-            Guid.NewGuid(),
-            new ChatTurnInput("hello", selection.ConversationId, caller),
-            selection);
-        var contributor = new ContextHistoryContributor(store);
-        var contribution = await contributor.ContributeAsync(
-            new ChatContextRequest(
-                selection.ConversationId,
-                new ChatProfile("test", Guid.NewGuid()),
-                [],
-                turn),
-            default);
-        Assert.That(contribution.Messages, Is.Empty);
-
-        await store.CommitExchangeAsync(
-            new ChatExchange(
-                turn,
-                "hello",
-                new ChatCompletionResult { Content = "answer" }),
-            default);
-        Assert.That((await store.ReadAllMessagesAsync(selection.ConversationId)).Select(item => item.Content),
-            Is.EquivalentTo(new[] { "hello", "answer" }));
-
-        var deniedExchange = new ChatExchange(
-            turn with
-            {
-                Input = turn.Input with { Caller = denied },
-            },
-            "blocked",
-            new ChatCompletionResult { Content = "blocked" });
-        Assert.ThrowsAsync<UnauthorizedAccessException>(async () =>
-            await store.CommitExchangeAsync(deniedExchange, default));
-        Assert.ThrowsAsync<UnauthorizedAccessException>(async () =>
-            await store.LoadHistoryAsync(selection.ConversationId, default));
-        Assert.That((await store.ReadAllMessagesAsync(selection.ConversationId)).Count, Is.EqualTo(2));
     }
 
     [Test]
@@ -1854,15 +2010,23 @@ public sealed class ModuleCompositionTests
     private sealed class RecordingHostActionEntry : IHostActionEntry
     {
         public List<string> Keys { get; } = [];
+        public List<HostActionEntryRequestContext> Contexts { get; } = [];
+        public PermissionDecision? PermissionResult { get; set; }
 
         public ValueTask<IActionOutcome<TResult>> InvokeAsync<TAction, TResult>(
             HostActionEntryRequest<TAction, TResult> request,
             CancellationToken ct)
         {
             Keys.Add(request.Descriptor.Key.Value);
+            Contexts.Add(request.Context);
             var result = typeof(TResult) == typeof(JsonElement)
                 ? (TResult)(object)JsonSerializer.SerializeToElement(new { accepted = true })
-                : default!;
+                : typeof(TResult) == typeof(PermissionDecision)
+                    ? (TResult)(object)(PermissionResult ?? PermissionDecision.Allow(
+                        "test_allowed",
+                        1,
+                        PermissionClearance.Independent))
+                    : default!;
             return ValueTask.FromResult<IActionOutcome<TResult>>(
                 new HostActionOutcome<TResult>(ActionOutcomeKind.Completed, result));
         }
@@ -1879,53 +2043,66 @@ public sealed class ModuleCompositionTests
         public ActionUncertainty? Uncertainty => null;
     }
 
-    private sealed class AllowAllAgentAccessPolicy : IPermissionActionEntry
-    {
-        public ValueTask<ContextAccessDecision> EvaluateContextAsync(
-            RequestPrincipal caller,
-            ContextAccessRequest request,
-            CancellationToken ct = default) =>
-            ValueTask.FromResult(ContextAccessDecision.Allow());
+    private static HostPermissionActionEntry AllowAllEntry() =>
+        new(new RecordingHostActionEntry());
 
-        public ValueTask<ContextAccessDecision> EvaluateAgentAsync(
-            RequestPrincipal principal,
-            string capability,
-            Guid? targetAgentId,
-            CancellationToken ct = default) =>
-            ValueTask.FromResult(ContextAccessDecision.Allow());
-    }
+    private static HostPermissionActionEntry PolicyEntry(TwoTierPermissionPolicy policy) =>
+        new(new PolicyHostActionEntry(policy));
 
-    private sealed class PolicyPermissionActionEntry(
-        TwoTierPermissionPolicy policy) : IPermissionActionEntry
+    private sealed class PolicyHostActionEntry(TwoTierPermissionPolicy policy) : IHostActionEntry
     {
-        public async ValueTask<ContextAccessDecision> EvaluateContextAsync(
-            RequestPrincipal caller,
-            ContextAccessRequest request,
-            CancellationToken ct = default)
+        public async ValueTask<IActionOutcome<TResult>> InvokeAsync<TAction, TResult>(
+            HostActionEntryRequest<TAction, TResult> request,
+            CancellationToken ct)
         {
-            var decision = await policy.EvaluateDetailedAsync(request with { Principal = caller }, ct);
-            return decision.Allowed
-                ? ContextAccessDecision.Allow(decision.Code)
-                : ContextAccessDecision.Deny(decision.Code, decision.Message);
-        }
+            var result = request.Action switch
+            {
+                PermissionContextAccessAction action =>
+                    await policy.EvaluateDetailedAsync(
+                        action.Request with { Principal = request.Context.Caller },
+                        ct),
+                PermissionAgentAccessAction action =>
+                    await policy.EvaluateAgentDetailedAsync(
+                        request.Context.Caller,
+                        action.Capability,
+                        action.TargetAgentId,
+                        ct),
+                _ => throw new InvalidOperationException(
+                    $"The test host does not support '{request.Descriptor.Key.Value}'."),
+            };
 
-        public ValueTask<ContextAccessDecision> EvaluateAgentAsync(
-            RequestPrincipal caller,
-            string capability,
-            Guid? targetAgentId,
-            CancellationToken ct = default) =>
-            policy.EvaluateAgentAsync(caller, capability, targetAgentId, ct);
+            return new HostActionOutcome<TResult>(
+                ActionOutcomeKind.Completed,
+                (TResult)(object)result);
+        }
     }
 
     private sealed class DelegatingContextActionGateway(
         ContextApiActionExecutor executor) : IContextActionGateway
     {
         public ValueTask<JsonElement> ExecuteAsync(
-            RequestPrincipal caller,
+            HostActionEntryRequestContext hostContext,
             string operation,
             JsonElement payload,
             CancellationToken ct = default) =>
-            executor.ExecuteAsync(new ContextApiAction(operation, payload, caller), ct);
+            executor.ExecuteAsync(new ContextApiAction(operation, payload, hostContext), ct);
+    }
+
+    private sealed class RecordingContextGateway : IContextActionGateway
+    {
+        public List<HostActionEntryRequestContext> Contexts { get; } = [];
+        public List<string> Operations { get; } = [];
+
+        public ValueTask<JsonElement> ExecuteAsync(
+            HostActionEntryRequestContext hostContext,
+            string operation,
+            JsonElement payload,
+            CancellationToken ct = default)
+        {
+            Contexts.Add(hostContext);
+            Operations.Add(operation);
+            return ValueTask.FromResult(JsonSerializer.SerializeToElement(new { accepted = true }));
+        }
     }
 
     private sealed class InMemoryStorageGateway : IModuleStorageGateway

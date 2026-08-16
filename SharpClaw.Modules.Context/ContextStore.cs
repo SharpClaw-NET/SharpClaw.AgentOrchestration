@@ -20,11 +20,11 @@ public sealed class ContextStore : IConversationStore
     private readonly ModuleDocumentStore<ContextRecord> _contexts;
     private readonly ModuleDocumentStore<ContextThreadRecord> _threads;
     private readonly ModuleDocumentStore<ContextMessageRecord> _messages;
-    private readonly IPermissionActionEntry _permission;
+    private readonly HostPermissionActionEntry _permission;
 
     public ContextStore(
         IModuleStorageGateway gateway,
-        IPermissionActionEntry permission)
+        HostPermissionActionEntry permission)
     {
         _channels = new(gateway, ModuleId, ChannelsStorage, $"{ModuleId}:{ChannelsStorage}", JsonOptions);
         _contexts = new(gateway, ModuleId, ContextsStorage, $"{ModuleId}:{ContextsStorage}", JsonOptions);
@@ -45,7 +45,8 @@ public sealed class ContextStore : IConversationStore
     internal async Task<ContextChannelRecord> EnsureConversationChannelAsync(
         RequestPrincipal caller,
         Guid channelId,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         RequireAuthenticatedAgent(caller);
         var existing = await GetChannelAsync(channelId, ct);
@@ -56,7 +57,8 @@ public sealed class ContextStore : IConversationStore
                 existing,
                 existing.ContextId,
                 ContextAccessCapabilities.CreateThread,
-                ct);
+                ct,
+                hostContext);
             return existing;
         }
 
@@ -77,7 +79,8 @@ public sealed class ContextStore : IConversationStore
             created,
             null,
             ContextAccessCapabilities.CreateThread,
-            ct);
+            ct,
+            hostContext);
         await SaveChannelAsync(created, ct);
         return created;
     }
@@ -112,7 +115,8 @@ public sealed class ContextStore : IConversationStore
 
     internal async Task<IReadOnlyList<ContextChannelRecord>> ListChannelsAsync(
         RequestPrincipal caller,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         RequireAuthenticatedAgent(caller);
         var channels = await _channels.ListAsync(ct);
@@ -127,7 +131,8 @@ public sealed class ContextStore : IConversationStore
                 channel,
                 context,
                 ContextAccessCapabilities.ReadHistory,
-                ct);
+                ct,
+                hostContext);
             if (decision.Allowed)
                 visible.Add(channel);
         }
@@ -139,21 +144,23 @@ public sealed class ContextStore : IConversationStore
         RequestPrincipal caller,
         Guid channelId,
         CancellationToken ct = default,
-        string capability = ContextAccessCapabilities.ReadHistory)
+        string capability = ContextAccessCapabilities.ReadHistory,
+        HostActionEntryRequestContext? hostContext = null)
     {
         var channel = await GetChannelAsync(channelId, ct)
             ?? throw new InvalidOperationException("The channel was not found.");
         var context = channel.ContextId is { } contextId
             ? await GetContextAsync(contextId, ct)
             : null;
-        await RequireAllowedAsync(caller, channel, context?.Id, capability, ct);
+        await RequireAllowedAsync(caller, channel, context?.Id, capability, ct, hostContext);
         return channel;
     }
 
     internal async Task<ContextChannelRecord> CreateChannelAsync(
         RequestPrincipal caller,
         JsonElement payload,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         RequireAuthenticatedAgent(caller);
         var now = DateTimeOffset.UtcNow;
@@ -173,20 +180,21 @@ public sealed class ContextStore : IConversationStore
         {
             ContextId = contextId,
         };
-        await RequireAllowedAsync(caller, channel, contextId, ContextAccessCapabilities.CreateThread, ct);
+        await RequireAllowedAsync(caller, channel, contextId, ContextAccessCapabilities.CreateThread, ct, hostContext);
         return await SaveChannelAsync(channel, ct);
     }
 
     internal async Task<ContextChannelRecord> UpdateChannelAsync(
         RequestPrincipal caller,
         JsonElement payload,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         var channelId = GuidValue(payload, "channelId")
             ?? throw new ArgumentException("channelId is required.");
         var existing = await GetChannelAsync(channelId, ct)
             ?? throw new InvalidOperationException("The channel was not found.");
-        await RequireAllowedAsync(caller, existing, existing.ContextId, ContextAccessCapabilities.CommitExchange, ct);
+        await RequireAllowedAsync(caller, existing, existing.ContextId, ContextAccessCapabilities.CommitExchange, ct, hostContext);
         var updated = existing with
         {
             Title = StringValue(payload, "title") ?? existing.Title,
@@ -210,10 +218,11 @@ public sealed class ContextStore : IConversationStore
     internal async Task<ContextChannelRecord> DeleteChannelAsync(
         RequestPrincipal caller,
         Guid channelId,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
-        var channel = await GetChannelForCallerAsync(caller, channelId, ct);
-        await RequireAllowedAsync(caller, channel, channel.ContextId, ContextAccessCapabilities.CommitExchange, ct);
+        var channel = await GetChannelForCallerAsync(caller, channelId, ct, hostContext: hostContext);
+        await RequireAllowedAsync(caller, channel, channel.ContextId, ContextAccessCapabilities.CommitExchange, ct, hostContext);
         var threads = await _threads.Query().WhereIndex("channelId").EqualTo(channelId.ToString("N")).ToListAsync(ct);
         foreach (var thread in threads)
             await _threads.DeleteAsync(Key(thread.Id), ct);
@@ -224,20 +233,23 @@ public sealed class ContextStore : IConversationStore
     internal async Task<ContextChannelRecord> AssignChannelAsync(
         RequestPrincipal caller,
         JsonElement payload,
-        CancellationToken ct = default) =>
-        await ChangeChannelAssignmentAsync(caller, payload, assign: true, ct);
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null) =>
+        await ChangeChannelAssignmentAsync(caller, payload, assign: true, ct, hostContext);
 
     internal async Task<ContextChannelRecord> UnassignChannelAsync(
         RequestPrincipal caller,
         JsonElement payload,
-        CancellationToken ct = default) =>
-        await ChangeChannelAssignmentAsync(caller, payload, assign: false, ct);
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null) =>
+        await ChangeChannelAssignmentAsync(caller, payload, assign: false, ct, hostContext);
 
     internal async Task<ContextChannelRecord> SetChannelOptInAsync(
         RequestPrincipal caller,
         JsonElement payload,
         bool optedIn,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         var channelId = GuidValue(payload, "channelId")
             ?? throw new ArgumentException("channelId is required.");
@@ -245,8 +257,9 @@ public sealed class ContextStore : IConversationStore
             caller,
             channelId,
             ct,
-            ContextAccessCapabilities.ReadCrossThreadHistory);
-        await RequireAllowedAsync(caller, channel, channel.ContextId, ContextAccessCapabilities.CommitExchange, ct);
+            ContextAccessCapabilities.ReadCrossThreadHistory,
+            hostContext);
+        await RequireAllowedAsync(caller, channel, channel.ContextId, ContextAccessCapabilities.CommitExchange, ct, hostContext);
         return await SaveChannelAsync(channel with
         {
             CrossThreadOptedIn = optedIn,
@@ -257,9 +270,10 @@ public sealed class ContextStore : IConversationStore
     internal async Task<object> GetChannelPermissionsAsync(
         RequestPrincipal caller,
         Guid channelId,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
-        var channel = await GetChannelForCallerAsync(caller, channelId, ct);
+        var channel = await GetChannelForCallerAsync(caller, channelId, ct, hostContext: hostContext);
         return new
         {
             channel.Id,
@@ -274,12 +288,14 @@ public sealed class ContextStore : IConversationStore
     internal Task<ContextChannelRecord> SynchronizeChannelAsync(
         RequestPrincipal caller,
         Guid channelId,
-        CancellationToken ct = default) =>
-        GetChannelForCallerAsync(caller, channelId, ct);
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null) =>
+        GetChannelForCallerAsync(caller, channelId, ct, hostContext: hostContext);
 
     internal async Task<IReadOnlyList<ContextRecord>> ListContextsAsync(
         RequestPrincipal caller,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         RequireAuthenticatedAgent(caller);
         var contexts = await _contexts.ListAsync(ct);
@@ -292,7 +308,8 @@ public sealed class ContextStore : IConversationStore
                     caller,
                     context,
                     ContextAccessCapabilities.ReadHistory,
-                    ct);
+                    ct,
+                    hostContext);
                 visible.Add(context);
             }
             catch (UnauthorizedAccessException)
@@ -306,18 +323,20 @@ public sealed class ContextStore : IConversationStore
     internal async Task<ContextRecord> GetContextForCallerAsync(
         RequestPrincipal caller,
         Guid contextId,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         var context = await GetContextAsync(contextId, ct)
             ?? throw new InvalidOperationException("The context was not found.");
-        await RequireContextAccessAsync(caller, context, ContextAccessCapabilities.ReadHistory, ct);
+        await RequireContextAccessAsync(caller, context, ContextAccessCapabilities.ReadHistory, ct, hostContext);
         return context;
     }
 
     internal async Task<ContextRecord> CreateContextAsync(
         RequestPrincipal caller,
         JsonElement payload,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         RequireAuthenticatedAgent(caller);
         var callerId = ParseAgentId(caller.SubjectId);
@@ -332,20 +351,21 @@ public sealed class ContextStore : IConversationStore
         {
             Enabled = true,
         };
-        await RequireContextAccessAsync(caller, context, ContextAccessCapabilities.CreateThread, ct);
+        await RequireContextAccessAsync(caller, context, ContextAccessCapabilities.CreateThread, ct, hostContext);
         return await SaveContextAsync(context, ct);
     }
 
     internal async Task<ContextRecord> UpdateContextAsync(
         RequestPrincipal caller,
         JsonElement payload,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         var contextId = GuidValue(payload, "contextId")
             ?? throw new ArgumentException("contextId is required.");
         var existing = await GetContextAsync(contextId, ct)
             ?? throw new InvalidOperationException("The context was not found.");
-        await RequireContextAccessAsync(caller, existing, ContextAccessCapabilities.CommitExchange, ct);
+        await RequireContextAccessAsync(caller, existing, ContextAccessCapabilities.CommitExchange, ct, hostContext);
         var updated = existing with
         {
             Name = StringValue(payload, "name") ?? existing.Name,
@@ -364,10 +384,11 @@ public sealed class ContextStore : IConversationStore
     internal async Task<ContextRecord> DeleteContextAsync(
         RequestPrincipal caller,
         Guid contextId,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
-        var context = await GetContextForCallerAsync(caller, contextId, ct);
-        await RequireContextAccessAsync(caller, context, ContextAccessCapabilities.CommitExchange, ct);
+        var context = await GetContextForCallerAsync(caller, contextId, ct, hostContext);
+        await RequireContextAccessAsync(caller, context, ContextAccessCapabilities.CommitExchange, ct, hostContext);
         await _contexts.DeleteAsync(Key(contextId), ct);
         return context;
     }
@@ -375,47 +396,53 @@ public sealed class ContextStore : IConversationStore
     internal Task<ContextRecord> AssignContextAsync(
         RequestPrincipal caller,
         JsonElement payload,
-        CancellationToken ct = default) =>
-        ChangeContextAssignmentAsync(caller, payload, assign: true, ct);
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null) =>
+        ChangeContextAssignmentAsync(caller, payload, assign: true, ct, hostContext);
 
     internal Task<ContextRecord> UnassignContextAsync(
         RequestPrincipal caller,
         JsonElement payload,
-        CancellationToken ct = default) =>
-        ChangeContextAssignmentAsync(caller, payload, assign: false, ct);
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null) =>
+        ChangeContextAssignmentAsync(caller, payload, assign: false, ct, hostContext);
 
     internal async Task<ContextRecord> SetContextEnabledAsync(
         RequestPrincipal caller,
         JsonElement payload,
         bool enabled,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         var contextId = GuidValue(payload, "contextId")
             ?? throw new ArgumentException("contextId is required.");
-        var context = await GetContextForCallerAsync(caller, contextId, ct);
-        await RequireContextAccessAsync(caller, context, ContextAccessCapabilities.CommitExchange, ct);
+        var context = await GetContextForCallerAsync(caller, contextId, ct, hostContext);
+        await RequireContextAccessAsync(caller, context, ContextAccessCapabilities.CommitExchange, ct, hostContext);
         return await SaveContextAsync(context with { Enabled = enabled, UpdatedAt = DateTimeOffset.UtcNow }, ct);
     }
 
     internal async Task<object> GetContextPermissionsAsync(
         RequestPrincipal caller,
         Guid contextId,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
-        var context = await GetContextForCallerAsync(caller, contextId, ct);
+        var context = await GetContextForCallerAsync(caller, contextId, ct, hostContext);
         return new { context.Id, context.DefaultAgentId, context.AllowedAgentIds, context.Enabled };
     }
 
     internal Task<ContextRecord> SynchronizeContextAsync(
         RequestPrincipal caller,
         Guid contextId,
-        CancellationToken ct = default) =>
-        GetContextForCallerAsync(caller, contextId, ct);
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null) =>
+        GetContextForCallerAsync(caller, contextId, ct, hostContext);
 
     internal async Task<IReadOnlyList<ContextThreadRecord>> ListThreadsForCallerAsync(
         RequestPrincipal caller,
         JsonElement payload,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         var channelId = GuidValue(payload, "channelId")
             ?? throw new ArgumentException("channelId is required.");
@@ -423,7 +450,8 @@ public sealed class ContextStore : IConversationStore
             caller,
             channelId,
             ct,
-            ContextAccessCapabilities.ReadCrossThreadHistory);
+            ContextAccessCapabilities.ReadCrossThreadHistory,
+            hostContext);
         var threads = await _threads.Query()
             .WhereIndex("channelId").EqualTo(channel.Id.ToString("N"))
             .OrderByIndexDescending("updatedAt")
@@ -434,9 +462,10 @@ public sealed class ContextStore : IConversationStore
     internal async Task<ContextThreadRecord> GetThreadForCallerAsync(
         RequestPrincipal caller,
         Guid threadId,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
-        await RequireThreadAccessAsync(caller, threadId, ContextAccessCapabilities.ReadHistory, ct);
+        await RequireThreadAccessAsync(caller, threadId, ContextAccessCapabilities.ReadHistory, ct, hostContext);
         return await GetThreadAsync(threadId, ct)
             ?? throw new InvalidOperationException("The thread was not found.");
     }
@@ -444,22 +473,24 @@ public sealed class ContextStore : IConversationStore
     internal Task<ContextThreadRecord> CreateThreadFromPayloadAsync(
         RequestPrincipal caller,
         JsonElement payload,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         var channelId = GuidValue(payload, "channelId")
             ?? throw new ArgumentException("channelId is required.");
         var name = StringValue(payload, "name") ?? "Thread";
-        return CreateThreadAsync(caller, channelId, name, GuidValue(payload, "contextId"), ct: ct);
+        return CreateThreadAsync(caller, channelId, name, GuidValue(payload, "contextId"), ct: ct, hostContext: hostContext);
     }
 
     internal async Task<ContextThreadRecord> UpdateThreadAsync(
         RequestPrincipal caller,
         JsonElement payload,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         var threadId = GuidValue(payload, "threadId")
             ?? throw new ArgumentException("threadId is required.");
-        var existing = await GetThreadForCallerAsync(caller, threadId, ct);
+        var existing = await GetThreadForCallerAsync(caller, threadId, ct, hostContext);
         var updated = existing with
         {
             Name = StringValue(payload, "name") ?? existing.Name,
@@ -477,9 +508,10 @@ public sealed class ContextStore : IConversationStore
     internal async Task<ContextThreadRecord> DeleteThreadAsync(
         RequestPrincipal caller,
         Guid threadId,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
-        var thread = await GetThreadForCallerAsync(caller, threadId, ct);
+        var thread = await GetThreadForCallerAsync(caller, threadId, ct, hostContext);
         await _threads.DeleteAsync(Key(thread.Id), ct);
         var messages = await _messages.Query().WhereIndex("threadId").EqualTo(thread.Id.ToString("N")).ToListAsync(ct);
         foreach (var message in messages)
@@ -493,7 +525,8 @@ public sealed class ContextStore : IConversationStore
         string name,
         Guid? contextId = null,
         Guid? threadId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         RequireAuthenticatedAgent(caller);
         if (channelId == Guid.Empty)
@@ -516,7 +549,8 @@ public sealed class ContextStore : IConversationStore
             channel,
             resolvedContextId,
             ContextAccessCapabilities.CreateThread,
-            ct);
+            ct,
+            hostContext);
 
         var now = DateTimeOffset.UtcNow;
         var thread = new ContextThreadRecord(
@@ -551,7 +585,8 @@ public sealed class ContextStore : IConversationStore
     internal async Task<IReadOnlyList<ContextThreadSummary>> ListAccessibleThreadsAsync(
         RequestPrincipal principal,
         Guid currentChannelId,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         var channels = await _channels.ListAsync(ct);
         var summaries = new List<ContextThreadSummary>();
@@ -569,7 +604,8 @@ public sealed class ContextStore : IConversationStore
                     channel,
                     context,
                     ContextAccessCapabilities.ReadCrossThreadHistory,
-                    ct);
+                    ct,
+                    hostContext);
                 if (decision.Allowed)
                     summaries.Add(new ContextThreadSummary(
                         thread.Id,
@@ -589,7 +625,8 @@ public sealed class ContextStore : IConversationStore
         RequestPrincipal principal,
         Guid currentChannelId,
         Guid threadId,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         var thread = await GetThreadAsync(threadId, ct);
         if (thread is null || thread.ChannelId == currentChannelId)
@@ -604,7 +641,8 @@ public sealed class ContextStore : IConversationStore
             channel,
             context,
             ContextAccessCapabilities.ReadCrossThreadHistory,
-            ct);
+            ct,
+            hostContext);
         return decision.Allowed
             ? new ContextThreadSummary(
                 thread.Id,
@@ -643,13 +681,15 @@ public sealed class ContextStore : IConversationStore
     internal async ValueTask<IReadOnlyList<ChatCompletionMessage>> LoadHistoryAsync(
         RequestPrincipal caller,
         Guid conversationId,
-        CancellationToken ct)
+        CancellationToken ct,
+        HostActionEntryRequestContext? hostContext = null)
     {
         await RequireThreadAccessAsync(
             caller,
             conversationId,
             ContextAccessCapabilities.ReadHistory,
-            ct);
+            ct,
+            hostContext);
         var messages = await ReadAllMessagesAsync(conversationId, ct);
         return messages
             .Select(message => new ChatCompletionMessage(message.Role, message.Content))
@@ -682,7 +722,8 @@ public sealed class ContextStore : IConversationStore
     internal async Task<bool> CommitExchangeAsync(
         RequestPrincipal caller,
         ContextCommitExchangeAction action,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         RequireAuthenticatedAgent(caller);
         if (action.ThreadId == Guid.Empty)
@@ -693,7 +734,8 @@ public sealed class ContextStore : IConversationStore
             caller,
             thread.Id,
             ContextAccessCapabilities.CommitExchange,
-            ct);
+            ct,
+            hostContext);
         await WriteExchangeAsync(thread, caller, action.UserMessage, action.AssistantMessage, ct);
         return true;
     }
@@ -701,7 +743,8 @@ public sealed class ContextStore : IConversationStore
     internal async ValueTask<ContextAccessDecision> AuthorizeCommitAsync(
         RequestPrincipal caller,
         ContextCommitExchangeAction action,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         if (!caller.IsAuthenticated)
             return ContextAccessDecision.Deny("unauthenticated", "Authentication is required.");
@@ -709,15 +752,17 @@ public sealed class ContextStore : IConversationStore
             caller,
             action.ThreadId,
             ContextAccessCapabilities.CommitExchange,
-            ct);
+            ct,
+            hostContext);
     }
 
     internal Task<ContextAccessDecision> AuthorizeConversationAsync(
         RequestPrincipal caller,
         Guid conversationId,
         string capability,
-        CancellationToken ct = default) =>
-        AuthorizeThreadAsync(caller, conversationId, capability, ct);
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null) =>
+        AuthorizeThreadAsync(caller, conversationId, capability, ct, hostContext);
 
     private async Task WriteExchangeAsync(
         ContextThreadRecord thread,
@@ -760,9 +805,10 @@ public sealed class ContextStore : IConversationStore
         RequestPrincipal caller,
         Guid threadId,
         string capability,
-        CancellationToken ct)
+        CancellationToken ct,
+        HostActionEntryRequestContext? hostContext = null)
     {
-        var decision = await AuthorizeThreadAsync(caller, threadId, capability, ct);
+        var decision = await AuthorizeThreadAsync(caller, threadId, capability, ct, hostContext);
         if (!decision.Allowed)
             throw new UnauthorizedAccessException($"{decision.Code}: {decision.Message}");
     }
@@ -771,7 +817,8 @@ public sealed class ContextStore : IConversationStore
         RequestPrincipal caller,
         Guid threadId,
         string capability,
-        CancellationToken ct)
+        CancellationToken ct,
+        HostActionEntryRequestContext? hostContext = null)
     {
         if (!caller.IsAuthenticated)
             return ContextAccessDecision.Deny("unauthenticated", "Authentication is required.");
@@ -782,21 +829,22 @@ public sealed class ContextStore : IConversationStore
         if (channel is null)
             return ContextAccessDecision.Deny("channel_not_found", "The conversation channel was not found.");
         var context = await ResolveContextAsync(channel, thread, ct);
-        return await EvaluateAsync(caller, channel, context, capability, ct);
+        return await EvaluateAsync(caller, channel, context, capability, ct, hostContext);
     }
 
     private async Task<ContextChannelRecord> ChangeChannelAssignmentAsync(
         RequestPrincipal caller,
         JsonElement payload,
         bool assign,
-        CancellationToken ct)
+        CancellationToken ct,
+        HostActionEntryRequestContext? hostContext = null)
     {
         var channelId = GuidValue(payload, "channelId")
             ?? throw new ArgumentException("channelId is required.");
         var agentId = GuidValue(payload, "agentId")
             ?? throw new ArgumentException("agentId is required.");
-        var channel = await GetChannelForCallerAsync(caller, channelId, ct);
-        await RequireAllowedAsync(caller, channel, channel.ContextId, ContextAccessCapabilities.CommitExchange, ct);
+        var channel = await GetChannelForCallerAsync(caller, channelId, ct, hostContext: hostContext);
+        await RequireAllowedAsync(caller, channel, channel.ContextId, ContextAccessCapabilities.CommitExchange, ct, hostContext);
         var agents = channel.AllowedAgentIds
             .Where(id => id != agentId)
             .Concat(assign ? [agentId] : [])
@@ -813,14 +861,15 @@ public sealed class ContextStore : IConversationStore
         RequestPrincipal caller,
         JsonElement payload,
         bool assign,
-        CancellationToken ct)
+        CancellationToken ct,
+        HostActionEntryRequestContext? hostContext = null)
     {
         var contextId = GuidValue(payload, "contextId")
             ?? throw new ArgumentException("contextId is required.");
         var agentId = GuidValue(payload, "agentId")
             ?? throw new ArgumentException("agentId is required.");
-        var context = await GetContextForCallerAsync(caller, contextId, ct);
-        await RequireContextAccessAsync(caller, context, ContextAccessCapabilities.CommitExchange, ct);
+        var context = await GetContextForCallerAsync(caller, contextId, ct, hostContext);
+        await RequireContextAccessAsync(caller, context, ContextAccessCapabilities.CommitExchange, ct, hostContext);
         var agents = context.AllowedAgentIds
             .Where(id => id != agentId)
             .Concat(assign ? [agentId] : [])
@@ -837,12 +886,13 @@ public sealed class ContextStore : IConversationStore
         RequestPrincipal caller,
         ContextRecord context,
         string capability,
-        CancellationToken ct)
+        CancellationToken ct,
+        HostActionEntryRequestContext? hostContext = null)
     {
         RequireAuthenticatedAgent(caller);
         if (!context.Enabled)
             throw new UnauthorizedAccessException("The context is disabled.");
-        var decision = await _permission.EvaluateContextAsync(caller, new ContextAccessRequest(
+        var decision = await _permission.EvaluateContextAsync(RequireHostContext(hostContext), new ContextAccessRequest(
             caller,
             Guid.Empty,
             null,
@@ -861,12 +911,13 @@ public sealed class ContextStore : IConversationStore
         ContextChannelRecord channel,
         Guid? contextId,
         string capability,
-        CancellationToken ct)
+        CancellationToken ct,
+        HostActionEntryRequestContext? hostContext = null)
     {
         var context = contextId is { } id
             ? await GetContextAsync(id, ct)
             : null;
-        var decision = await EvaluateAsync(principal, channel, context, capability, ct);
+        var decision = await EvaluateAsync(principal, channel, context, capability, ct, hostContext);
         if (!decision.Allowed)
             throw new UnauthorizedAccessException($"{decision.Code}: {decision.Message}");
     }
@@ -876,8 +927,9 @@ public sealed class ContextStore : IConversationStore
         ContextChannelRecord channel,
         ContextRecord? context,
         string capability,
-        CancellationToken ct) =>
-        _permission.EvaluateContextAsync(principal, new ContextAccessRequest(
+        CancellationToken ct,
+        HostActionEntryRequestContext? hostContext = null) =>
+        _permission.EvaluateContextAsync(RequireHostContext(hostContext), new ContextAccessRequest(
             principal,
             channel.Id,
             channel.OwnerAgentId,
@@ -890,6 +942,12 @@ public sealed class ContextStore : IConversationStore
             channel.CrossThreadOptedIn,
             context?.Id ?? channel.ContextId,
             capability), ct);
+
+    private static HostActionEntryRequestContext RequireHostContext(
+        HostActionEntryRequestContext? hostContext) =>
+        hostContext
+        ?? throw new InvalidOperationException(
+            "A host action entry context is required for Context permission evaluation.");
 
     private async Task<ContextRecord?> ResolveContextAsync(
         ContextChannelRecord channel,

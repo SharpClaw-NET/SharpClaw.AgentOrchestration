@@ -30,17 +30,13 @@ public sealed class HostModuleActionEntry(IHostActionEntry host)
     public async ValueTask<TResult> InvokeAsync<TAction, TResult>(
         ActionDescriptor<TAction, TResult> descriptor,
         TAction action,
-        RequestPrincipal caller,
+        HostActionEntryRequestContext hostContext,
         CancellationToken ct = default)
     {
         var request = new HostActionEntryRequest<TAction, TResult>(
             descriptor,
             action,
-            caller,
-            ExtensionFeatureSet.Empty,
-            Guid.NewGuid(),
-            Guid.NewGuid(),
-            DateTimeOffset.UtcNow.Add(descriptor.DefaultTimeout));
+            hostContext);
         var outcome = await host.InvokeAsync(request, ct);
         return outcome.Kind switch
         {

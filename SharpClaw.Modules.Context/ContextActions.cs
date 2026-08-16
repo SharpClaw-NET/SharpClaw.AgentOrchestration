@@ -9,17 +9,20 @@ public interface IContextActionExecutor
     Task<ContextThreadRecord> CreateThreadAsync(
         RequestPrincipal caller,
         ContextCreateThreadAction action,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null);
 
     Task<IReadOnlyList<ContextMessageRecord>> ReadHistoryAsync(
         RequestPrincipal caller,
         ContextReadHistoryAction action,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null);
 
     Task<bool> CommitExchangeAsync(
         RequestPrincipal caller,
         ContextCommitExchangeAction action,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null);
 
     ValueTask CommitExchangeAsync(
         ChatExchange exchange,
@@ -31,7 +34,8 @@ public sealed class ContextActionExecutor(ContextStore store) : IContextActionEx
     public async Task<ContextThreadRecord> CreateThreadAsync(
         RequestPrincipal caller,
         ContextCreateThreadAction action,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         if (!caller.IsAuthenticated
             || !Guid.TryParse(caller.SubjectId, out var agentId)
@@ -45,16 +49,18 @@ public sealed class ContextActionExecutor(ContextStore store) : IContextActionEx
             action.ChannelId,
             action.Name,
             action.ContextId,
-            ct: ct);
+            ct: ct,
+            hostContext: hostContext);
     }
 
     public async Task<IReadOnlyList<ContextMessageRecord>> ReadHistoryAsync(
         RequestPrincipal caller,
         ContextReadHistoryAction action,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         var thread = await store.FindAccessibleThreadAsync(
-            caller, action.ChannelId, action.ThreadId, ct)
+            caller, action.ChannelId, action.ThreadId, ct, hostContext)
             ?? throw new UnauthorizedAccessException("The thread is missing or inaccessible.");
         return await store.ReadMessagesAsync(thread.ThreadId, action.MaxMessages, ct);
     }
@@ -62,8 +68,9 @@ public sealed class ContextActionExecutor(ContextStore store) : IContextActionEx
     public Task<bool> CommitExchangeAsync(
         RequestPrincipal caller,
         ContextCommitExchangeAction action,
-        CancellationToken ct = default) =>
-        store.CommitExchangeAsync(caller, action, ct);
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null) =>
+        store.CommitExchangeAsync(caller, action, ct, hostContext);
 
     public ValueTask CommitExchangeAsync(
         ChatExchange exchange,
@@ -74,7 +81,10 @@ public sealed class ContextActionExecutor(ContextStore store) : IContextActionEx
 public sealed record ContextApiAction(
     string Operation,
     JsonElement Payload,
-    RequestPrincipal Caller);
+    HostActionEntryRequestContext HostActionContext)
+{
+    public RequestPrincipal Caller => HostActionContext.Caller;
+}
 
 public sealed class ContextApiActionExecutor(ContextStore store)
 {
@@ -85,36 +95,37 @@ public sealed class ContextApiActionExecutor(ContextStore store)
         ArgumentException.ThrowIfNullOrWhiteSpace(action.Operation);
         return action.Operation switch
         {
-            ContextApiOperations.ListChannels => await JsonAsync(await store.ListChannelsAsync(action.Caller, ct)),
-            ContextApiOperations.GetChannel => await JsonAsync(await store.GetChannelForCallerAsync(action.Caller, GuidValue(action.Payload, "channelId"), ct)),
-            ContextApiOperations.CreateChannel => await JsonAsync(await store.CreateChannelAsync(action.Caller, action.Payload, ct)),
-            ContextApiOperations.UpdateChannel => await JsonAsync(await store.UpdateChannelAsync(action.Caller, action.Payload, ct)),
-            ContextApiOperations.DeleteChannel => await JsonAsync(await store.DeleteChannelAsync(action.Caller, GuidValue(action.Payload, "channelId"), ct)),
-            ContextApiOperations.AssignChannel => await JsonAsync(await store.AssignChannelAsync(action.Caller, action.Payload, ct)),
-            ContextApiOperations.UnassignChannel => await JsonAsync(await store.UnassignChannelAsync(action.Caller, action.Payload, ct)),
-            ContextApiOperations.OptInChannel => await JsonAsync(await store.SetChannelOptInAsync(action.Caller, action.Payload, true, ct)),
-            ContextApiOperations.OptOutChannel => await JsonAsync(await store.SetChannelOptInAsync(action.Caller, action.Payload, false, ct)),
-            ContextApiOperations.ChannelPermissions => await JsonAsync(await store.GetChannelPermissionsAsync(action.Caller, GuidValue(action.Payload, "channelId"), ct)),
-            ContextApiOperations.SynchronizeChannel => await JsonAsync(await store.SynchronizeChannelAsync(action.Caller, GuidValue(action.Payload, "channelId"), ct)),
-            ContextApiOperations.ListContexts => await JsonAsync(await store.ListContextsAsync(action.Caller, ct)),
-            ContextApiOperations.GetContext => await JsonAsync(await store.GetContextForCallerAsync(action.Caller, GuidValue(action.Payload, "contextId"), ct)),
-            ContextApiOperations.CreateContext => await JsonAsync(await store.CreateContextAsync(action.Caller, action.Payload, ct)),
-            ContextApiOperations.UpdateContext => await JsonAsync(await store.UpdateContextAsync(action.Caller, action.Payload, ct)),
-            ContextApiOperations.DeleteContext => await JsonAsync(await store.DeleteContextAsync(action.Caller, GuidValue(action.Payload, "contextId"), ct)),
-            ContextApiOperations.AssignContext => await JsonAsync(await store.AssignContextAsync(action.Caller, action.Payload, ct)),
-            ContextApiOperations.UnassignContext => await JsonAsync(await store.UnassignContextAsync(action.Caller, action.Payload, ct)),
-            ContextApiOperations.ActivateContext => await JsonAsync(await store.SetContextEnabledAsync(action.Caller, action.Payload, true, ct)),
-            ContextApiOperations.DeactivateContext => await JsonAsync(await store.SetContextEnabledAsync(action.Caller, action.Payload, false, ct)),
-            ContextApiOperations.SynchronizeContext => await JsonAsync(await store.SynchronizeContextAsync(action.Caller, GuidValue(action.Payload, "contextId"), ct)),
-            ContextApiOperations.ContextPermissions => await JsonAsync(await store.GetContextPermissionsAsync(action.Caller, GuidValue(action.Payload, "contextId"), ct)),
+            ContextApiOperations.ListChannels => await JsonAsync(await store.ListChannelsAsync(action.Caller, ct, action.HostActionContext)),
+            ContextApiOperations.GetChannel => await JsonAsync(await store.GetChannelForCallerAsync(action.Caller, GuidValue(action.Payload, "channelId"), ct, hostContext: action.HostActionContext)),
+            ContextApiOperations.CreateChannel => await JsonAsync(await store.CreateChannelAsync(action.Caller, action.Payload, ct, action.HostActionContext)),
+            ContextApiOperations.UpdateChannel => await JsonAsync(await store.UpdateChannelAsync(action.Caller, action.Payload, ct, action.HostActionContext)),
+            ContextApiOperations.DeleteChannel => await JsonAsync(await store.DeleteChannelAsync(action.Caller, GuidValue(action.Payload, "channelId"), ct, action.HostActionContext)),
+            ContextApiOperations.AssignChannel => await JsonAsync(await store.AssignChannelAsync(action.Caller, action.Payload, ct, action.HostActionContext)),
+            ContextApiOperations.UnassignChannel => await JsonAsync(await store.UnassignChannelAsync(action.Caller, action.Payload, ct, action.HostActionContext)),
+            ContextApiOperations.OptInChannel => await JsonAsync(await store.SetChannelOptInAsync(action.Caller, action.Payload, true, ct, action.HostActionContext)),
+            ContextApiOperations.OptOutChannel => await JsonAsync(await store.SetChannelOptInAsync(action.Caller, action.Payload, false, ct, action.HostActionContext)),
+            ContextApiOperations.ChannelPermissions => await JsonAsync(await store.GetChannelPermissionsAsync(action.Caller, GuidValue(action.Payload, "channelId"), ct, action.HostActionContext)),
+            ContextApiOperations.SynchronizeChannel => await JsonAsync(await store.SynchronizeChannelAsync(action.Caller, GuidValue(action.Payload, "channelId"), ct, action.HostActionContext)),
+            ContextApiOperations.ListContexts => await JsonAsync(await store.ListContextsAsync(action.Caller, ct, action.HostActionContext)),
+            ContextApiOperations.GetContext => await JsonAsync(await store.GetContextForCallerAsync(action.Caller, GuidValue(action.Payload, "contextId"), ct, action.HostActionContext)),
+            ContextApiOperations.CreateContext => await JsonAsync(await store.CreateContextAsync(action.Caller, action.Payload, ct, action.HostActionContext)),
+            ContextApiOperations.UpdateContext => await JsonAsync(await store.UpdateContextAsync(action.Caller, action.Payload, ct, action.HostActionContext)),
+            ContextApiOperations.DeleteContext => await JsonAsync(await store.DeleteContextAsync(action.Caller, GuidValue(action.Payload, "contextId"), ct, action.HostActionContext)),
+            ContextApiOperations.AssignContext => await JsonAsync(await store.AssignContextAsync(action.Caller, action.Payload, ct, action.HostActionContext)),
+            ContextApiOperations.UnassignContext => await JsonAsync(await store.UnassignContextAsync(action.Caller, action.Payload, ct, action.HostActionContext)),
+            ContextApiOperations.ActivateContext => await JsonAsync(await store.SetContextEnabledAsync(action.Caller, action.Payload, true, ct, action.HostActionContext)),
+            ContextApiOperations.DeactivateContext => await JsonAsync(await store.SetContextEnabledAsync(action.Caller, action.Payload, false, ct, action.HostActionContext)),
+            ContextApiOperations.SynchronizeContext => await JsonAsync(await store.SynchronizeContextAsync(action.Caller, GuidValue(action.Payload, "contextId"), ct, action.HostActionContext)),
+            ContextApiOperations.ContextPermissions => await JsonAsync(await store.GetContextPermissionsAsync(action.Caller, GuidValue(action.Payload, "contextId"), ct, action.HostActionContext)),
             ContextApiOperations.ListThreads => await JsonAsync(await store.ListAccessibleThreadsAsync(
                 action.Caller,
                 GuidValue(action.Payload, "channelId"),
-                ct)),
-            ContextApiOperations.GetThread => await JsonAsync(await store.GetThreadForCallerAsync(action.Caller, GuidValue(action.Payload, "threadId"), ct)),
-            ContextApiOperations.CreateThread => await JsonAsync(await store.CreateThreadFromPayloadAsync(action.Caller, action.Payload, ct)),
-            ContextApiOperations.UpdateThread => await JsonAsync(await store.UpdateThreadAsync(action.Caller, action.Payload, ct)),
-            ContextApiOperations.DeleteThread => await JsonAsync(await store.DeleteThreadAsync(action.Caller, GuidValue(action.Payload, "threadId"), ct)),
+                ct,
+                action.HostActionContext)),
+            ContextApiOperations.GetThread => await JsonAsync(await store.GetThreadForCallerAsync(action.Caller, GuidValue(action.Payload, "threadId"), ct, action.HostActionContext)),
+            ContextApiOperations.CreateThread => await JsonAsync(await store.CreateThreadFromPayloadAsync(action.Caller, action.Payload, ct, action.HostActionContext)),
+            ContextApiOperations.UpdateThread => await JsonAsync(await store.UpdateThreadAsync(action.Caller, action.Payload, ct, action.HostActionContext)),
+            ContextApiOperations.DeleteThread => await JsonAsync(await store.DeleteThreadAsync(action.Caller, GuidValue(action.Payload, "threadId"), ct, action.HostActionContext)),
             ContextApiOperations.ReadHistory => await JsonAsync(await ReadHistoryAsync(action, ct)),
             ContextApiOperations.CommitExchange => await JsonAsync(await CommitExchangeAsync(action, ct)),
             _ => throw new ArgumentException($"Unknown Context operation '{action.Operation}'.", nameof(action)),
@@ -127,7 +138,7 @@ public sealed class ContextApiActionExecutor(ContextStore store)
     {
         var channelId = GuidValue(action.Payload, "channelId");
         var threadId = GuidValue(action.Payload, "threadId");
-        var thread = await store.FindAccessibleThreadAsync(action.Caller, channelId, threadId, ct)
+        var thread = await store.FindAccessibleThreadAsync(action.Caller, channelId, threadId, ct, action.HostActionContext)
             ?? throw new UnauthorizedAccessException("The thread is missing or inaccessible.");
         var maxMessages = action.Payload.TryGetProperty("maxMessages", out var max)
             && max.TryGetInt32(out var requested)
@@ -147,7 +158,8 @@ public sealed class ContextApiActionExecutor(ContextStore store)
                 threadId,
                 StringValue(action.Payload, "userMessage") ?? string.Empty,
                 StringValue(action.Payload, "assistantMessage") ?? string.Empty),
-            ct);
+            ct,
+            action.HostActionContext);
     }
 
     private static ValueTask<JsonElement> JsonAsync<T>(T value) =>
@@ -170,7 +182,7 @@ public sealed class ContextApiActionExecutor(ContextStore store)
 public interface IContextActionGateway
 {
     ValueTask<JsonElement> ExecuteAsync(
-        RequestPrincipal caller,
+        HostActionEntryRequestContext hostContext,
         string operation,
         JsonElement payload,
         CancellationToken ct = default);
@@ -180,13 +192,13 @@ public sealed class ContextActionGateway(
     HostModuleActionEntry entry) : IContextActionGateway
 {
     public ValueTask<JsonElement> ExecuteAsync(
-        RequestPrincipal caller,
+        HostActionEntryRequestContext hostContext,
         string operation,
         JsonElement payload,
         CancellationToken ct = default)
     {
-        var action = new ContextApiAction(operation, payload, caller);
-        return entry.InvokeAsync(ContextModule.ApiDescriptor, action, caller, ct);
+        var action = new ContextApiAction(operation, payload, hostContext);
+        return entry.InvokeAsync(ContextModule.ApiDescriptor, action, hostContext, ct);
     }
 }
 

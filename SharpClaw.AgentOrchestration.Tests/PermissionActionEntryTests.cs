@@ -16,6 +16,7 @@ public sealed class PermissionActionEntryTests
         };
         var entry = new HostPermissionActionEntry(host);
         var caller = new RequestPrincipal("agent-1", IsAuthenticated: true);
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
         var request = new ContextAccessRequest(
             RequestPrincipal.Anonymous,
             Guid.NewGuid(),
@@ -27,7 +28,7 @@ public sealed class PermissionActionEntryTests
             Guid.NewGuid(),
             ContextAccessCapabilities.ReadHistory);
 
-        var decision = await entry.EvaluateContextAsync(caller, request);
+        var decision = await entry.EvaluateContextAsync(hostContext, request);
 
         Assert.Multiple(() =>
         {
@@ -54,10 +55,11 @@ public sealed class PermissionActionEntryTests
         };
         var entry = new HostPermissionActionEntry(host);
         var caller = new RequestPrincipal("agent-2", IsAuthenticated: true);
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
         var targetAgentId = Guid.NewGuid();
 
         var decision = await entry.EvaluateAgentAsync(
-            caller,
+            hostContext,
             "manage_agents",
             targetAgentId);
 
@@ -92,10 +94,11 @@ public sealed class PermissionActionEntryTests
                 DateTimeOffset.UtcNow),
         };
         var entry = new HostPermissionActionEntry(host);
+        var hostContext = TestHostActionContext.Create(new RequestPrincipal("agent-3", IsAuthenticated: true));
 
         Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await entry.EvaluateAgentAsync(
-                new RequestPrincipal("agent-3", IsAuthenticated: true),
+                hostContext,
                 "read_agents",
                 null));
     }
@@ -105,12 +108,46 @@ public sealed class PermissionActionEntryTests
     {
         var host = new RecordingHostActionEntry { OutcomeKind = ActionOutcomeKind.Cancelled };
         var entry = new HostPermissionActionEntry(host);
+        var hostContext = TestHostActionContext.Create(new RequestPrincipal("agent-4", IsAuthenticated: true));
 
         Assert.ThrowsAsync<OperationCanceledException>(async () =>
             await entry.EvaluateAgentAsync(
-                new RequestPrincipal("agent-4", IsAuthenticated: true),
+                hostContext,
                 "read_agents",
                 null));
+    }
+
+    [Test]
+    public async Task HostEntryPreservesTheIssuedAuthorityContext()
+    {
+        var host = new RecordingHostActionEntry
+        {
+            Result = PermissionDecision.Allow("context_allowed", 2, PermissionClearance.Independent),
+        };
+        var entry = new HostPermissionActionEntry(host);
+        var caller = new RequestPrincipal(
+            "agent-authority",
+            "Authority Agent",
+            new HashSet<string>(["admin", "operator"]),
+            true);
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.Cli);
+
+        await entry.EvaluateAgentAsync(hostContext, "manage_agents", Guid.NewGuid());
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(host.AgentRequest, Is.Not.Null);
+            Assert.That(host.AgentRequest!.Context, Is.SameAs(hostContext));
+            Assert.That(host.AgentRequest.Caller, Is.EqualTo(caller));
+            Assert.That(host.AgentRequest.Action.Caller, Is.EqualTo(caller));
+            Assert.That(host.AgentRequest.Features, Is.SameAs(hostContext.Features));
+            Assert.That(host.AgentRequest.TraceId, Is.EqualTo(hostContext.TraceId));
+            Assert.That(host.AgentRequest.IdempotencyKey, Is.EqualTo(hostContext.IdempotencyKey));
+            Assert.That(host.AgentRequest.Deadline, Is.EqualTo(hostContext.Deadline));
+            Assert.That(host.AgentRequest.Context.CapabilityId, Is.EqualTo(hostContext.CapabilityId));
+            Assert.That(host.AgentRequest.Context.CapabilityHandle, Is.EqualTo(hostContext.CapabilityHandle));
+            Assert.That(host.AgentRequest.Context.Ingress, Is.EqualTo(hostContext.Ingress));
+        });
     }
 
     private sealed class RecordingHostActionEntry : IHostActionEntry

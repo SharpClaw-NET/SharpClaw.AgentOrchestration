@@ -25,7 +25,7 @@ public sealed class AgentsCliHandler(IAgentsActionGateway gateway) : IModuleCliH
         ModuleCliInvocation invocation,
         CancellationToken ct)
     {
-        if (!invocation.Caller.Roles?.Any(role => role.Equals("admin", StringComparison.OrdinalIgnoreCase)
+        if (!invocation.HostActionContext.Caller.Roles?.Any(role => role.Equals("admin", StringComparison.OrdinalIgnoreCase)
             || role.Equals("administrator", StringComparison.OrdinalIgnoreCase)) == true)
         {
             return Failure("An administrator role is required.");
@@ -40,7 +40,7 @@ public sealed class AgentsCliHandler(IAgentsActionGateway gateway) : IModuleCliH
         {
             var payload = BuildPayload(command.Operation, invocation.Arguments);
             var result = await gateway.ExecuteAsync(
-                invocation.Caller,
+                invocation.HostActionContext,
                 command.Operation,
                 payload,
                 ct);

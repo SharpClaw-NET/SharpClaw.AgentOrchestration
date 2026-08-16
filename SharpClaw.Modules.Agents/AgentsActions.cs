@@ -10,32 +10,38 @@ public interface IAgentsActionExecutor
     Task<AgentRecord> CreateAsync(
         RequestPrincipal caller,
         AgentsCreateAction action,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null);
 
     Task<AgentRecord?> UpdateAsync(
         RequestPrincipal caller,
         AgentsUpdateAction action,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null);
 
     Task<MemoryRecord> WriteMemoryAsync(
         RequestPrincipal caller,
         AgentsWriteMemoryAction action,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null);
 
     Task<SkillRecord> SaveSkillAsync(
         RequestPrincipal caller,
         AgentsSaveSkillAction action,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null);
 
     Task<string> AccessSkillAsync(
         RequestPrincipal caller,
         AgentsAccessSkillAction action,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null);
 
     Task<IReadOnlyList<MemoryRecord>> SearchMemoryAsync(
         RequestPrincipal caller,
         AgentsSearchMemoryAction action,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null);
 }
 
 public sealed class AgentsActionExecutor(
@@ -44,43 +50,49 @@ public sealed class AgentsActionExecutor(
     public Task<AgentRecord> CreateAsync(
         RequestPrincipal caller,
         AgentsCreateAction action,
-        CancellationToken ct = default) =>
-        catalog.CreateAgentAsync(caller, action, ct);
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null) =>
+        catalog.CreateAgentAsync(caller, action, ct, hostContext);
 
     public Task<AgentRecord?> UpdateAsync(
         RequestPrincipal caller,
         AgentsUpdateAction action,
-        CancellationToken ct = default) =>
-        catalog.UpdateAgentAsync(caller, action, ct);
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null) =>
+        catalog.UpdateAgentAsync(caller, action, ct, hostContext);
 
     public Task<MemoryRecord> WriteMemoryAsync(
         RequestPrincipal caller,
         AgentsWriteMemoryAction action,
-        CancellationToken ct = default) =>
-        catalog.WriteMemoryAsync(caller, action, ct);
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null) =>
+        catalog.WriteMemoryAsync(caller, action, ct, hostContext);
 
     public Task<SkillRecord> SaveSkillAsync(
         RequestPrincipal caller,
         AgentsSaveSkillAction action,
-        CancellationToken ct = default) =>
-        catalog.SaveSkillAsync(caller, action.Skill, ct);
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null) =>
+        catalog.SaveSkillAsync(caller, action.Skill, ct, hostContext);
 
     public Task<string> AccessSkillAsync(
         RequestPrincipal caller,
         AgentsAccessSkillAction action,
-        CancellationToken ct = default) =>
-        catalog.AccessSkillAsync(caller, action.SkillId, ct);
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null) =>
+        catalog.AccessSkillAsync(caller, action.SkillId, ct, hostContext);
 
     public Task<IReadOnlyList<MemoryRecord>> SearchMemoryAsync(
         RequestPrincipal caller,
         AgentsSearchMemoryAction action,
-        CancellationToken ct = default) =>
-        catalog.SearchMemoryAsync(caller, action.AgentId, action.Query, ct);
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null) =>
+        catalog.SearchMemoryAsync(caller, action.AgentId, action.Query, ct, hostContext);
 }
 
 public sealed class AgentsApiActionExecutor(
     AgentsCatalog catalog,
-    IPermissionActionEntry permission)
+    HostPermissionActionEntry permission)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -93,47 +105,51 @@ public sealed class AgentsApiActionExecutor(
     {
         return action.Operation switch
         {
-            AgentsApiOperations.ListAgents => Json(await ListAgentsAsync(action.Caller, ct)),
+            AgentsApiOperations.ListAgents => Json(await ListAgentsAsync(action.Caller, ct, action.HostActionContext)),
             AgentsApiOperations.GetAgent => Json(await GetAgentAsync(action, ct)),
-            AgentsApiOperations.CreateAgent => Json(await catalog.CreateAgentAsync(action.Caller, Deserialize<AgentsCreateAction>(action.Payload), ct)),
-            AgentsApiOperations.UpdateAgent => Json(await catalog.UpdateAgentAsync(action.Caller, Deserialize<AgentsUpdateAction>(action.Payload), ct)),
-            AgentsApiOperations.DeleteAgent => Json(await catalog.DeleteAgentAsync(action.Caller, GuidValue(action.Payload, "agentId"), ct)),
+            AgentsApiOperations.CreateAgent => Json(await catalog.CreateAgentAsync(action.Caller, Deserialize<AgentsCreateAction>(action.Payload), ct, action.HostActionContext)),
+            AgentsApiOperations.UpdateAgent => Json(await catalog.UpdateAgentAsync(action.Caller, Deserialize<AgentsUpdateAction>(action.Payload), ct, action.HostActionContext)),
+            AgentsApiOperations.DeleteAgent => Json(await catalog.DeleteAgentAsync(action.Caller, GuidValue(action.Payload, "agentId"), ct, action.HostActionContext)),
             AgentsApiOperations.AssignRole => Json(await catalog.AssignRoleAsync(
                 action.Caller,
                 GuidValue(action.Payload, "agentId"),
                 StringValue(action.Payload, "role"),
                 BoolValue(action.Payload, "assign"),
-                ct)),
-            AgentsApiOperations.SynchronizeAgent => Json(await catalog.SynchronizeAsync(action.Caller, GuidValue(action.Payload, "agentId"), ct)),
-            AgentsApiOperations.GetCost => Json(await catalog.GetCostAsync(action.Caller, GuidValue(action.Payload, "agentId"), ct)),
-            AgentsApiOperations.ListSkills => Json(await ListSkillsAsync(action.Caller, ct)),
-            AgentsApiOperations.GetSkill => Json(await catalog.GetSkillForCallerAsync(action.Caller, GuidValue(action.Payload, "skillId"), ct)),
-            AgentsApiOperations.SaveSkill => Json(await catalog.SaveSkillAsync(action.Caller, Deserialize<AgentsSaveSkillAction>(action.Payload).Skill, ct)),
-            AgentsApiOperations.DeleteSkill => Json(await catalog.DeleteSkillAsync(action.Caller, GuidValue(action.Payload, "skillId"), ct)),
-            AgentsApiOperations.AccessSkill => Json(await catalog.AccessSkillAsync(action.Caller, GuidValue(action.Payload, "skillId"), ct)),
-            AgentsApiOperations.WriteMemory => Json(await catalog.WriteMemoryAsync(action.Caller, Deserialize<AgentsWriteMemoryAction>(action.Payload), ct)),
+                ct,
+                action.HostActionContext)),
+            AgentsApiOperations.SynchronizeAgent => Json(await catalog.SynchronizeAsync(action.Caller, GuidValue(action.Payload, "agentId"), ct, action.HostActionContext)),
+            AgentsApiOperations.GetCost => Json(await catalog.GetCostAsync(action.Caller, GuidValue(action.Payload, "agentId"), ct, action.HostActionContext)),
+            AgentsApiOperations.ListSkills => Json(await ListSkillsAsync(action.Caller, ct, action.HostActionContext)),
+            AgentsApiOperations.GetSkill => Json(await catalog.GetSkillForCallerAsync(action.Caller, GuidValue(action.Payload, "skillId"), ct, action.HostActionContext)),
+            AgentsApiOperations.SaveSkill => Json(await catalog.SaveSkillAsync(action.Caller, Deserialize<AgentsSaveSkillAction>(action.Payload).Skill, ct, action.HostActionContext)),
+            AgentsApiOperations.DeleteSkill => Json(await catalog.DeleteSkillAsync(action.Caller, GuidValue(action.Payload, "skillId"), ct, action.HostActionContext)),
+            AgentsApiOperations.AccessSkill => Json(await catalog.AccessSkillAsync(action.Caller, GuidValue(action.Payload, "skillId"), ct, action.HostActionContext)),
+            AgentsApiOperations.WriteMemory => Json(await catalog.WriteMemoryAsync(action.Caller, Deserialize<AgentsWriteMemoryAction>(action.Payload), ct, action.HostActionContext)),
             AgentsApiOperations.SearchMemory => Json(await catalog.SearchMemoryAsync(
                 action.Caller,
                 GuidValue(action.Payload, "agentId"),
                 StringValue(action.Payload, "query"),
-                ct)),
+                ct,
+                action.HostActionContext)),
             _ => throw new ArgumentException($"Unknown Agents operation '{action.Operation}'.", nameof(action)),
         };
     }
 
     private async Task<IReadOnlyList<AgentRecord>> ListAgentsAsync(
         RequestPrincipal caller,
-        CancellationToken ct)
+        CancellationToken ct,
+        HostActionEntryRequestContext hostContext)
     {
-        await RequireAccessAsync(caller, "manage_agents", null, ct);
+        await RequireAccessAsync(caller, "manage_agents", null, ct, hostContext);
         return await catalog.ListAgentsAsync(ct);
     }
 
     private async Task<IReadOnlyList<SkillRecord>> ListSkillsAsync(
         RequestPrincipal caller,
-        CancellationToken ct)
+        CancellationToken ct,
+        HostActionEntryRequestContext hostContext)
     {
-        await RequireAccessAsync(caller, "manage_skills", null, ct);
+        await RequireAccessAsync(caller, "manage_skills", null, ct, hostContext);
         return await catalog.ListSkillsAsync(ct);
     }
 
@@ -144,7 +160,7 @@ public sealed class AgentsApiActionExecutor(
             throw new UnauthorizedAccessException("Authentication is required.");
         if (!IsAdministrator(action.Caller)
             && !string.Equals(action.Caller.SubjectId, agentId.ToString("D"), StringComparison.OrdinalIgnoreCase))
-            await RequireAccessAsync(action.Caller, "read_agents", agentId, ct);
+            await RequireAccessAsync(action.Caller, "read_agents", agentId, ct, action.HostActionContext);
         return await catalog.GetAgentAsync(agentId, ct)
             ?? throw new InvalidOperationException("The agent was not found.");
     }
@@ -153,13 +169,14 @@ public sealed class AgentsApiActionExecutor(
         RequestPrincipal caller,
         string capability,
         Guid? targetAgentId,
-        CancellationToken ct)
+        CancellationToken ct,
+        HostActionEntryRequestContext hostContext)
     {
         if (IsAdministrator(caller))
             return;
         if (!caller.IsAuthenticated)
             throw new UnauthorizedAccessException("Authentication is required.");
-        var decision = await permission.EvaluateAgentAsync(caller, capability, targetAgentId, ct);
+        var decision = await permission.EvaluateAgentAsync(hostContext, capability, targetAgentId, ct);
         if (!decision.Allowed)
             throw new UnauthorizedAccessException(decision.Message);
     }
@@ -197,7 +214,7 @@ public sealed class AgentsApiActionExecutor(
 public interface IAgentsActionGateway
 {
     ValueTask<JsonElement> ExecuteAsync(
-        RequestPrincipal caller,
+        HostActionEntryRequestContext hostContext,
         string operation,
         JsonElement payload,
         CancellationToken ct = default);
@@ -207,12 +224,12 @@ public sealed class AgentsActionGateway(
     HostModuleActionEntry entry) : IAgentsActionGateway
 {
     public ValueTask<JsonElement> ExecuteAsync(
-        RequestPrincipal caller,
+        HostActionEntryRequestContext hostContext,
         string operation,
         JsonElement payload,
         CancellationToken ct = default)
     {
-        var action = new AgentsApiAction(operation, payload, caller);
-        return entry.InvokeAsync(AgentsModule.ApiDescriptor, action, caller, ct);
+        var action = new AgentsApiAction(operation, payload, hostContext);
+        return entry.InvokeAsync(AgentsModule.ApiDescriptor, action, hostContext, ct);
     }
 }

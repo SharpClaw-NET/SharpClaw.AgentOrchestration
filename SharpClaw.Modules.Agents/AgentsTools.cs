@@ -29,7 +29,11 @@ public sealed class AgentsToolHandler(IAgentsActionGateway gateway) : IToolHandl
             if (operation is null)
                 return ToolResult.Error($"Unknown Agents tool '{invocation.ToolName}'.");
             var payload = BuildPayload(operation, invocation.Arguments);
-            var result = await gateway.ExecuteAsync(invocation.Caller, operation, payload, ct);
+            var result = await gateway.ExecuteAsync(
+                invocation.HostActionContext,
+                operation,
+                payload,
+                ct);
             return new ToolResult(result.GetRawText());
         }
         catch (UnauthorizedAccessException exception)

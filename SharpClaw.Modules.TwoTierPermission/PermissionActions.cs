@@ -180,7 +180,7 @@ public sealed class PermissionApiActionExecutor(
 public interface IPermissionActionGateway
 {
     ValueTask<JsonElement> ExecuteAsync(
-        RequestPrincipal caller,
+        HostActionEntryRequestContext hostContext,
         string operation,
         JsonElement payload,
         CancellationToken ct = default);
@@ -190,12 +190,12 @@ public sealed class PermissionActionGateway(
     HostModuleActionEntry entry) : IPermissionActionGateway
 {
     public ValueTask<JsonElement> ExecuteAsync(
-        RequestPrincipal caller,
+        HostActionEntryRequestContext hostContext,
         string operation,
         JsonElement payload,
         CancellationToken ct = default)
     {
-        var action = new PermissionApiAction(operation, payload, caller);
-        return entry.InvokeAsync(TwoTierPermissionModule.ApiDescriptor, action, caller, ct);
+        var action = new PermissionApiAction(operation, payload, hostContext);
+        return entry.InvokeAsync(TwoTierPermissionModule.ApiDescriptor, action, hostContext, ct);
     }
 }

@@ -96,6 +96,14 @@ public static class PermissionActionDescriptors
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
             true, false, RepeatPolicy, null, TimeSpan.FromSeconds(10))
         {
+            InputSchema = new JsonSchemaReference(
+                "sharpclaw.kernel.action.input.permission.context-access",
+                1,
+                "EF52C526C7B77C146B2D16A61B3BB1728BC4F8500763C8EF1A21FC65B981283B"),
+            ResultSchema = new JsonSchemaReference(
+                "sharpclaw.kernel.action.result.permission.context-access",
+                1,
+                "D929C5308B9236D3BA1B1423189D989070FFCFC31428FD3E03327E2E518DDC1B"),
             SafePoints = SafePoints,
         };
 
@@ -104,6 +112,14 @@ public static class PermissionActionDescriptors
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
             true, false, RepeatPolicy, null, TimeSpan.FromSeconds(10))
         {
+            InputSchema = new JsonSchemaReference(
+                "sharpclaw.kernel.action.input.permission.agent-access",
+                1,
+                "DE19359B0A13BDF1384C226E960AF700899FC7A08A6065CCB9C91AB7AD48D9F4"),
+            ResultSchema = new JsonSchemaReference(
+                "sharpclaw.kernel.action.result.permission.agent-access",
+                1,
+                "E2C4F31D2F6A8637E1AF2BA13B276A313BCC451E78E87EEE6B06F468D01C4287"),
             SafePoints = SafePoints,
         };
 }
@@ -111,12 +127,12 @@ public static class PermissionActionDescriptors
 public interface IPermissionActionEntry
 {
     ValueTask<ContextAccessDecision> EvaluateContextAsync(
-        RequestPrincipal caller,
+        HostActionEntryRequestContext hostContext,
         ContextAccessRequest request,
         CancellationToken ct = default);
 
     ValueTask<ContextAccessDecision> EvaluateAgentAsync(
-        RequestPrincipal caller,
+        HostActionEntryRequestContext hostContext,
         string capability,
         Guid? targetAgentId,
         CancellationToken ct = default);
@@ -125,42 +141,49 @@ public interface IPermissionActionEntry
 public sealed class HostPermissionActionEntry(IHostActionEntry host) : IPermissionActionEntry
 {
     public async ValueTask<ContextAccessDecision> EvaluateContextAsync(
-        RequestPrincipal caller,
+        HostActionEntryRequestContext hostContext,
         ContextAccessRequest request,
         CancellationToken ct = default)
     {
         var action = new PermissionContextAccessAction(
-            caller,
-            request with { Principal = caller });
-        var decision = await InvokeAsync(PermissionActionDescriptors.ContextAccess, action, caller, ct);
+            hostContext.Caller,
+            request with { Principal = hostContext.Caller });
+        var decision = await InvokeAsync(
+            PermissionActionDescriptors.ContextAccess,
+            action,
+            hostContext,
+            ct);
         return ToContextDecision(decision);
     }
 
     public async ValueTask<ContextAccessDecision> EvaluateAgentAsync(
-        RequestPrincipal caller,
+        HostActionEntryRequestContext hostContext,
         string capability,
         Guid? targetAgentId,
         CancellationToken ct = default)
     {
-        var action = new PermissionAgentAccessAction(caller, capability, targetAgentId);
-        var decision = await InvokeAsync(PermissionActionDescriptors.AgentAccess, action, caller, ct);
+        var action = new PermissionAgentAccessAction(
+            hostContext.Caller,
+            capability,
+            targetAgentId);
+        var decision = await InvokeAsync(
+            PermissionActionDescriptors.AgentAccess,
+            action,
+            hostContext,
+            ct);
         return ToContextDecision(decision);
     }
 
     private async ValueTask<PermissionDecision> InvokeAsync<TAction>(
         ActionDescriptor<TAction, PermissionDecision> descriptor,
         TAction action,
-        RequestPrincipal caller,
+        HostActionEntryRequestContext hostContext,
         CancellationToken ct)
     {
         var request = new HostActionEntryRequest<TAction, PermissionDecision>(
             descriptor,
             action,
-            caller,
-            ExtensionFeatureSet.Empty,
-            Guid.NewGuid(),
-            Guid.NewGuid(),
-            DateTimeOffset.UtcNow.Add(descriptor.DefaultTimeout));
+            hostContext);
         var outcome = await host.InvokeAsync(request, ct);
         return outcome.Kind switch
         {

@@ -1,8 +1,8 @@
-using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 using SharpClaw.Contracts.Modules;
 
 namespace SharpClaw.Modules.TwoTierPermission;
@@ -85,30 +85,19 @@ public sealed class PermissionEndpointContribution
             var payload = await context.Request.ReadFromJsonAsync<JsonElement>(cancellationToken: ct);
             if (payload.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
                 payload = JsonSerializer.SerializeToElement(new { });
-            var result = await gateway.ExecuteAsync(Caller(context), operation, payload, ct);
+            var hostInvocation = context.RequestServices
+                .GetRequiredService<HostEndpointInvocation>();
+            var result = await gateway.ExecuteAsync(
+                hostInvocation.HostActionContext,
+                operation,
+                payload,
+                ct);
             return Results.Ok(result);
         }
         catch (Exception exception) when (IsClientFailure(exception))
         {
             return Failure(exception);
         }
-    }
-
-    private static RequestPrincipal Caller(HttpContext context)
-    {
-        var subjectId = context.User.FindFirst("sub")?.Value
-            ?? context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value
-            ?? string.Empty;
-        var roles = context.User.Claims
-            .Where(claim => claim.Type == ClaimTypes.Role
-                || claim.Type.Equals("role", StringComparison.OrdinalIgnoreCase))
-            .Select(claim => claim.Value)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        return new RequestPrincipal(
-            subjectId,
-            Roles: roles,
-            IsAuthenticated: context.User.Identity?.IsAuthenticated == true
-                && !string.IsNullOrWhiteSpace(subjectId));
     }
 
     private static bool IsClientFailure(Exception exception) =>

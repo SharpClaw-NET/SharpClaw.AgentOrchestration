@@ -69,7 +69,10 @@ public sealed record PermissionSetRecord(
 public sealed record PermissionApiAction(
     string Operation,
     JsonElement Payload,
-    RequestPrincipal Caller);
+    HostActionEntryRequestContext HostActionContext)
+{
+    public RequestPrincipal Caller => HostActionContext.Caller;
+}
 
 public sealed record PermissionEvaluateAction(
     string SubjectId,

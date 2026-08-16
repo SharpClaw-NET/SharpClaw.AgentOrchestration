@@ -467,12 +467,14 @@ public static class AgentsJobImportConverter
 
 public sealed record AgentsRecordJobAction(
     AgentJob Job,
-    RequestPrincipal Caller);
+    RequestPrincipal Caller,
+    HostActionEntryRequestContext HostActionContext);
 
 public sealed record AgentsAttachCanonicalJobAction(
     Guid AgentJobId,
     Guid CanonicalJobId,
-    RequestPrincipal Caller);
+    RequestPrincipal Caller,
+    HostActionEntryRequestContext HostActionContext);
 
 public sealed record AgentsCompleteJobAction(
     Guid AgentJobId,
@@ -483,11 +485,13 @@ public sealed record AgentsCompleteJobAction(
     long InputTokens,
     long OutputTokens,
     DateTimeOffset CompletedAt,
-    RequestPrincipal Caller);
+    RequestPrincipal Caller,
+    HostActionEntryRequestContext HostActionContext);
 
 public sealed record AgentsImportJobsAction(
     CanonicalJobsImportSnapshot Snapshot,
-    RequestPrincipal Caller);
+    RequestPrincipal Caller,
+    HostActionEntryRequestContext HostActionContext);
 
 public interface IAgentsJobActionExecutor
 {
@@ -514,12 +518,12 @@ public sealed class AgentsJobActionExecutor(
     public Task<AgentJob> RecordAsync(
         AgentsRecordJobAction action,
         CancellationToken ct = default) =>
-        catalog.RecordAgentJobAsync(action.Caller, action.Job, ct);
+        catalog.RecordAgentJobAsync(action.Caller, action.Job, ct, action.HostActionContext);
 
     public Task<AgentJob> AttachCanonicalJobAsync(
         AgentsAttachCanonicalJobAction action,
         CancellationToken ct = default) =>
-        catalog.AttachCanonicalJobAsync(action.Caller, action.AgentJobId, action.CanonicalJobId, ct);
+        catalog.AttachCanonicalJobAsync(action.Caller, action.AgentJobId, action.CanonicalJobId, ct, action.HostActionContext);
 
     public Task<AgentJob> CompleteAsync(
         AgentsCompleteJobAction action,
@@ -534,10 +538,11 @@ public sealed class AgentsJobActionExecutor(
             action.InputTokens,
             action.OutputTokens,
             action.CompletedAt,
-            ct);
+            ct,
+            action.HostActionContext);
 
     public Task<IReadOnlyList<AgentJob>> ImportAsync(
         AgentsImportJobsAction action,
         CancellationToken ct = default) =>
-        catalog.ImportAgentJobsAsync(action.Caller, action.Snapshot, ct);
+        catalog.ImportAgentJobsAsync(action.Caller, action.Snapshot, ct, action.HostActionContext);
 }

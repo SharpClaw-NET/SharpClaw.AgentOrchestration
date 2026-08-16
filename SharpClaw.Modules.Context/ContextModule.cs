@@ -33,6 +33,14 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
             | ActionInterceptionCapabilities.Observe,
             true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
+            InputSchema = new JsonSchemaReference(
+                "sharpclaw.kernel.action.input.context.api.dispatch",
+                1,
+                "941361CD8AD62ECC21CD1B23957542A777266F05009DD3A8849608C8F52FD961"),
+            ResultSchema = new JsonSchemaReference(
+                "sharpclaw.kernel.action.result.context.api.dispatch",
+                1,
+                "8EB000590FB81F540B757EE45A1DB72EF84BF921444663E7AAF07B0F2711CB8D"),
             SafePoints = SafePoints,
         };
 
@@ -49,7 +57,7 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
         module.Services.AddScoped<ContextApiActionExecutor>();
         module.Services.AddScoped<IContextActionGateway, ContextActionGateway>();
         module.Services.AddScoped<HostModuleActionEntry>();
-        module.Services.AddScoped<IPermissionActionEntry, HostPermissionActionEntry>();
+        module.Services.AddScoped<HostPermissionActionEntry>();
         module.Services.AddScoped<IModuleActionPipeline, ModuleActionPipeline>();
         module.Services.AddScoped<ContextCommitAuthorizationHook>();
         module.Services.AddScoped<ContextPermissionActionHook>();

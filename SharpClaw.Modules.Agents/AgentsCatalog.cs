@@ -25,9 +25,9 @@ public sealed class AgentsCatalog
     private readonly ModuleDocumentStore<AgentSynchronizationRecord> _synchronization;
     private readonly ModuleDocumentStore<AgentJob> _agentJobs;
     private readonly ModuleDocumentStore<AgentJobImportState> _agentJobImports;
-    private readonly IPermissionActionEntry _permission;
+    private readonly HostPermissionActionEntry _permission;
 
-    public AgentsCatalog(IModuleStorageGateway gateway, IPermissionActionEntry permission)
+    public AgentsCatalog(IModuleStorageGateway gateway, HostPermissionActionEntry permission)
     {
         _permission = permission;
         _agents = new(gateway, ModuleId, AgentsStorage, $"{ModuleId}:{AgentsStorage}", JsonOptions);
@@ -70,9 +70,10 @@ public sealed class AgentsCatalog
     public async Task<IReadOnlyList<AgentJob>> ImportAgentJobsAsync(
         RequestPrincipal caller,
         CanonicalJobsImportSnapshot snapshot,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
-        await RequireAsync(caller, "manage_agent_jobs", null, ct);
+        await RequireAsync(caller, "manage_agent_jobs", null, ct, hostContext);
         var plan = AgentsJobImportConverter.Prepare(snapshot);
         var importKey = AgentsJobImportIntegrity.ImportKey(snapshot.SnapshotId);
         var marker = await EnsureImportMarkerAsync(snapshot, importKey, ct);
@@ -95,9 +96,10 @@ public sealed class AgentsCatalog
     public async Task<AgentJob> RecordAgentJobAsync(
         RequestPrincipal caller,
         AgentJob job,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
-        await RequireAsync(caller, "manage_agent_jobs", job.AgentId, ct);
+        await RequireAsync(caller, "manage_agent_jobs", job.AgentId, ct, hostContext);
         ValidateAgentJob(job);
         var now = DateTimeOffset.UtcNow;
         var stored = job with
@@ -117,13 +119,14 @@ public sealed class AgentsCatalog
         RequestPrincipal caller,
         Guid agentJobId,
         Guid canonicalJobId,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         if (canonicalJobId == Guid.Empty)
             throw new ArgumentException("A canonical job id is required.", nameof(canonicalJobId));
         var current = await GetAgentJobAsync(agentJobId, ct)
             ?? throw new InvalidOperationException("The Agent job was not found.");
-        await RequireAsync(caller, "manage_agent_jobs", current.AgentId, ct);
+        await RequireAsync(caller, "manage_agent_jobs", current.AgentId, ct, hostContext);
         if (current.CanonicalJobId is { } existing && existing != canonicalJobId)
             throw new InvalidOperationException("The Agent job already references a different canonical job.");
         var updated = current with
@@ -146,7 +149,8 @@ public sealed class AgentsCatalog
         long inputTokens,
         long outputTokens,
         DateTimeOffset completedAt,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         if (canonicalJobId == Guid.Empty)
             throw new ArgumentException("A canonical job id is required.", nameof(canonicalJobId));
@@ -156,7 +160,7 @@ public sealed class AgentsCatalog
             throw new ArgumentOutOfRangeException(nameof(inputTokens), "Token counts cannot be negative.");
         var current = await GetAgentJobAsync(agentJobId, ct)
             ?? throw new InvalidOperationException("The Agent job was not found.");
-        await RequireAsync(caller, "manage_agent_jobs", current.AgentId, ct);
+        await RequireAsync(caller, "manage_agent_jobs", current.AgentId, ct, hostContext);
         if (current.CanonicalJobId != canonicalJobId)
             throw new InvalidOperationException("The completion does not match the stored canonical job.");
         var updated = current with
@@ -177,11 +181,12 @@ public sealed class AgentsCatalog
     public async Task<AgentRecord> DeleteAgentAsync(
         RequestPrincipal caller,
         Guid agentId,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         var agent = await GetAgentAsync(agentId, ct)
             ?? throw new InvalidOperationException("The agent was not found.");
-        await RequireAsync(caller, "manage_agents", agentId, ct);
+        await RequireAsync(caller, "manage_agents", agentId, ct, hostContext);
         await _agents.DeleteAsync(Key(agentId), ct);
         return agent;
     }
@@ -191,13 +196,14 @@ public sealed class AgentsCatalog
         Guid agentId,
         string role,
         bool assign,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         if (string.IsNullOrWhiteSpace(role))
             throw new ArgumentException("A role is required.", nameof(role));
         var agent = await GetAgentAsync(agentId, ct)
             ?? throw new InvalidOperationException("The agent was not found.");
-        await RequireAsync(caller, "manage_agents", agentId, ct);
+        await RequireAsync(caller, "manage_agents", agentId, ct, hostContext);
         var roles = agent.Roles
             .Where(item => !item.Equals(role, StringComparison.OrdinalIgnoreCase))
             .Concat(assign ? [role.Trim()] : [])
@@ -216,11 +222,12 @@ public sealed class AgentsCatalog
     public async Task<AgentSynchronizationRecord> SynchronizeAsync(
         RequestPrincipal caller,
         Guid agentId,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         var agent = await GetAgentAsync(agentId, ct)
             ?? throw new InvalidOperationException("The agent was not found.");
-        await RequireAsync(caller, "manage_agents", agentId, ct);
+        await RequireAsync(caller, "manage_agents", agentId, ct, hostContext);
         var record = new AgentSynchronizationRecord(
             agentId,
             "synchronized",
@@ -237,11 +244,16 @@ public sealed class AgentsCatalog
     public async Task<AgentCostRecord> GetCostAsync(
         RequestPrincipal caller,
         Guid agentId,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         var agent = await GetAgentAsync(agentId, ct)
             ?? throw new InvalidOperationException("The agent was not found.");
-        var access = await _permission.EvaluateAgentAsync(caller, "read_agent_cost", agentId, ct);
+        var access = await _permission.EvaluateAgentAsync(
+            RequireHostContext(hostContext),
+            "read_agent_cost",
+            agentId,
+            ct);
         if (!access.Allowed && !IsAdministrator(caller))
             throw new UnauthorizedAccessException("The caller cannot read agent cost data.");
         return await _costs.GetAsync(Key(agent.Id), ct)
@@ -251,11 +263,12 @@ public sealed class AgentsCatalog
     public async Task<SkillRecord> DeleteSkillAsync(
         RequestPrincipal caller,
         Guid skillId,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         var skill = await GetSkillAsync(skillId, ct)
             ?? throw new InvalidOperationException("The skill was not found.");
-        await RequireAsync(caller, "manage_skills", null, ct);
+        await RequireAsync(caller, "manage_skills", null, ct, hostContext);
         await _skills.DeleteAsync(Key(skillId), ct);
         return skill;
     }
@@ -263,9 +276,10 @@ public sealed class AgentsCatalog
     public async Task<AgentRecord> CreateAgentAsync(
         RequestPrincipal caller,
         AgentsCreateAction action,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
-        await RequireAsync(caller, "create_sub_agents", null, ct);
+        await RequireAsync(caller, "create_sub_agents", null, ct, hostContext);
         if (string.IsNullOrWhiteSpace(action.Name) || action.ModelId == Guid.Empty)
             throw new ArgumentException("An agent requires a name and model id.");
         var now = DateTimeOffset.UtcNow;
@@ -284,12 +298,13 @@ public sealed class AgentsCatalog
     public async Task<AgentRecord?> UpdateAgentAsync(
         RequestPrincipal caller,
         AgentsUpdateAction action,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         var existing = await GetAgentAsync(action.AgentId, ct);
         if (existing is null)
             return null;
-        await RequireAsync(caller, "manage_agents", existing.Id, ct);
+        await RequireAsync(caller, "manage_agents", existing.Id, ct, hostContext);
         var updated = existing with
         {
             Name = string.IsNullOrWhiteSpace(action.Name) ? existing.Name : action.Name.Trim(),
@@ -312,9 +327,10 @@ public sealed class AgentsCatalog
     public async Task<SkillRecord> SaveSkillAsync(
         RequestPrincipal caller,
         SkillRecord skill,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
-        await RequireAsync(caller, "manage_skills", null, ct);
+        await RequireAsync(caller, "manage_skills", null, ct, hostContext);
         if (string.IsNullOrWhiteSpace(skill.Name) || string.IsNullOrWhiteSpace(skill.SkillText))
             throw new ArgumentException("A skill requires a name and skill text.");
         var now = DateTimeOffset.UtcNow;
@@ -335,29 +351,36 @@ public sealed class AgentsCatalog
     public async Task<string> AccessSkillAsync(
         RequestPrincipal caller,
         Guid skillId,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
-        var skill = await GetSkillForCallerAsync(caller, skillId, ct);
+        var skill = await GetSkillForCallerAsync(caller, skillId, ct, hostContext);
         return $"Skill: {skill.Name}\n\n{skill.SkillText}";
     }
 
     public async Task<SkillRecord> GetSkillForCallerAsync(
         RequestPrincipal caller,
         Guid skillId,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
         var skill = await GetSkillAsync(skillId, ct)
             ?? throw new InvalidOperationException($"Skill '{skillId}' was not found.");
-        await RequireSkillAccessAsync(caller, skill, ct);
+        await RequireSkillAccessAsync(caller, skill, ct, hostContext);
         return skill;
     }
 
     private async Task RequireSkillAccessAsync(
         RequestPrincipal caller,
         SkillRecord skill,
-        CancellationToken ct)
+        CancellationToken ct,
+        HostActionEntryRequestContext? hostContext = null)
     {
-        var accessDecision = await _permission.EvaluateAgentAsync(caller, "access_skills", null, ct);
+        var accessDecision = await _permission.EvaluateAgentAsync(
+            RequireHostContext(hostContext),
+            "access_skills",
+            null,
+            ct);
         if (!accessDecision.Allowed && !IsAdministrator(caller))
             throw new UnauthorizedAccessException("The caller cannot access this skill.");
         if (skill.AllowedAgentIds.Count > 0
@@ -370,9 +393,10 @@ public sealed class AgentsCatalog
     public async Task<MemoryRecord> WriteMemoryAsync(
         RequestPrincipal caller,
         AgentsWriteMemoryAction action,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
-        await RequireAsync(caller, "write_memory", action.AgentId, ct);
+        await RequireAsync(caller, "write_memory", action.AgentId, ct, hostContext);
         if (string.IsNullOrWhiteSpace(action.Key))
             throw new ArgumentException("Memory requires a key.");
         var key = $"{action.AgentId:N}:{action.Key.Trim()}";
@@ -395,9 +419,10 @@ public sealed class AgentsCatalog
         RequestPrincipal caller,
         Guid agentId,
         string? query,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
     {
-        await RequireAsync(caller, "read_memory", agentId, ct);
+        await RequireAsync(caller, "read_memory", agentId, ct, hostContext);
         var records = await _memory.Query()
             .WhereIndex("agentId").EqualTo(agentId.ToString("N"))
             .OrderByIndexDescending("updatedAt")
@@ -414,9 +439,14 @@ public sealed class AgentsCatalog
         RequestPrincipal caller,
         string capability,
         Guid? targetAgentId,
-        CancellationToken ct)
+        CancellationToken ct,
+        HostActionEntryRequestContext? hostContext = null)
     {
-        var decision = await _permission.EvaluateAgentAsync(caller, capability, targetAgentId, ct);
+        var decision = await _permission.EvaluateAgentAsync(
+            RequireHostContext(hostContext),
+            capability,
+            targetAgentId,
+            ct);
         if (!decision.Allowed)
             throw new UnauthorizedAccessException(decision.Message);
     }
@@ -424,6 +454,12 @@ public sealed class AgentsCatalog
     private static bool IsAdministrator(RequestPrincipal caller) =>
         caller.Roles?.Any(role => role.Equals("admin", StringComparison.OrdinalIgnoreCase)
             || role.Equals("administrator", StringComparison.OrdinalIgnoreCase)) == true;
+
+    private static HostActionEntryRequestContext RequireHostContext(
+        HostActionEntryRequestContext? hostContext) =>
+        hostContext
+        ?? throw new InvalidOperationException(
+            "A host action entry context is required for Agents permission evaluation.");
 
     private static string Key(Guid id) => id.ToString("N");
 

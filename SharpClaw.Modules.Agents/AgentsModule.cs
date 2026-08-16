@@ -40,6 +40,14 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
             | ActionInterceptionCapabilities.Observe,
             true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
+            InputSchema = new JsonSchemaReference(
+                "sharpclaw.kernel.action.input.agents.api.dispatch",
+                1,
+                "27B5426804CE4372B54F88B8516A9E545DCF4023778CB8CD8BB9413309544628"),
+            ResultSchema = new JsonSchemaReference(
+                "sharpclaw.kernel.action.result.agents.api.dispatch",
+                1,
+                "EBF621A68F0061626C140836F73212CB5D24ABF6D6FE9FAE994E6C3BA794FB65"),
             SafePoints = SafePoints,
         };
 
@@ -49,7 +57,7 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
     {
         module.Services.AddScoped<AgentsCatalog>();
         module.Services.AddScoped<HostModuleActionEntry>();
-        module.Services.AddScoped<IPermissionActionEntry, HostPermissionActionEntry>();
+        module.Services.AddScoped<HostPermissionActionEntry>();
         module.Services.AddScoped<AgentsToolHandler>();
         module.Services.AddScoped<AgentsApiActionExecutor>();
         module.Services.AddScoped<IAgentsActionGateway, AgentsActionGateway>();

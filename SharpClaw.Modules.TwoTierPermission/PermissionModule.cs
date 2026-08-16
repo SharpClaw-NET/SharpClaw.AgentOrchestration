@@ -32,6 +32,14 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
             | ActionInterceptionCapabilities.Observe,
             true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
+            InputSchema = new JsonSchemaReference(
+                "sharpclaw.kernel.action.input.permission.api.dispatch",
+                1,
+                "9730C734344C8CDCC030B54D093217D8AD4038346CC0AB54494A00FD1A346D43"),
+            ResultSchema = new JsonSchemaReference(
+                "sharpclaw.kernel.action.result.permission.api.dispatch",
+                1,
+                "6FC66027153DC70AF18F195B681CFA9EC51D26D0528ADC664BBC10395E07A379"),
             SafePoints = SafePoints,
         };
 

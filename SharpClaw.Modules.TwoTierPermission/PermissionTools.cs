@@ -30,7 +30,11 @@ public sealed class PermissionToolHandler(IPermissionActionGateway gateway) : IT
                 return ToolResult.Error($"Unknown permission tool '{invocation.ToolName}'.");
 
             var payload = BuildPayload(operation, invocation);
-            var result = await gateway.ExecuteAsync(invocation.Caller, operation, payload, ct);
+            var result = await gateway.ExecuteAsync(
+                invocation.HostActionContext,
+                operation,
+                payload,
+                ct);
             return new ToolResult(result.GetRawText());
         }
         catch (UnauthorizedAccessException exception)
