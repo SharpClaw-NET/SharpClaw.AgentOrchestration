@@ -317,10 +317,10 @@ public sealed class ModuleCompositionTests
     {
         var dispatcher = new RecordingActionDispatcher();
         var pipeline = new ModuleActionPipeline(dispatcher);
+        var caller = RequestPrincipal.Anonymous;
         var action = new ContextApiAction(
             ContextApiOperations.ListChannels,
-            JsonSerializer.SerializeToElement(new { }),
-            TestHostActionContext.Create(RequestPrincipal.Anonymous));
+            JsonSerializer.SerializeToElement(new { }));
         var snapshot = new ActionPipelineSnapshot("test", [], [], 16);
         var context = new ActionContext<ContextApiAction>(
             Guid.NewGuid(),
@@ -332,7 +332,7 @@ public sealed class ModuleCompositionTests
             DateTimeOffset.UtcNow.AddMinutes(1),
             ContextModule.ApiDescriptor.Key,
             ContextModule.ModuleIdValue,
-            action.Caller,
+            caller,
             action,
             ExtensionFeatureSet.Empty,
             snapshot);
@@ -340,7 +340,7 @@ public sealed class ModuleCompositionTests
         var result = await pipeline.RunRequiredAsync(
             ContextModule.ApiDescriptor,
             context,
-            (value, _) => ValueTask.FromResult(JsonSerializer.SerializeToElement(value.Operation)));
+            (value, _) => ValueTask.FromResult(JsonSerializer.SerializeToElement(value.Action.Operation)));
 
         Assert.Multiple(() =>
         {
@@ -357,12 +357,22 @@ public sealed class ModuleCompositionTests
         var caller = new RequestPrincipal("probe", IsAuthenticated: true);
         var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
         var payload = JsonSerializer.SerializeToElement(new { });
+        var contextStorage = new InMemoryStorageGateway();
+        var contextStore = new ContextStore(contextStorage, AllowAllEntry());
+        var contextExecutor = new ContextApiActionExecutor(contextStore, AllowAllEntry());
+        var permissionStorage = new InMemoryStorageGateway();
+        var permissionStore = new PermissionPolicyStore(permissionStorage);
+        var permissionExecutor = new PermissionApiActionExecutor(
+            new TwoTierPermissionPolicy(permissionStore),
+            permissionStore);
+        var agentsCatalog = new AgentsCatalog(new InMemoryStorageGateway(), AllowAllEntry());
+        var agentsExecutor = new AgentsApiActionExecutor(agentsCatalog, AllowAllEntry());
 
-        await new ContextActionGateway(new HostModuleActionEntry(host))
+        await new ContextActionGateway(new HostModuleActionEntry(host), contextExecutor)
             .ExecuteAsync(hostContext, ContextApiOperations.ListChannels, payload);
-        await new PermissionActionGateway(new HostModuleActionEntry(host))
+        await new PermissionActionGateway(new HostModuleActionEntry(host), permissionExecutor)
             .ExecuteAsync(hostContext, PermissionApiOperations.ListPolicies, payload);
-        await new AgentsActionGateway(new HostModuleActionEntry(host))
+        await new AgentsActionGateway(new HostModuleActionEntry(host), agentsExecutor)
             .ExecuteAsync(hostContext, AgentsApiOperations.ListAgents, payload);
 
         Assert.That(host.Keys, Is.EqualTo([
@@ -700,8 +710,10 @@ public sealed class ModuleCompositionTests
             Guid.NewGuid(), thread.Id, source.Id, "user", "retained history", "tester",
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
 
+        var policyHost = new PolicyHostActionEntry(permission);
         var contextGateway = new DelegatingContextActionGateway(
-            new ContextApiActionExecutor(store));
+            new ContextApiActionExecutor(store, new HostPermissionActionEntry(policyHost)),
+            policyHost);
         var handler = new ContextToolHandler(contextGateway);
         using var arguments = JsonDocument.Parse($$"""{"channelId":"{{current.Id:D}}"}""");
         var result = await handler.InvokeAsync(new ToolInvocation(
@@ -1987,7 +1999,7 @@ public sealed class ModuleCompositionTests
         public ValueTask<IActionOutcome<TResult>> RunAsync<TAction, TResult>(
             ActionDescriptor<TAction, TResult> descriptor,
             TAction action,
-            Func<TAction, CancellationToken, ValueTask<TResult>> terminal,
+            Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,
             ActionPipelineSnapshot snapshot,
             CancellationToken ct)
         {
@@ -1997,13 +2009,27 @@ public sealed class ModuleCompositionTests
         public async ValueTask<TResult> RunRequiredAsync<TAction, TResult>(
             ActionDescriptor<TAction, TResult> descriptor,
             TAction action,
-            Func<TAction, CancellationToken, ValueTask<TResult>> terminal,
+            Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,
             ActionPipelineSnapshot snapshot,
             CancellationToken ct)
         {
             RequiredCalls++;
             Snapshot = snapshot;
-            return await terminal(action, ct);
+            var context = new ActionContext<TAction>(
+                Guid.NewGuid(),
+                null,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                0,
+                1,
+                DateTimeOffset.UtcNow.AddMinutes(1),
+                descriptor.Key,
+                "test",
+                RequestPrincipal.Anonymous,
+                action,
+                ExtensionFeatureSet.Empty,
+                snapshot);
+            return await terminal(context, ct);
         }
     }
 
@@ -2015,10 +2041,28 @@ public sealed class ModuleCompositionTests
 
         public ValueTask<IActionOutcome<TResult>> InvokeAsync<TAction, TResult>(
             HostActionEntryRequest<TAction, TResult> request,
+            IHostActionEntryTerminal<TAction, TResult> terminal,
             CancellationToken ct)
         {
             Keys.Add(request.Descriptor.Key.Value);
             Contexts.Add(request.Context);
+            var result = typeof(TResult) == typeof(JsonElement)
+                ? (TResult)(object)JsonSerializer.SerializeToElement(new { accepted = true })
+                : typeof(TResult) == typeof(PermissionDecision)
+                    ? (TResult)(object)(PermissionResult ?? PermissionDecision.Allow(
+                        "test_allowed",
+                        1,
+                        PermissionClearance.Independent))
+                    : default!;
+            return ValueTask.FromResult<IActionOutcome<TResult>>(
+                new HostActionOutcome<TResult>(ActionOutcomeKind.Completed, result));
+        }
+
+        public ValueTask<IActionOutcome<TResult>> InvokeNestedAsync<TParentAction, TAction, TResult>(
+            HostActionEntryNestedRequest<TParentAction, TAction, TResult> request,
+            IHostActionEntryTerminal<TAction, TResult> terminal,
+            CancellationToken ct)
+        {
             var result = typeof(TResult) == typeof(JsonElement)
                 ? (TResult)(object)JsonSerializer.SerializeToElement(new { accepted = true })
                 : typeof(TResult) == typeof(PermissionDecision)
@@ -2053,6 +2097,7 @@ public sealed class ModuleCompositionTests
     {
         public async ValueTask<IActionOutcome<TResult>> InvokeAsync<TAction, TResult>(
             HostActionEntryRequest<TAction, TResult> request,
+            IHostActionEntryTerminal<TAction, TResult> terminal,
             CancellationToken ct)
         {
             var result = request.Action switch
@@ -2075,17 +2120,64 @@ public sealed class ModuleCompositionTests
                 ActionOutcomeKind.Completed,
                 (TResult)(object)result);
         }
+
+        public async ValueTask<IActionOutcome<TResult>> InvokeNestedAsync<TParentAction, TAction, TResult>(
+            HostActionEntryNestedRequest<TParentAction, TAction, TResult> request,
+            IHostActionEntryTerminal<TAction, TResult> terminal,
+            CancellationToken ct)
+        {
+            var result = request.Action switch
+            {
+                PermissionContextAccessAction action =>
+                    await policy.EvaluateDetailedAsync(
+                        action.Request with { Principal = request.ParentContext.Caller },
+                        ct),
+                PermissionAgentAccessAction action =>
+                    await policy.EvaluateAgentDetailedAsync(
+                        request.ParentContext.Caller,
+                        action.Capability,
+                        action.TargetAgentId,
+                        ct),
+                _ => throw new InvalidOperationException(
+                    $"The test host does not support '{request.ActionKey.Value}'."),
+            };
+
+            return new HostActionOutcome<TResult>(
+                ActionOutcomeKind.Completed,
+                (TResult)(object)result);
+        }
     }
 
     private sealed class DelegatingContextActionGateway(
-        ContextApiActionExecutor executor) : IContextActionGateway
+        ContextApiActionExecutor executor,
+        IHostActionEntry hostEntry) : IContextActionGateway
     {
         public ValueTask<JsonElement> ExecuteAsync(
             HostActionEntryRequestContext hostContext,
             string operation,
             JsonElement payload,
-            CancellationToken ct = default) =>
-            executor.ExecuteAsync(new ContextApiAction(operation, payload, hostContext), ct);
+            CancellationToken ct = default)
+        {
+            var action = new ContextApiAction(operation, payload);
+            var context = new ActionContext<ContextApiAction>(
+                hostContext.InvocationId,
+                hostContext.ParentInvocationId,
+                hostContext.TraceId,
+                hostContext.IdempotencyKey,
+                hostContext.Depth,
+                hostContext.Attempt,
+                hostContext.Deadline,
+                ContextModule.ApiDescriptor.Key,
+                ContextModule.ModuleIdValue,
+                hostContext.Caller,
+                action,
+                hostContext.Features,
+                new ActionPipelineSnapshot("test", [], [], 16))
+            {
+                HostActionEntry = hostEntry,
+            };
+            return executor.ExecuteAsync(context, ct);
+        }
     }
 
     private sealed class RecordingContextGateway : IContextActionGateway

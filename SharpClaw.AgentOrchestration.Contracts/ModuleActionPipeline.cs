@@ -8,7 +8,7 @@ public interface IModuleActionPipeline
     ValueTask<TResult> RunRequiredAsync<TAction, TResult>(
         ActionDescriptor<TAction, TResult> descriptor,
         ActionContext<TAction> context,
-        Func<TAction, CancellationToken, ValueTask<TResult>> terminal,
+        Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,
         CancellationToken ct = default);
 }
 
@@ -19,9 +19,22 @@ public sealed class ModuleActionPipeline(
     public ValueTask<TResult> RunRequiredAsync<TAction, TResult>(
         ActionDescriptor<TAction, TResult> descriptor,
         ActionContext<TAction> context,
-        Func<TAction, CancellationToken, ValueTask<TResult>> terminal,
+        Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,
         CancellationToken ct = default) =>
         dispatcher.RunRequiredAsync(descriptor, context.Action, terminal, context.Snapshot, ct);
+}
+
+/// <summary>Adapts one trusted module callback to the host terminal contract.</summary>
+public sealed class DelegateHostActionEntryTerminal<TAction, TResult>(
+    Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> callback) :
+    IHostActionEntryTerminal<TAction, TResult>
+{
+    public Guid TerminalId { get; } = Guid.NewGuid();
+
+    public ValueTask<TResult> InvokeAsync(
+        ActionContext<TAction> context,
+        CancellationToken ct) =>
+        callback(context, ct);
 }
 
 /// <summary>Invokes a typed module action through the host-owned action entry.</summary>
@@ -31,13 +44,49 @@ public sealed class HostModuleActionEntry(IHostActionEntry host)
         ActionDescriptor<TAction, TResult> descriptor,
         TAction action,
         HostActionEntryRequestContext hostContext,
+        Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,
         CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(terminal);
         var request = new HostActionEntryRequest<TAction, TResult>(
             descriptor,
             action,
             hostContext);
-        var outcome = await host.InvokeAsync(request, ct);
+        var outcome = await host.InvokeAsync(
+            request,
+            new DelegateHostActionEntryTerminal<TAction, TResult>(terminal),
+            ct);
+        return RequireResult(descriptor, outcome, ct);
+    }
+
+    public async ValueTask<TResult> InvokeNestedAsync<TParentAction, TAction, TResult>(
+        ActionDescriptor<TAction, TResult> descriptor,
+        TAction action,
+        ActionContext<TParentAction> parentContext,
+        Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(terminal);
+        var request = new HostActionEntryNestedRequest<TParentAction, TAction, TResult>(
+            descriptor.Key,
+            descriptor.Version,
+            action,
+            parentContext);
+        var hostEntry = parentContext.HostActionEntry
+            ?? throw new InvalidOperationException(
+                "The parent action context has no host action entry.");
+        var outcome = await hostEntry.InvokeNestedAsync(
+            request,
+            new DelegateHostActionEntryTerminal<TAction, TResult>(terminal),
+            ct);
+        return RequireResult(descriptor, outcome, ct);
+    }
+
+    private static TResult RequireResult<TAction, TResult>(
+        ActionDescriptor<TAction, TResult> descriptor,
+        IActionOutcome<TResult> outcome,
+        CancellationToken ct)
+    {
         return outcome.Kind switch
         {
             ActionOutcomeKind.Completed => outcome.Result

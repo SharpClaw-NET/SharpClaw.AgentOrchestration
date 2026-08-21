@@ -50,11 +50,7 @@ public sealed record AgentSynchronizationRecord(
 
 public sealed record AgentsApiAction(
     string Operation,
-    JsonElement Payload,
-    HostActionEntryRequestContext HostActionContext)
-{
-    public RequestPrincipal Caller => HostActionContext.Caller;
-}
+    JsonElement Payload);
 
 public sealed record AgentsCreateAction(
     string Name,

@@ -37,7 +37,6 @@ public sealed class PermissionActionEntryTests
             Assert.That(host.ContextRequest, Is.Not.Null);
             Assert.That(host.ContextRequest!.Descriptor, Is.SameAs(PermissionActionDescriptors.ContextAccess));
             Assert.That(host.ContextRequest.Caller, Is.EqualTo(caller));
-            Assert.That(host.ContextRequest.Action.Caller, Is.EqualTo(caller));
             Assert.That(host.ContextRequest.Action.Request.Principal, Is.EqualTo(caller));
             Assert.That(host.ContextRequest.Action.Request.ChannelId, Is.EqualTo(request.ChannelId));
         });
@@ -70,7 +69,6 @@ public sealed class PermissionActionEntryTests
             Assert.That(host.AgentRequest, Is.Not.Null);
             Assert.That(host.AgentRequest!.Descriptor, Is.SameAs(PermissionActionDescriptors.AgentAccess));
             Assert.That(host.AgentRequest.Caller, Is.EqualTo(caller));
-            Assert.That(host.AgentRequest.Action.Caller, Is.EqualTo(caller));
             Assert.That(host.AgentRequest.Action.Capability, Is.EqualTo("manage_agents"));
             Assert.That(host.AgentRequest.Action.TargetAgentId, Is.EqualTo(targetAgentId));
         });
@@ -139,7 +137,6 @@ public sealed class PermissionActionEntryTests
             Assert.That(host.AgentRequest, Is.Not.Null);
             Assert.That(host.AgentRequest!.Context, Is.SameAs(hostContext));
             Assert.That(host.AgentRequest.Caller, Is.EqualTo(caller));
-            Assert.That(host.AgentRequest.Action.Caller, Is.EqualTo(caller));
             Assert.That(host.AgentRequest.Features, Is.SameAs(hostContext.Features));
             Assert.That(host.AgentRequest.TraceId, Is.EqualTo(hostContext.TraceId));
             Assert.That(host.AgentRequest.IdempotencyKey, Is.EqualTo(hostContext.IdempotencyKey));
@@ -166,6 +163,7 @@ public sealed class PermissionActionEntryTests
 
         public ValueTask<IActionOutcome<TResult>> InvokeAsync<TAction, TResult>(
             HostActionEntryRequest<TAction, TResult> request,
+            IHostActionEntryTerminal<TAction, TResult> terminal,
             CancellationToken ct)
         {
             if (request.Action is PermissionContextAccessAction)
@@ -180,6 +178,17 @@ public sealed class PermissionActionEntryTests
                     Error,
                     Uncertainty));
         }
+
+        public ValueTask<IActionOutcome<TResult>> InvokeNestedAsync<TParentAction, TAction, TResult>(
+            HostActionEntryNestedRequest<TParentAction, TAction, TResult> request,
+            IHostActionEntryTerminal<TAction, TResult> terminal,
+            CancellationToken ct) =>
+            ValueTask.FromResult<IActionOutcome<TResult>>(
+                new TestActionOutcome<TResult>(
+                    OutcomeKind,
+                    Result is null ? default! : (TResult)(object)Result,
+                    Error,
+                    Uncertainty));
     }
 
     private sealed class TestActionOutcome<TResult>(

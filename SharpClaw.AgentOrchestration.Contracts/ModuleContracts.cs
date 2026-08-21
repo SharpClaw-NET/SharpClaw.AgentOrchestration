@@ -72,11 +72,9 @@ public sealed record PermissionDecision(
 }
 
 public sealed record PermissionContextAccessAction(
-    RequestPrincipal Caller,
     ContextAccessRequest Request);
 
 public sealed record PermissionAgentAccessAction(
-    RequestPrincipal Caller,
     string Capability,
     Guid? TargetAgentId);
 
@@ -136,6 +134,49 @@ public interface IPermissionActionEntry
         string capability,
         Guid? targetAgentId,
         CancellationToken ct = default);
+
+    ValueTask<ContextAccessDecision> EvaluateContextAsync<TParentAction>(
+        ActionContext<TParentAction> parentContext,
+        ContextAccessRequest request,
+        CancellationToken ct = default);
+
+    ValueTask<ContextAccessDecision> EvaluateAgentAsync<TParentAction>(
+        ActionContext<TParentAction> parentContext,
+        string capability,
+        Guid? targetAgentId,
+        CancellationToken ct = default);
+}
+
+public interface IModuleActionAuthorization
+{
+    RequestPrincipal Caller { get; }
+
+    ValueTask<ContextAccessDecision> EvaluateContextAsync(
+        ContextAccessRequest request,
+        CancellationToken ct = default);
+
+    ValueTask<ContextAccessDecision> EvaluateAgentAsync(
+        string capability,
+        Guid? targetAgentId,
+        CancellationToken ct = default);
+}
+
+public sealed class ModuleActionAuthorization<TAction>(
+    ActionContext<TAction> context,
+    HostPermissionActionEntry permission) : IModuleActionAuthorization
+{
+    public RequestPrincipal Caller => context.Caller;
+
+    public ValueTask<ContextAccessDecision> EvaluateContextAsync(
+        ContextAccessRequest request,
+        CancellationToken ct = default) =>
+        permission.EvaluateContextAsync(context, request, ct);
+
+    public ValueTask<ContextAccessDecision> EvaluateAgentAsync(
+        string capability,
+        Guid? targetAgentId,
+        CancellationToken ct = default) =>
+        permission.EvaluateAgentAsync(context, capability, targetAgentId, ct);
 }
 
 public sealed class HostPermissionActionEntry(IHostActionEntry host) : IPermissionActionEntry
@@ -146,7 +187,6 @@ public sealed class HostPermissionActionEntry(IHostActionEntry host) : IPermissi
         CancellationToken ct = default)
     {
         var action = new PermissionContextAccessAction(
-            hostContext.Caller,
             request with { Principal = hostContext.Caller });
         var decision = await InvokeAsync(
             PermissionActionDescriptors.ContextAccess,
@@ -163,7 +203,6 @@ public sealed class HostPermissionActionEntry(IHostActionEntry host) : IPermissi
         CancellationToken ct = default)
     {
         var action = new PermissionAgentAccessAction(
-            hostContext.Caller,
             capability,
             targetAgentId);
         var decision = await InvokeAsync(
@@ -172,6 +211,64 @@ public sealed class HostPermissionActionEntry(IHostActionEntry host) : IPermissi
             hostContext,
             ct);
         return ToContextDecision(decision);
+    }
+
+    public async ValueTask<ContextAccessDecision> EvaluateContextAsync<TParentAction>(
+        ActionContext<TParentAction> parentContext,
+        ContextAccessRequest request,
+        CancellationToken ct = default)
+    {
+        var action = new PermissionContextAccessAction(
+            request with { Principal = parentContext.Caller });
+        var nested = new HostActionEntryNestedRequest<
+            TParentAction,
+            PermissionContextAccessAction,
+            PermissionDecision>(
+            PermissionActionDescriptors.ContextAccess.Key,
+            PermissionActionDescriptors.ContextAccess.Version,
+            action,
+            parentContext);
+        var hostEntry = parentContext.HostActionEntry
+            ?? throw new InvalidOperationException(
+                "The parent action context has no host action entry.");
+        var decision = await hostEntry.InvokeNestedAsync(
+            nested,
+            CreateUnavailableTerminal<PermissionContextAccessAction>(),
+            ct);
+        return ToContextDecision(RequireResult(
+            PermissionActionDescriptors.ContextAccess.Key.Value,
+            decision,
+            ct));
+    }
+
+    public async ValueTask<ContextAccessDecision> EvaluateAgentAsync<TParentAction>(
+        ActionContext<TParentAction> parentContext,
+        string capability,
+        Guid? targetAgentId,
+        CancellationToken ct = default)
+    {
+        var action = new PermissionAgentAccessAction(
+            capability,
+            targetAgentId);
+        var nested = new HostActionEntryNestedRequest<
+            TParentAction,
+            PermissionAgentAccessAction,
+            PermissionDecision>(
+            PermissionActionDescriptors.AgentAccess.Key,
+            PermissionActionDescriptors.AgentAccess.Version,
+            action,
+            parentContext);
+        var hostEntry = parentContext.HostActionEntry
+            ?? throw new InvalidOperationException(
+                "The parent action context has no host action entry.");
+        var decision = await hostEntry.InvokeNestedAsync(
+            nested,
+            CreateUnavailableTerminal<PermissionAgentAccessAction>(),
+            ct);
+        return ToContextDecision(RequireResult(
+            PermissionActionDescriptors.AgentAccess.Key.Value,
+            decision,
+            ct));
     }
 
     private async ValueTask<PermissionDecision> InvokeAsync<TAction>(
@@ -184,24 +281,40 @@ public sealed class HostPermissionActionEntry(IHostActionEntry host) : IPermissi
             descriptor,
             action,
             hostContext);
-        var outcome = await host.InvokeAsync(request, ct);
-        return outcome.Kind switch
+        var outcome = await host.InvokeAsync(
+            request,
+            CreateUnavailableTerminal<TAction>(),
+            ct);
+        return RequireResult(descriptor.Key.Value, outcome, ct);
+    }
+
+    private static IHostActionEntryTerminal<TAction, PermissionDecision>
+        CreateUnavailableTerminal<TAction>() =>
+        new DelegateHostActionEntryTerminal<TAction, PermissionDecision>(
+            (_, _) => ValueTask.FromException<PermissionDecision>(
+                new InvalidOperationException(
+                    "The host must provide the Permission action terminal.")));
+
+    private static PermissionDecision RequireResult(
+        string actionKey,
+        IActionOutcome<PermissionDecision> outcome,
+        CancellationToken ct) =>
+        outcome.Kind switch
         {
             ActionOutcomeKind.Completed => outcome.Result
                 ?? throw new InvalidOperationException(
-                    $"The {descriptor.Key.Value} permission action completed without a decision."),
+                    $"The {actionKey} permission action completed without a decision."),
             ActionOutcomeKind.Cancelled => throw new OperationCanceledException(
-                $"The {descriptor.Key.Value} permission action was cancelled.", ct),
+                $"The {actionKey} permission action was cancelled.", ct),
             ActionOutcomeKind.Deferred => throw new InvalidOperationException(
-                $"The {descriptor.Key.Value} permission action was deferred."),
+                $"The {actionKey} permission action was deferred."),
             ActionOutcomeKind.Failed => throw new InvalidOperationException(
-                FormatFailure(descriptor.Key.Value, outcome.Error)),
+                FormatFailure(actionKey, outcome.Error)),
             ActionOutcomeKind.Uncertain => throw new InvalidOperationException(
-                FormatUncertainty(descriptor.Key.Value, outcome.Uncertainty)),
+                FormatUncertainty(actionKey, outcome.Uncertainty)),
             _ => throw new InvalidOperationException(
-                $"The {descriptor.Key.Value} permission action returned an unknown outcome."),
+                $"The {actionKey} permission action returned an unknown outcome."),
         };
-    }
 
     private static ContextAccessDecision ToContextDecision(PermissionDecision decision) =>
         decision.Allowed

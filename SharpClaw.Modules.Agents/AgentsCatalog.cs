@@ -26,6 +26,7 @@ public sealed class AgentsCatalog
     private readonly ModuleDocumentStore<AgentJob> _agentJobs;
     private readonly ModuleDocumentStore<AgentJobImportState> _agentJobImports;
     private readonly HostPermissionActionEntry _permission;
+    private readonly AsyncLocal<IModuleActionAuthorization?> _authorization = new();
 
     public AgentsCatalog(IModuleStorageGateway gateway, HostPermissionActionEntry permission)
     {
@@ -37,6 +38,14 @@ public sealed class AgentsCatalog
         _synchronization = new(gateway, ModuleId, SynchronizationStorage, $"{ModuleId}:{SynchronizationStorage}", JsonOptions);
         _agentJobs = new(gateway, ModuleId, AgentJobsStorage, $"{ModuleId}:{AgentJobsStorage}", JsonOptions);
         _agentJobImports = new(gateway, ModuleId, AgentJobImportsStorage, $"{ModuleId}:{AgentJobImportsStorage}", JsonOptions);
+    }
+
+    internal IDisposable PushAuthorization(IModuleActionAuthorization authorization)
+    {
+        ArgumentNullException.ThrowIfNull(authorization);
+        var previous = _authorization.Value;
+        _authorization.Value = authorization;
+        return new AuthorizationScope(_authorization, previous);
     }
 
     public Task<AgentRecord?> GetAgentAsync(Guid id, CancellationToken ct = default) =>
@@ -442,11 +451,13 @@ public sealed class AgentsCatalog
         CancellationToken ct,
         HostActionEntryRequestContext? hostContext = null)
     {
-        var decision = await _permission.EvaluateAgentAsync(
-            RequireHostContext(hostContext),
-            capability,
-            targetAgentId,
-            ct);
+        var decision = _authorization.Value is { } authorization
+            ? await authorization.EvaluateAgentAsync(capability, targetAgentId, ct)
+            : await _permission.EvaluateAgentAsync(
+                RequireHostContext(hostContext),
+                capability,
+                targetAgentId,
+                ct);
         if (!decision.Allowed)
             throw new UnauthorizedAccessException(decision.Message);
     }
@@ -460,6 +471,13 @@ public sealed class AgentsCatalog
         hostContext
         ?? throw new InvalidOperationException(
             "A host action entry context is required for Agents permission evaluation.");
+
+    private sealed class AuthorizationScope(
+        AsyncLocal<IModuleActionAuthorization?> slot,
+        IModuleActionAuthorization? previous) : IDisposable
+    {
+        public void Dispose() => slot.Value = previous;
+    }
 
     private static string Key(Guid id) => id.ToString("N");
 

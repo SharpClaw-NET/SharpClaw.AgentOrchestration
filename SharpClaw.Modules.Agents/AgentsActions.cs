@@ -100,37 +100,41 @@ public sealed class AgentsApiActionExecutor(
     };
 
     public async ValueTask<JsonElement> ExecuteAsync(
-        AgentsApiAction action,
+        ActionContext<AgentsApiAction> actionContext,
         CancellationToken ct = default)
     {
+        var action = actionContext.Action;
+        var caller = actionContext.Caller;
+        var authorization = new ModuleActionAuthorization<AgentsApiAction>(actionContext, permission);
+        using var authorizationScope = catalog.PushAuthorization(authorization);
         return action.Operation switch
         {
-            AgentsApiOperations.ListAgents => Json(await ListAgentsAsync(action.Caller, ct, action.HostActionContext)),
-            AgentsApiOperations.GetAgent => Json(await GetAgentAsync(action, ct)),
-            AgentsApiOperations.CreateAgent => Json(await catalog.CreateAgentAsync(action.Caller, Deserialize<AgentsCreateAction>(action.Payload), ct, action.HostActionContext)),
-            AgentsApiOperations.UpdateAgent => Json(await catalog.UpdateAgentAsync(action.Caller, Deserialize<AgentsUpdateAction>(action.Payload), ct, action.HostActionContext)),
-            AgentsApiOperations.DeleteAgent => Json(await catalog.DeleteAgentAsync(action.Caller, GuidValue(action.Payload, "agentId"), ct, action.HostActionContext)),
+            AgentsApiOperations.ListAgents => Json(await ListAgentsAsync(caller, ct, authorization)),
+            AgentsApiOperations.GetAgent => Json(await GetAgentAsync(caller, action, ct, authorization)),
+            AgentsApiOperations.CreateAgent => Json(await catalog.CreateAgentAsync(caller, Deserialize<AgentsCreateAction>(action.Payload), ct, null)),
+            AgentsApiOperations.UpdateAgent => Json(await catalog.UpdateAgentAsync(caller, Deserialize<AgentsUpdateAction>(action.Payload), ct, null)),
+            AgentsApiOperations.DeleteAgent => Json(await catalog.DeleteAgentAsync(caller, GuidValue(action.Payload, "agentId"), ct, null)),
             AgentsApiOperations.AssignRole => Json(await catalog.AssignRoleAsync(
-                action.Caller,
+                caller,
                 GuidValue(action.Payload, "agentId"),
                 StringValue(action.Payload, "role"),
                 BoolValue(action.Payload, "assign"),
                 ct,
-                action.HostActionContext)),
-            AgentsApiOperations.SynchronizeAgent => Json(await catalog.SynchronizeAsync(action.Caller, GuidValue(action.Payload, "agentId"), ct, action.HostActionContext)),
-            AgentsApiOperations.GetCost => Json(await catalog.GetCostAsync(action.Caller, GuidValue(action.Payload, "agentId"), ct, action.HostActionContext)),
-            AgentsApiOperations.ListSkills => Json(await ListSkillsAsync(action.Caller, ct, action.HostActionContext)),
-            AgentsApiOperations.GetSkill => Json(await catalog.GetSkillForCallerAsync(action.Caller, GuidValue(action.Payload, "skillId"), ct, action.HostActionContext)),
-            AgentsApiOperations.SaveSkill => Json(await catalog.SaveSkillAsync(action.Caller, Deserialize<AgentsSaveSkillAction>(action.Payload).Skill, ct, action.HostActionContext)),
-            AgentsApiOperations.DeleteSkill => Json(await catalog.DeleteSkillAsync(action.Caller, GuidValue(action.Payload, "skillId"), ct, action.HostActionContext)),
-            AgentsApiOperations.AccessSkill => Json(await catalog.AccessSkillAsync(action.Caller, GuidValue(action.Payload, "skillId"), ct, action.HostActionContext)),
-            AgentsApiOperations.WriteMemory => Json(await catalog.WriteMemoryAsync(action.Caller, Deserialize<AgentsWriteMemoryAction>(action.Payload), ct, action.HostActionContext)),
+                null)),
+            AgentsApiOperations.SynchronizeAgent => Json(await catalog.SynchronizeAsync(caller, GuidValue(action.Payload, "agentId"), ct, null)),
+            AgentsApiOperations.GetCost => Json(await catalog.GetCostAsync(caller, GuidValue(action.Payload, "agentId"), ct, null)),
+            AgentsApiOperations.ListSkills => Json(await ListSkillsAsync(caller, ct, authorization)),
+            AgentsApiOperations.GetSkill => Json(await catalog.GetSkillForCallerAsync(caller, GuidValue(action.Payload, "skillId"), ct, null)),
+            AgentsApiOperations.SaveSkill => Json(await catalog.SaveSkillAsync(caller, Deserialize<AgentsSaveSkillAction>(action.Payload).Skill, ct, null)),
+            AgentsApiOperations.DeleteSkill => Json(await catalog.DeleteSkillAsync(caller, GuidValue(action.Payload, "skillId"), ct, null)),
+            AgentsApiOperations.AccessSkill => Json(await catalog.AccessSkillAsync(caller, GuidValue(action.Payload, "skillId"), ct, null)),
+            AgentsApiOperations.WriteMemory => Json(await catalog.WriteMemoryAsync(caller, Deserialize<AgentsWriteMemoryAction>(action.Payload), ct, null)),
             AgentsApiOperations.SearchMemory => Json(await catalog.SearchMemoryAsync(
-                action.Caller,
+                caller,
                 GuidValue(action.Payload, "agentId"),
                 StringValue(action.Payload, "query"),
                 ct,
-                action.HostActionContext)),
+                null)),
             _ => throw new ArgumentException($"Unknown Agents operation '{action.Operation}'.", nameof(action)),
         };
     }
@@ -138,29 +142,33 @@ public sealed class AgentsApiActionExecutor(
     private async Task<IReadOnlyList<AgentRecord>> ListAgentsAsync(
         RequestPrincipal caller,
         CancellationToken ct,
-        HostActionEntryRequestContext hostContext)
+        IModuleActionAuthorization authorization)
     {
-        await RequireAccessAsync(caller, "manage_agents", null, ct, hostContext);
+        await RequireAccessAsync(caller, "manage_agents", null, ct, authorization);
         return await catalog.ListAgentsAsync(ct);
     }
 
     private async Task<IReadOnlyList<SkillRecord>> ListSkillsAsync(
         RequestPrincipal caller,
         CancellationToken ct,
-        HostActionEntryRequestContext hostContext)
+        IModuleActionAuthorization authorization)
     {
-        await RequireAccessAsync(caller, "manage_skills", null, ct, hostContext);
+        await RequireAccessAsync(caller, "manage_skills", null, ct, authorization);
         return await catalog.ListSkillsAsync(ct);
     }
 
-    private async Task<AgentRecord> GetAgentAsync(AgentsApiAction action, CancellationToken ct)
+    private async Task<AgentRecord> GetAgentAsync(
+        RequestPrincipal caller,
+        AgentsApiAction action,
+        CancellationToken ct,
+        IModuleActionAuthorization authorization)
     {
         var agentId = GuidValue(action.Payload, "agentId");
-        if (!action.Caller.IsAuthenticated)
+        if (!caller.IsAuthenticated)
             throw new UnauthorizedAccessException("Authentication is required.");
-        if (!IsAdministrator(action.Caller)
-            && !string.Equals(action.Caller.SubjectId, agentId.ToString("D"), StringComparison.OrdinalIgnoreCase))
-            await RequireAccessAsync(action.Caller, "read_agents", agentId, ct, action.HostActionContext);
+        if (!IsAdministrator(caller)
+            && !string.Equals(caller.SubjectId, agentId.ToString("D"), StringComparison.OrdinalIgnoreCase))
+            await RequireAccessAsync(caller, "read_agents", agentId, ct, authorization);
         return await catalog.GetAgentAsync(agentId, ct)
             ?? throw new InvalidOperationException("The agent was not found.");
     }
@@ -170,13 +178,13 @@ public sealed class AgentsApiActionExecutor(
         string capability,
         Guid? targetAgentId,
         CancellationToken ct,
-        HostActionEntryRequestContext hostContext)
+        IModuleActionAuthorization authorization)
     {
         if (IsAdministrator(caller))
             return;
         if (!caller.IsAuthenticated)
             throw new UnauthorizedAccessException("Authentication is required.");
-        var decision = await permission.EvaluateAgentAsync(hostContext, capability, targetAgentId, ct);
+        var decision = await authorization.EvaluateAgentAsync(capability, targetAgentId, ct);
         if (!decision.Allowed)
             throw new UnauthorizedAccessException(decision.Message);
     }
@@ -221,7 +229,8 @@ public interface IAgentsActionGateway
 }
 
 public sealed class AgentsActionGateway(
-    HostModuleActionEntry entry) : IAgentsActionGateway
+    HostModuleActionEntry entry,
+    AgentsApiActionExecutor executor) : IAgentsActionGateway
 {
     public ValueTask<JsonElement> ExecuteAsync(
         HostActionEntryRequestContext hostContext,
@@ -229,7 +238,12 @@ public sealed class AgentsActionGateway(
         JsonElement payload,
         CancellationToken ct = default)
     {
-        var action = new AgentsApiAction(operation, payload, hostContext);
-        return entry.InvokeAsync(AgentsModule.ApiDescriptor, action, hostContext, ct);
+        var action = new AgentsApiAction(operation, payload);
+        return entry.InvokeAsync(
+            AgentsModule.ApiDescriptor,
+            action,
+            hostContext,
+            (context, terminalCt) => executor.ExecuteAsync(context, terminalCt),
+            ct);
     }
 }

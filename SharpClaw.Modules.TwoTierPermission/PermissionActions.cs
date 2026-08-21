@@ -46,17 +46,19 @@ public sealed class PermissionActionExecutor(
         policy.EvaluateCapabilityAsync(caller, action, ct);
 
     public ValueTask<PermissionDecision> EvaluateAsync(
+        RequestPrincipal caller,
         PermissionContextAccessAction action,
         CancellationToken ct = default) =>
         policy.EvaluateDetailedAsync(
-            action.Request with { Principal = action.Caller },
+            action.Request with { Principal = caller },
             ct);
 
     public ValueTask<PermissionDecision> EvaluateAsync(
+        RequestPrincipal caller,
         PermissionAgentAccessAction action,
         CancellationToken ct = default) =>
         policy.EvaluateAgentDetailedAsync(
-            action.Caller,
+            caller,
             action.Capability,
             action.TargetAgentId,
             ct);
@@ -98,42 +100,45 @@ public sealed class PermissionApiActionExecutor(
         Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() },
     };
     public async ValueTask<JsonElement> ExecuteAsync(
-        PermissionApiAction action,
+        ActionContext<PermissionApiAction> actionContext,
         CancellationToken ct = default)
     {
+        var action = actionContext.Action;
+        var caller = actionContext.Caller;
         return action.Operation switch
         {
-            PermissionApiOperations.Evaluate => Json(await EvaluateAsync(action, ct)),
-            PermissionApiOperations.ListPolicies => Json(await policy.ListPoliciesAsync(action.Caller, ct)),
-            PermissionApiOperations.GetPolicy => Json(await policy.GetPolicyAsync(action.Caller, StringValue(action.Payload, "subjectId"), ct)),
-            PermissionApiOperations.SavePolicy => Json(await policy.SavePolicyAsync(action.Caller, Deserialize<PermissionPolicyRecord>(action.Payload), ct)),
-            PermissionApiOperations.DeletePolicy => Json(await policy.DeletePolicyAsync(action.Caller, StringValue(action.Payload, "subjectId"), ct)),
-            PermissionApiOperations.Grant => Json(await GrantAsync(action, ct)),
-            PermissionApiOperations.Revoke => Json(await RevokeAsync(action, ct)),
-            PermissionApiOperations.Approve => Json(await ApproveAsync(action, ct)),
-            PermissionApiOperations.ListRoles => Json(await policy.ListRolesAsync(action.Caller, ct)),
-            PermissionApiOperations.GetRole => Json(await policy.GetRoleAsync(action.Caller, StringValue(action.Payload, "roleId"), ct)),
-            PermissionApiOperations.SaveRole => Json(await policy.SaveRoleAsync(action.Caller, Deserialize<PermissionRoleRecord>(action.Payload), ct)),
-            PermissionApiOperations.DeleteRole => Json(await policy.DeleteRoleAsync(action.Caller, StringValue(action.Payload, "roleId"), ct)),
-            PermissionApiOperations.AssignRole => Json(await policy.AssignRoleAsync(action.Caller, action.Payload, ct)),
-            PermissionApiOperations.ListPermissionSets => Json(await policy.ListPermissionSetsAsync(action.Caller, ct)),
-            PermissionApiOperations.GetPermissionSet => Json(await policy.GetPermissionSetAsync(action.Caller, StringValue(action.Payload, "permissionSetId"), ct)),
-            PermissionApiOperations.SavePermissionSet => Json(await policy.SavePermissionSetAsync(action.Caller, Deserialize<PermissionSetRecord>(action.Payload), ct)),
-            PermissionApiOperations.DeletePermissionSet => Json(await policy.DeletePermissionSetAsync(action.Caller, StringValue(action.Payload, "permissionSetId"), ct)),
-            PermissionApiOperations.AssignPermissionSet => Json(await policy.AssignPermissionSetAsync(action.Caller, action.Payload, ct)),
+            PermissionApiOperations.Evaluate => Json(await EvaluateAsync(caller, action, ct)),
+            PermissionApiOperations.ListPolicies => Json(await policy.ListPoliciesAsync(caller, ct)),
+            PermissionApiOperations.GetPolicy => Json(await policy.GetPolicyAsync(caller, StringValue(action.Payload, "subjectId"), ct)),
+            PermissionApiOperations.SavePolicy => Json(await policy.SavePolicyAsync(caller, Deserialize<PermissionPolicyRecord>(action.Payload), ct)),
+            PermissionApiOperations.DeletePolicy => Json(await policy.DeletePolicyAsync(caller, StringValue(action.Payload, "subjectId"), ct)),
+            PermissionApiOperations.Grant => Json(await GrantAsync(caller, action, ct)),
+            PermissionApiOperations.Revoke => Json(await RevokeAsync(caller, action, ct)),
+            PermissionApiOperations.Approve => Json(await ApproveAsync(caller, action, ct)),
+            PermissionApiOperations.ListRoles => Json(await policy.ListRolesAsync(caller, ct)),
+            PermissionApiOperations.GetRole => Json(await policy.GetRoleAsync(caller, StringValue(action.Payload, "roleId"), ct)),
+            PermissionApiOperations.SaveRole => Json(await policy.SaveRoleAsync(caller, Deserialize<PermissionRoleRecord>(action.Payload), ct)),
+            PermissionApiOperations.DeleteRole => Json(await policy.DeleteRoleAsync(caller, StringValue(action.Payload, "roleId"), ct)),
+            PermissionApiOperations.AssignRole => Json(await policy.AssignRoleAsync(caller, action.Payload, ct)),
+            PermissionApiOperations.ListPermissionSets => Json(await policy.ListPermissionSetsAsync(caller, ct)),
+            PermissionApiOperations.GetPermissionSet => Json(await policy.GetPermissionSetAsync(caller, StringValue(action.Payload, "permissionSetId"), ct)),
+            PermissionApiOperations.SavePermissionSet => Json(await policy.SavePermissionSetAsync(caller, Deserialize<PermissionSetRecord>(action.Payload), ct)),
+            PermissionApiOperations.DeletePermissionSet => Json(await policy.DeletePermissionSetAsync(caller, StringValue(action.Payload, "permissionSetId"), ct)),
+            PermissionApiOperations.AssignPermissionSet => Json(await policy.AssignPermissionSetAsync(caller, action.Payload, ct)),
             _ => throw new ArgumentException($"Unknown permission operation '{action.Operation}'.", nameof(action)),
         };
     }
 
     private async Task<PermissionDecision> EvaluateAsync(
+        RequestPrincipal caller,
         PermissionApiAction action,
         CancellationToken ct)
     {
-        var subjectId = StringValue(action.Payload, "subjectId") ?? action.Caller.SubjectId;
+        var subjectId = StringValue(action.Payload, "subjectId") ?? caller.SubjectId;
         var capability = StringValue(action.Payload, "capability")
             ?? throw new ArgumentException("capability is required.");
         return await policy.EvaluateCapabilityAsync(
-            action.Caller,
+            caller,
             new PermissionEvaluateAction(
                 subjectId,
                 capability,
@@ -142,21 +147,30 @@ public sealed class PermissionApiActionExecutor(
             ct);
     }
 
-    private async Task<bool> GrantAsync(PermissionApiAction action, CancellationToken ct)
+    private async Task<bool> GrantAsync(
+        RequestPrincipal caller,
+        PermissionApiAction action,
+        CancellationToken ct)
     {
-        await policy.GrantAsync(action.Caller, Deserialize<PermissionGrantAction>(action.Payload), ct);
+        await policy.GrantAsync(caller, Deserialize<PermissionGrantAction>(action.Payload), ct);
         return true;
     }
 
-    private async Task<bool> RevokeAsync(PermissionApiAction action, CancellationToken ct)
+    private async Task<bool> RevokeAsync(
+        RequestPrincipal caller,
+        PermissionApiAction action,
+        CancellationToken ct)
     {
-        await policy.RevokeAsync(action.Caller, Deserialize<PermissionRevokeAction>(action.Payload), ct);
+        await policy.RevokeAsync(caller, Deserialize<PermissionRevokeAction>(action.Payload), ct);
         return true;
     }
 
-    private async Task<bool> ApproveAsync(PermissionApiAction action, CancellationToken ct)
+    private async Task<bool> ApproveAsync(
+        RequestPrincipal caller,
+        PermissionApiAction action,
+        CancellationToken ct)
     {
-        await policy.ApproveAsync(action.Caller, Deserialize<PermissionApproveAction>(action.Payload), ct);
+        await policy.ApproveAsync(caller, Deserialize<PermissionApproveAction>(action.Payload), ct);
         return true;
     }
 
@@ -187,7 +201,8 @@ public interface IPermissionActionGateway
 }
 
 public sealed class PermissionActionGateway(
-    HostModuleActionEntry entry) : IPermissionActionGateway
+    HostModuleActionEntry entry,
+    PermissionApiActionExecutor executor) : IPermissionActionGateway
 {
     public ValueTask<JsonElement> ExecuteAsync(
         HostActionEntryRequestContext hostContext,
@@ -195,7 +210,12 @@ public sealed class PermissionActionGateway(
         JsonElement payload,
         CancellationToken ct = default)
     {
-        var action = new PermissionApiAction(operation, payload, hostContext);
-        return entry.InvokeAsync(TwoTierPermissionModule.ApiDescriptor, action, hostContext, ct);
+        var action = new PermissionApiAction(operation, payload);
+        return entry.InvokeAsync(
+            TwoTierPermissionModule.ApiDescriptor,
+            action,
+            hostContext,
+            (context, terminalCt) => executor.ExecuteAsync(context, terminalCt),
+            ct);
     }
 }

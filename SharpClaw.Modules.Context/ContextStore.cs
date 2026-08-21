@@ -21,6 +21,7 @@ public sealed class ContextStore : IConversationStore
     private readonly ModuleDocumentStore<ContextThreadRecord> _threads;
     private readonly ModuleDocumentStore<ContextMessageRecord> _messages;
     private readonly HostPermissionActionEntry _permission;
+    private readonly AsyncLocal<IModuleActionAuthorization?> _authorization = new();
 
     public ContextStore(
         IModuleStorageGateway gateway,
@@ -31,6 +32,14 @@ public sealed class ContextStore : IConversationStore
         _threads = new(gateway, ModuleId, ThreadsStorage, $"{ModuleId}:{ThreadsStorage}", JsonOptions);
         _messages = new(gateway, ModuleId, MessagesStorage, $"{ModuleId}:{MessagesStorage}", JsonOptions);
         _permission = permission;
+    }
+
+    internal IDisposable PushAuthorization(IModuleActionAuthorization authorization)
+    {
+        ArgumentNullException.ThrowIfNull(authorization);
+        var previous = _authorization.Value;
+        _authorization.Value = authorization;
+        return new AuthorizationScope(_authorization, previous);
     }
 
     internal Task<ContextChannelRecord?> GetChannelAsync(Guid id, CancellationToken ct = default) =>
@@ -892,7 +901,7 @@ public sealed class ContextStore : IConversationStore
         RequireAuthenticatedAgent(caller);
         if (!context.Enabled)
             throw new UnauthorizedAccessException("The context is disabled.");
-        var decision = await _permission.EvaluateContextAsync(RequireHostContext(hostContext), new ContextAccessRequest(
+        var decision = await EvaluatePermissionAsync(new ContextAccessRequest(
             caller,
             Guid.Empty,
             null,
@@ -901,7 +910,7 @@ public sealed class ContextStore : IConversationStore
             context.AllowedAgentIds,
             false,
             context.Id,
-            capability), ct);
+            capability), hostContext, ct);
         if (!decision.Allowed && !IsAdministrator(caller))
             throw new UnauthorizedAccessException($"{decision.Code}: {decision.Message}");
     }
@@ -929,7 +938,7 @@ public sealed class ContextStore : IConversationStore
         string capability,
         CancellationToken ct,
         HostActionEntryRequestContext? hostContext = null) =>
-        _permission.EvaluateContextAsync(RequireHostContext(hostContext), new ContextAccessRequest(
+        EvaluatePermissionAsync(new ContextAccessRequest(
             principal,
             channel.Id,
             channel.OwnerAgentId,
@@ -941,13 +950,30 @@ public sealed class ContextStore : IConversationStore
                 .ToArray(),
             channel.CrossThreadOptedIn,
             context?.Id ?? channel.ContextId,
-            capability), ct);
+            capability), hostContext, ct);
+
+    private ValueTask<ContextAccessDecision> EvaluatePermissionAsync(
+        ContextAccessRequest request,
+        HostActionEntryRequestContext? hostContext,
+        CancellationToken ct)
+    {
+        if (_authorization.Value is { } authorization)
+            return authorization.EvaluateContextAsync(request, ct);
+        return _permission.EvaluateContextAsync(RequireHostContext(hostContext), request, ct);
+    }
 
     private static HostActionEntryRequestContext RequireHostContext(
         HostActionEntryRequestContext? hostContext) =>
         hostContext
         ?? throw new InvalidOperationException(
             "A host action entry context is required for Context permission evaluation.");
+
+    private sealed class AuthorizationScope(
+        AsyncLocal<IModuleActionAuthorization?> slot,
+        IModuleActionAuthorization? previous) : IDisposable
+    {
+        public void Dispose() => slot.Value = previous;
+    }
 
     private async Task<ContextRecord?> ResolveContextAsync(
         ContextChannelRecord channel,
