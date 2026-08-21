@@ -1,5 +1,6 @@
 using NUnit.Framework;
 using SharpClaw.Contracts.Modules;
+using SharpClaw.ModuleSDK;
 using SharpClaw.Modules.AgentOrchestration.Contracts;
 
 namespace SharpClaw.AgentOrchestration.Tests;
@@ -147,7 +148,58 @@ public sealed class PermissionActionEntryTests
         });
     }
 
-    private sealed class RecordingHostActionEntry : IHostActionEntry
+    [Test]
+    public async Task ParentContextPermissionUsesTheCrossSidecarEntry()
+    {
+        var host = new RecordingHostActionEntry
+        {
+            Result = PermissionDecision.Allow("cross_sidecar_allowed", 2, PermissionClearance.Independent),
+        };
+        var entry = new HostPermissionActionEntry(host);
+        var caller = new RequestPrincipal("cross-sidecar-agent", IsAuthenticated: true);
+        var parent = new ActionContext<string>(
+            Guid.NewGuid(),
+            null,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            0,
+            1,
+            DateTimeOffset.UtcNow.AddMinutes(1),
+            new SharpClawActionKey("test.parent"),
+            "test.module",
+            caller,
+            "parent",
+            ExtensionFeatureSet.Empty,
+            new ActionPipelineSnapshot("test", [], [], 16))
+        {
+            HostActionEntry = host,
+        };
+
+        var contextDecision = await entry.EvaluateContextAsync(
+            parent,
+            new ContextAccessRequest(
+                RequestPrincipal.Anonymous,
+                Guid.NewGuid(),
+                null,
+                [],
+                null,
+                [],
+                true));
+        var agentDecision = await entry.EvaluateAgentAsync(parent, "read_agents", Guid.NewGuid());
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(contextDecision.Code, Is.EqualTo("cross_sidecar_allowed"));
+            Assert.That(agentDecision.Code, Is.EqualTo("cross_sidecar_allowed"));
+            Assert.That(host.CrossSidecarKeys, Is.EqualTo([
+                "permission.context-access",
+                "permission.agent-access"]));
+            Assert.That(host.ContextRequest, Is.Null);
+            Assert.That(host.AgentRequest, Is.Null);
+        });
+    }
+
+    private sealed class RecordingHostActionEntry : IHostActionEntry, IModuleCrossSidecarActionEntry
     {
         public ActionOutcomeKind OutcomeKind { get; set; } = ActionOutcomeKind.Completed;
 
@@ -160,6 +212,8 @@ public sealed class PermissionActionEntryTests
         public HostActionEntryRequest<PermissionContextAccessAction, PermissionDecision>? ContextRequest { get; private set; }
 
         public HostActionEntryRequest<PermissionAgentAccessAction, PermissionDecision>? AgentRequest { get; private set; }
+
+        public List<string> CrossSidecarKeys { get; } = [];
 
         public ValueTask<IActionOutcome<TResult>> InvokeAsync<TAction, TResult>(
             HostActionEntryRequest<TAction, TResult> request,
@@ -189,6 +243,19 @@ public sealed class PermissionActionEntryTests
                     Result is null ? default! : (TResult)(object)Result,
                     Error,
                     Uncertainty));
+
+        public ValueTask<IActionOutcome<TResult>> InvokeCrossSidecarAsync<TAction, TResult>(
+            ModuleCrossSidecarActionEntryRequest<TAction, TResult> request,
+            CancellationToken ct)
+        {
+            CrossSidecarKeys.Add(request.Descriptor.Key.Value);
+            return ValueTask.FromResult<IActionOutcome<TResult>>(
+                new TestActionOutcome<TResult>(
+                    OutcomeKind,
+                    Result is null ? default! : (TResult)(object)Result,
+                    Error,
+                    Uncertainty));
+        }
     }
 
     private sealed class TestActionOutcome<TResult>(

@@ -9,6 +9,7 @@ using SharpClaw.Contracts.Providers;
 using SharpClaw.Modules.Agents;
 using SharpClaw.Modules.AgentOrchestration.Contracts;
 using SharpClaw.Modules.Context;
+using SharpClaw.ModuleSDK;
 using SharpClaw.Modules.TwoTierPermission;
 
 namespace SharpClaw.AgentOrchestration.Tests;
@@ -22,13 +23,17 @@ public sealed class ModuleCompositionTests
         var context = new ContextModule();
         var permission = new TwoTierPermissionModule();
         var agents = new AgentsModule();
-        var contextBuilder = new RecordingBuilder();
-        var permissionBuilder = new RecordingBuilder();
-        var agentsBuilder = new RecordingBuilder();
-
-        context.Configure(contextBuilder);
-        permission.Configure(permissionBuilder);
-        agents.Configure(agentsBuilder);
+        var contextGraph = CompileModule(context);
+        var permissionGraph = CompileModule(permission);
+        var agentsGraph = CompileModule(agents);
+        var contextCreate = GetAction<ContextCreateThreadAction, ContextThreadRecord>(contextGraph, "context.thread.create");
+        var contextCommit = GetAction<ContextCommitExchangeAction, bool>(contextGraph, "context.conversation.commit");
+        var permissionGrant = GetAction<PermissionGrantAction, bool>(permissionGraph, "permission.grant");
+        var agentsSaveSkill = GetAction<AgentsSaveSkillAction, SkillRecord>(agentsGraph, "agents.skill.save");
+        var agentsRecordJob = GetAction<AgentsRecordJobAction, AgentJob>(agentsGraph, AgentsModule.RecordAgentJobAction);
+        var agentsAttachJob = GetAction<AgentsAttachCanonicalJobAction, AgentJob>(agentsGraph, AgentsModule.AttachCanonicalJobAction);
+        var agentsCompleteJob = GetAction<AgentsCompleteJobAction, AgentJob>(agentsGraph, AgentsModule.CompleteAgentJobAction);
+        var agentsImportJobs = GetAction<AgentsImportJobsAction, IReadOnlyList<AgentJob>>(agentsGraph, AgentsModule.ImportAgentJobsAction);
 
         Assert.Multiple(() =>
         {
@@ -38,53 +43,42 @@ public sealed class ModuleCompositionTests
                 "sharpclaw_two_tier_permission", "SharpClaw Two Tier Permission", "perm")));
             Assert.That(agents.Identity, Is.EqualTo(new ModuleIdentity(
                 "sharpclaw_agents", "SharpClaw Agents", "agents")));
-            Assert.That(contextBuilder.Storage.Items.Select(item => item.StorageName), Is.EquivalentTo(
+            Assert.That(contextGraph.Storage.Select(item => item.StorageName), Is.EquivalentTo(
                 new[] { "channels", "contexts", "threads", "messages" }));
-            Assert.That(permissionBuilder.Storage.Items.Select(item => item.StorageName), Is.EquivalentTo(
+            Assert.That(permissionGraph.Storage.Select(item => item.StorageName), Is.EquivalentTo(
                 new[] { "policies", "grants", "approvals", "roles", "permission_sets" }));
-            Assert.That(agentsBuilder.Storage.Items.Select(item => item.StorageName), Is.EquivalentTo(
+            Assert.That(agentsGraph.Storage.Select(item => item.StorageName), Is.EquivalentTo(
                 new[] { "agents", "skills", "memory", "costs", "synchronization", "agent_jobs", "agent_job_imports" }));
-            Assert.That(permissionBuilder.Contracts.Exports.Select(item => item.ContractName),
+            Assert.That(permissionGraph.Contracts.Where(item => item.IsExport).Select(item => item.ContractName),
                 Does.Contain("sharpclaw.permission"));
-            Assert.That(agentsBuilder.Contracts.Requires.Select(item => item.ContractName),
+            Assert.That(agentsGraph.Contracts.Where(item => !item.IsExport).Select(item => item.ContractName),
                 Is.EquivalentTo(new[] { "sharpclaw.context", "sharpclaw.permission" }));
-            Assert.That(contextBuilder.Contracts.Requires.Select(item => item.ContractName),
+            Assert.That(contextGraph.Contracts.Where(item => !item.IsExport).Select(item => item.ContractName),
                 Does.Not.Contain("sharpclaw.context-access"));
-            Assert.That(permissionBuilder.Contracts.Exports.Select(item => item.ContractName),
+            Assert.That(permissionGraph.Contracts.Where(item => item.IsExport).Select(item => item.ContractName),
                 Does.Not.Contain("sharpclaw.context-access"));
-            Assert.That(permissionBuilder.Contracts.Exports.Select(item => item.ContractName),
+            Assert.That(permissionGraph.Contracts.Where(item => item.IsExport).Select(item => item.ContractName),
                 Does.Not.Contain("sharpclaw.agent-access"));
-            Assert.That(contextBuilder.Services.Any(item => item.ServiceType == typeof(IContextActionExecutor)), Is.True);
-            Assert.That(contextBuilder.Services.Any(item => item.ServiceType == typeof(HostPermissionActionEntry)), Is.True);
-            Assert.That(permissionBuilder.Services.Any(item => item.ServiceType == typeof(IPermissionActionExecutor)), Is.True);
-            Assert.That(agentsBuilder.Services.Any(item => item.ServiceType == typeof(IAgentsActionExecutor)), Is.True);
-            Assert.That(agentsBuilder.Services.Any(item => item.ServiceType == typeof(HostPermissionActionEntry)), Is.True);
-            Assert.That(agentsBuilder.Services.Any(item => item.ServiceType == typeof(IAgentsJobActionExecutor)), Is.True);
-            Assert.That(contextBuilder.Actions.Items.OfType<ActionDescriptor<ContextCreateThreadAction, ContextThreadRecord>>().Single().SafePoints,
-                Is.Not.Empty);
-            Assert.That(
-                contextBuilder.Actions.Items
-                    .OfType<ActionDescriptor<ContextCommitExchangeAction, bool>>()
-                    .Single()
-                    .Capabilities,
+            Assert.That(contextGraph.Services.Any(item => item.ServiceType == typeof(IContextActionExecutor)), Is.True);
+            Assert.That(contextGraph.Services.Any(item => item.ServiceType == typeof(HostPermissionActionEntry)), Is.True);
+            Assert.That(permissionGraph.Services.Any(item => item.ServiceType == typeof(IPermissionActionExecutor)), Is.True);
+            Assert.That(agentsGraph.Services.Any(item => item.ServiceType == typeof(IAgentsActionExecutor)), Is.True);
+            Assert.That(agentsGraph.Services.Any(item => item.ServiceType == typeof(HostPermissionActionEntry)), Is.True);
+            Assert.That(agentsGraph.Services.Any(item => item.ServiceType == typeof(IAgentsJobActionExecutor)), Is.True);
+            Assert.That(contextCreate.SafePoints, Is.Not.Empty);
+            Assert.That(contextCommit.Capabilities,
                 Is.EqualTo(ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel));
-            Assert.That(permissionBuilder.Actions.Items.OfType<ActionDescriptor<PermissionGrantAction, bool>>().Single().SafePoints,
-                Is.Not.Empty);
-            Assert.That(permissionBuilder.Actions.Items,
-                Does.Contain(PermissionActionDescriptors.ContextAccess));
-            Assert.That(permissionBuilder.Actions.Items,
-                Does.Contain(PermissionActionDescriptors.AgentAccess));
-            Assert.That(agentsBuilder.Actions.Items.OfType<ActionDescriptor<AgentsSaveSkillAction, SkillRecord>>().Single().SafePoints,
-                Is.Not.Empty);
-            Assert.That(agentsBuilder.Actions.Items.OfType<ActionDescriptor<AgentsRecordJobAction, AgentJob>>().Single().Key.Value,
+            Assert.That(permissionGrant.SafePoints, Is.Not.Empty);
+            Assert.That(permissionGraph.Actions.Any(item => ReferenceEquals(item.TypedDescriptor, PermissionActionDescriptors.ContextAccess)), Is.True);
+            Assert.That(permissionGraph.Actions.Any(item => ReferenceEquals(item.TypedDescriptor, PermissionActionDescriptors.AgentAccess)), Is.True);
+            Assert.That(agentsSaveSkill.SafePoints, Is.Not.Empty);
+            Assert.That(agentsRecordJob.Key.Value,
                 Is.EqualTo(AgentsModule.RecordAgentJobAction));
-            Assert.That(agentsBuilder.Actions.Items.OfType<ActionDescriptor<AgentsAttachCanonicalJobAction, AgentJob>>().Single().Key.Value,
+            Assert.That(agentsAttachJob.Key.Value,
                 Is.EqualTo(AgentsModule.AttachCanonicalJobAction));
-            Assert.That(agentsBuilder.Actions.Items.OfType<ActionDescriptor<AgentsCompleteJobAction, AgentJob>>().Single().Key.Value,
+            Assert.That(agentsCompleteJob.Key.Value,
                 Is.EqualTo(AgentsModule.CompleteAgentJobAction));
-            Assert.That(agentsBuilder.Actions.Items
-                .OfType<ActionDescriptor<AgentsImportJobsAction, IReadOnlyList<AgentJob>>>()
-                .Single().Key.Value, Is.EqualTo(AgentsModule.ImportAgentJobsAction));
+            Assert.That(agentsImportJobs.Key.Value, Is.EqualTo(AgentsModule.ImportAgentJobsAction));
             Assert.That(
                 AgentsModule.StorageContracts.Single(item => item.StorageName == AgentsCatalog.AgentJobsStorage).Indexes!
                     .Select(item => item.Name),
@@ -102,16 +96,28 @@ public sealed class ModuleCompositionTests
                     "snapshotId", "aggregateHash", "mappingHash", "expectedRecordCount", "importedRecordCount",
                     "completed", "capturedAt",
                 }));
-            Assert.That(contextBuilder.Events.Items.OfType<EventDescriptor<ContextThreadChangedEvent>>(), Has.Exactly(1).Items);
-            Assert.That(permissionBuilder.Events.Items.OfType<EventDescriptor<PermissionChangedEvent>>(), Has.Exactly(1).Items);
-            Assert.That(agentsBuilder.Events.Items.OfType<EventDescriptor<MemoryChangedEvent>>(), Has.Exactly(1).Items);
-            Assert.That(contextBuilder.Hooks.Items.Any(item => item.StartsWith("context.conversation.commit", StringComparison.Ordinal)), Is.True);
-            Assert.That(contextBuilder.Hooks.Items,
-                Does.Contain("permission.context-access:ContextPermissionActionHook:permission.context-access.host-entry"));
-            Assert.That(permissionBuilder.Hooks.Items.Any(item => item.StartsWith("permission.grant", StringComparison.Ordinal)), Is.True);
-            Assert.That(agentsBuilder.Hooks.Items.Any(item => item.StartsWith("agents.create", StringComparison.Ordinal)), Is.True);
-            Assert.That(agentsBuilder.Hooks.Items,
-                Does.Contain("permission.agent-access:AgentsPermissionActionHook:permission.agent-access.host-entry"));
+            Assert.That(contextGraph.Events.Count(item => item.Descriptor.Key.Value == ContextModule.ThreadChangedEvent), Is.EqualTo(1));
+            Assert.That(permissionGraph.Events.Count(item => item.Descriptor.Key.Value == TwoTierPermissionModule.PermissionChangedEvent), Is.EqualTo(1));
+            Assert.That(agentsGraph.Events.Count(item => item.Descriptor.Key.Value == AgentsModule.MemoryChangedEvent), Is.EqualTo(1));
+            Assert.That(contextGraph.ActionHooks.Any(item => item.ActionKey?.Value == "context.conversation.commit"), Is.True);
+            Assert.That(contextGraph.ActionHooks.Any(item => item.ActionKey?.Value == "permission.context-access"
+                && item.HandlerType == typeof(ContextPermissionActionHook)
+                && item.HookId == "permission.context-access.host-entry"), Is.True);
+            Assert.That(permissionGraph.ActionHooks.Any(item => item.ActionKey?.Value == "permission.grant"), Is.True);
+            Assert.That(agentsGraph.ActionHooks.Any(item => item.ActionKey?.Value == "agents.create"), Is.True);
+            Assert.That(agentsGraph.ActionHooks.Any(item => item.ActionKey?.Value == "permission.agent-access"
+                && item.HandlerType == typeof(AgentsPermissionActionHook)
+                && item.HookId == "permission.agent-access.host-entry"), Is.True);
+            Assert.That(contextGraph.ActionEntries.Select(item => item.Descriptor.Key.Value), Is.EqualTo([ContextModule.ApiDescriptor.Key.Value]));
+            Assert.That(permissionGraph.ActionEntries.Select(item => item.Descriptor.Key.Value), Is.EquivalentTo([
+                TwoTierPermissionModule.ApiDescriptor.Key.Value,
+                PermissionActionDescriptors.ContextAccess.Key.Value,
+                PermissionActionDescriptors.AgentAccess.Key.Value]));
+            Assert.That(agentsGraph.ActionEntries.Select(item => item.Descriptor.Key.Value), Is.EqualTo([AgentsModule.ApiDescriptor.Key.Value]));
+            Assert.That(contextGraph.ActionEntries.Single().TerminalType, Is.EqualTo(typeof(ContextApiActionTerminal)));
+            Assert.That(permissionGraph.ActionEntries.Single(item => item.Descriptor.Key.Value == PermissionActionDescriptors.ContextAccess.Key.Value).TerminalType,
+                Is.EqualTo(typeof(PermissionContextAccessActionTerminal)));
+            Assert.That(agentsGraph.ActionEntries.Single().TerminalType, Is.EqualTo(typeof(AgentsApiActionTerminal)));
         });
     }
 
@@ -228,22 +234,15 @@ public sealed class ModuleCompositionTests
     [Test]
     public void PublicApiActionsAreRegisteredForEachOwner()
     {
-        var contextBuilder = new RecordingBuilder();
-        var permissionBuilder = new RecordingBuilder();
-        var agentsBuilder = new RecordingBuilder();
-
-        new ContextModule().Configure(contextBuilder);
-        new TwoTierPermissionModule().Configure(permissionBuilder);
-        new AgentsModule().Configure(agentsBuilder);
+        var contextGraph = CompileModule(new ContextModule());
+        var permissionGraph = CompileModule(new TwoTierPermissionModule());
+        var agentsGraph = CompileModule(new AgentsModule());
 
         Assert.Multiple(() =>
         {
-            Assert.That(contextBuilder.Actions.Items.OfType<ActionDescriptor<ContextApiAction, JsonElement>>()
-                .Select(item => item.Key.Value), Does.Contain("context.api.dispatch"));
-            Assert.That(permissionBuilder.Actions.Items.OfType<ActionDescriptor<PermissionApiAction, JsonElement>>()
-                .Select(item => item.Key.Value), Does.Contain("permission.api.dispatch"));
-            Assert.That(agentsBuilder.Actions.Items.OfType<ActionDescriptor<AgentsApiAction, JsonElement>>()
-                .Select(item => item.Key.Value), Does.Contain("agents.api.dispatch"));
+            Assert.That(contextGraph.Actions.Select(item => item.Descriptor.Key.Value), Does.Contain("context.api.dispatch"));
+            Assert.That(permissionGraph.Actions.Select(item => item.Descriptor.Key.Value), Does.Contain("permission.api.dispatch"));
+            Assert.That(agentsGraph.Actions.Select(item => item.Descriptor.Key.Value), Does.Contain("agents.api.dispatch"));
         });
     }
 
@@ -388,7 +387,10 @@ public sealed class ModuleCompositionTests
     public async Task ContextCliPassesTheIssuedAuthorityContextToTheTypedAction()
     {
         var gateway = new RecordingContextGateway();
-        var handler = new ContextCliHandler(gateway);
+        using var provider = new ServiceCollection()
+            .AddScoped<IContextActionGateway>(_ => gateway)
+            .BuildServiceProvider();
+        var handler = new ContextCliHandler(provider.GetRequiredService<IServiceScopeFactory>());
         var hostContext = TestHostActionContext.Create(
             new RequestPrincipal(Guid.NewGuid().ToString("D"), IsAuthenticated: true),
             HostActionEntryIngress.Cli);
@@ -1857,6 +1859,23 @@ public sealed class ModuleCompositionTests
         });
     }
 
+    private static ModuleContributionGraph CompileModule(ISharpClawModule module) =>
+        SharpClawModuleCompiler.Compile(
+            module,
+            options: new ModuleCompilationOptions
+            {
+                HostingMode = ModuleHostingMode.InProcess,
+                RequireManifestRequests = false,
+            });
+
+    private static ActionDescriptor<TAction, TResult> GetAction<TAction, TResult>(
+        ModuleContributionGraph graph,
+        string key) =>
+        graph.Actions
+            .Select(item => item.TypedDescriptor)
+            .OfType<ActionDescriptor<TAction, TResult>>()
+            .Single(item => item.Key.Value == key);
+
     private sealed class RecordingBuilder : ISharpClawModuleBuilder
     {
         public IServiceCollection Services { get; } = new ServiceCollection();
@@ -2033,7 +2052,7 @@ public sealed class ModuleCompositionTests
         }
     }
 
-    private sealed class RecordingHostActionEntry : IHostActionEntry
+    private sealed class RecordingHostActionEntry : IHostActionEntry, IModuleCrossSidecarActionEntry
     {
         public List<string> Keys { get; } = [];
         public List<HostActionEntryRequestContext> Contexts { get; } = [];
@@ -2074,6 +2093,22 @@ public sealed class ModuleCompositionTests
             return ValueTask.FromResult<IActionOutcome<TResult>>(
                 new HostActionOutcome<TResult>(ActionOutcomeKind.Completed, result));
         }
+
+        public ValueTask<IActionOutcome<TResult>> InvokeCrossSidecarAsync<TAction, TResult>(
+            ModuleCrossSidecarActionEntryRequest<TAction, TResult> request,
+            CancellationToken ct)
+        {
+            var result = typeof(TResult) == typeof(JsonElement)
+                ? (TResult)(object)JsonSerializer.SerializeToElement(new { accepted = true })
+                : typeof(TResult) == typeof(PermissionDecision)
+                    ? (TResult)(object)(PermissionResult ?? PermissionDecision.Allow(
+                        "test_allowed",
+                        1,
+                        PermissionClearance.Independent))
+                    : default!;
+            return ValueTask.FromResult<IActionOutcome<TResult>>(
+                new HostActionOutcome<TResult>(ActionOutcomeKind.Completed, result));
+        }
     }
 
     private sealed class HostActionOutcome<TResult>(
@@ -2093,7 +2128,7 @@ public sealed class ModuleCompositionTests
     private static HostPermissionActionEntry PolicyEntry(TwoTierPermissionPolicy policy) =>
         new(new PolicyHostActionEntry(policy));
 
-    private sealed class PolicyHostActionEntry(TwoTierPermissionPolicy policy) : IHostActionEntry
+    private sealed class PolicyHostActionEntry(TwoTierPermissionPolicy policy) : IHostActionEntry, IModuleCrossSidecarActionEntry
     {
         public async ValueTask<IActionOutcome<TResult>> InvokeAsync<TAction, TResult>(
             HostActionEntryRequest<TAction, TResult> request,
@@ -2140,6 +2175,29 @@ public sealed class ModuleCompositionTests
                         ct),
                 _ => throw new InvalidOperationException(
                     $"The test host does not support '{request.ActionKey.Value}'."),
+            };
+
+            return new HostActionOutcome<TResult>(
+                ActionOutcomeKind.Completed,
+                (TResult)(object)result);
+        }
+
+        public async ValueTask<IActionOutcome<TResult>> InvokeCrossSidecarAsync<TAction, TResult>(
+            ModuleCrossSidecarActionEntryRequest<TAction, TResult> request,
+            CancellationToken ct)
+        {
+            var result = request.Action switch
+            {
+                PermissionContextAccessAction action =>
+                    await policy.EvaluateDetailedAsync(action.Request, ct),
+                PermissionAgentAccessAction action =>
+                    await policy.EvaluateAgentDetailedAsync(
+                        RequestPrincipal.Anonymous,
+                        action.Capability,
+                        action.TargetAgentId,
+                        ct),
+                _ => throw new InvalidOperationException(
+                    $"The test host does not support '{request.Descriptor.Key.Value}'."),
             };
 
             return new HostActionOutcome<TResult>(

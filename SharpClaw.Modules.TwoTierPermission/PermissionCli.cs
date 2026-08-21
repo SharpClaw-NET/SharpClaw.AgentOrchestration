@@ -1,11 +1,12 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Extensions.DependencyInjection;
 using SharpClaw.Contracts.Modules;
 using SharpClaw.Modules.AgentOrchestration.Contracts;
 
 namespace SharpClaw.Modules.TwoTierPermission;
 
-public sealed class PermissionCliHandler(IPermissionActionGateway gateway) : IModuleCliHandler
+public sealed class PermissionCliHandler(IServiceScopeFactory scopeFactory) : IModuleCliHandler
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -46,6 +47,8 @@ public sealed class PermissionCliHandler(IPermissionActionGateway gateway) : IMo
         try
         {
             var payload = BuildPayload(command.Operation, invocation.Arguments);
+            using var scope = scopeFactory.CreateScope();
+            var gateway = scope.ServiceProvider.GetRequiredService<IPermissionActionGateway>();
             var result = await gateway.ExecuteAsync(
                 invocation.HostActionContext,
                 command.Operation,

@@ -1,4 +1,5 @@
 using SharpClaw.Contracts.Modules;
+using SharpClaw.ModuleSDK;
 
 namespace SharpClaw.Modules.AgentOrchestration.Contracts;
 
@@ -220,20 +221,15 @@ public sealed class HostPermissionActionEntry(IHostActionEntry host) : IPermissi
     {
         var action = new PermissionContextAccessAction(
             request with { Principal = parentContext.Caller });
-        var nested = new HostActionEntryNestedRequest<
-            TParentAction,
-            PermissionContextAccessAction,
-            PermissionDecision>(
-            PermissionActionDescriptors.ContextAccess.Key,
-            PermissionActionDescriptors.ContextAccess.Version,
-            action,
-            parentContext);
         var hostEntry = parentContext.HostActionEntry
             ?? throw new InvalidOperationException(
                 "The parent action context has no host action entry.");
-        var decision = await hostEntry.InvokeNestedAsync(
-            nested,
-            CreateUnavailableTerminal<PermissionContextAccessAction>(),
+        var decision = await hostEntry.InvokeCrossSidecarAsync(
+            new ModuleCrossSidecarActionEntryRequest<
+                PermissionContextAccessAction,
+                PermissionDecision>(
+                PermissionActionDescriptors.ContextAccess,
+                action),
             ct);
         return ToContextDecision(RequireResult(
             PermissionActionDescriptors.ContextAccess.Key.Value,
@@ -250,20 +246,15 @@ public sealed class HostPermissionActionEntry(IHostActionEntry host) : IPermissi
         var action = new PermissionAgentAccessAction(
             capability,
             targetAgentId);
-        var nested = new HostActionEntryNestedRequest<
-            TParentAction,
-            PermissionAgentAccessAction,
-            PermissionDecision>(
-            PermissionActionDescriptors.AgentAccess.Key,
-            PermissionActionDescriptors.AgentAccess.Version,
-            action,
-            parentContext);
         var hostEntry = parentContext.HostActionEntry
             ?? throw new InvalidOperationException(
                 "The parent action context has no host action entry.");
-        var decision = await hostEntry.InvokeNestedAsync(
-            nested,
-            CreateUnavailableTerminal<PermissionAgentAccessAction>(),
+        var decision = await hostEntry.InvokeCrossSidecarAsync(
+            new ModuleCrossSidecarActionEntryRequest<
+                PermissionAgentAccessAction,
+                PermissionDecision>(
+                PermissionActionDescriptors.AgentAccess,
+                action),
             ct);
         return ToContextDecision(RequireResult(
             PermissionActionDescriptors.AgentAccess.Key.Value,

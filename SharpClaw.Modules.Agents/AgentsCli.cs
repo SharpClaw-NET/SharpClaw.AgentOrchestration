@@ -1,9 +1,10 @@
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
 using SharpClaw.Contracts.Modules;
 
 namespace SharpClaw.Modules.Agents;
 
-public sealed class AgentsCliHandler(IAgentsActionGateway gateway) : IModuleCliHandler
+public sealed class AgentsCliHandler(IServiceScopeFactory scopeFactory) : IModuleCliHandler
 {
     public static IReadOnlyList<(string Name, string Operation)> Commands { get; } =
     [
@@ -39,6 +40,8 @@ public sealed class AgentsCliHandler(IAgentsActionGateway gateway) : IModuleCliH
         try
         {
             var payload = BuildPayload(command.Operation, invocation.Arguments);
+            using var scope = scopeFactory.CreateScope();
+            var gateway = scope.ServiceProvider.GetRequiredService<IAgentsActionGateway>();
             var result = await gateway.ExecuteAsync(
                 invocation.HostActionContext,
                 command.Operation,

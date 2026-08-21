@@ -22,6 +22,7 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
     public const string AgentChangedEvent = "agents.agent.changed";
     public const string SkillChangedEvent = "agents.skill.changed";
     public const string MemoryChangedEvent = "agents.memory.changed";
+    public static readonly Guid ApiTerminalId = Guid.Parse("8f7be0a6-2f4d-5b72-9dc8-3ca4e9c2f201");
 
     private static readonly ActionRepeatPolicy RepeatPolicy =
         new(ActionRepeatKind.Receipted, 3, TimeSpan.FromMilliseconds(100), "agents");
@@ -66,7 +67,7 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
         module.Services.AddScoped<IAgentsJobActionExecutor, AgentsJobActionExecutor>();
         module.Services.AddScoped<AgentsCreateAuthorizationHook>();
         module.Services.AddScoped<AgentsPermissionActionHook>();
-        module.Services.AddScoped<AgentsCliHandler>();
+        module.Services.AddSingleton<AgentsCliHandler>();
         module.Services.AddScoped<AgentChatProfileResolver>();
 
         module.Contracts.Export<AgentsModuleContract>("sharpclaw.agents");
@@ -77,6 +78,9 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
             module.Storage.Add(storage);
 
         module.Actions.Add(ApiDescriptor);
+        module.AddActionEntry<AgentsApiAction, JsonElement, AgentsApiActionTerminal>(
+            ApiDescriptor,
+            ApiTerminalId);
 
         module.Actions.Add(new ActionDescriptor<AgentsCreateAction, AgentRecord>(
             new("agents.create"), 1, "agents",

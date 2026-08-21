@@ -15,6 +15,16 @@ public interface IPermissionActionExecutor
         PermissionEvaluateAction action,
         CancellationToken ct = default);
 
+    ValueTask<PermissionDecision> EvaluateAsync(
+        RequestPrincipal caller,
+        PermissionContextAccessAction action,
+        CancellationToken ct = default);
+
+    ValueTask<PermissionDecision> EvaluateAsync(
+        RequestPrincipal caller,
+        PermissionAgentAccessAction action,
+        CancellationToken ct = default);
+
     Task<bool> GrantAsync(
         RequestPrincipal caller,
         PermissionGrantAction action,

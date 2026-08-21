@@ -8,5 +8,6 @@
 
   <ItemGroup>
     <PackageReference Include="SharpClaw.Contracts" />
+    <PackageReference Include="SharpClaw.ModuleSDK" PrivateAssets="all" IncludeAssets="compile;build;buildTransitive" />
   </ItemGroup>
 </Project>

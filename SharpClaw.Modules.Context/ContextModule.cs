@@ -14,6 +14,7 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
     public const string ReadHistoryTool = "ctx_read_thread_history";
     public const string ThreadChangedEvent = "context.thread.changed";
     public const string ExchangeCommittedEvent = "context.exchange.committed";
+    public static readonly Guid ApiTerminalId = Guid.Parse("8f7be0a6-2f4d-5b72-9dc8-3ca4e9c2f001");
 
     private static readonly JsonElement EmptySchema = ToolSchemas.EmptyObject;
     private static readonly ActionRepeatPolicy RepeatPolicy =
@@ -61,7 +62,7 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
         module.Services.AddScoped<IModuleActionPipeline, ModuleActionPipeline>();
         module.Services.AddScoped<ContextCommitAuthorizationHook>();
         module.Services.AddScoped<ContextPermissionActionHook>();
-        module.Services.AddScoped<ContextCliHandler>();
+        module.Services.AddSingleton<ContextCliHandler>();
 
         module.Contracts.Export<ContextModuleContract>("sharpclaw.context");
         module.Contracts.Require<PermissionModuleContract>("sharpclaw.permission");
@@ -70,6 +71,9 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
             module.Storage.Add(storage);
 
         module.Actions.Add(ApiDescriptor);
+        module.AddActionEntry<ContextApiAction, JsonElement, ContextApiActionTerminal>(
+            ApiDescriptor,
+            ApiTerminalId);
 
         module.Actions.Add(new ActionDescriptor<ContextCreateThreadAction, ContextThreadRecord>(
             new("context.thread.create"), 1, "context.thread",

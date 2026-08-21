@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using SharpClaw.Contracts.Modules;
 using SharpClaw.Contracts.Persistence;
+using SharpClaw.ModuleSDK;
 using SharpClaw.Modules.AgentOrchestration.Contracts;
 
 namespace SharpClaw.Modules.TwoTierPermission;
@@ -14,6 +15,9 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
     public const string RevokeTool = "perm_revoke";
     public const string ApproveTool = "perm_approve";
     public const string PermissionChangedEvent = "permission.changed";
+    public static readonly Guid ApiTerminalId = Guid.Parse("8f7be0a6-2f4d-5b72-9dc8-3ca4e9c2f101");
+    public static readonly Guid ContextAccessTerminalId = Guid.Parse("8f7be0a6-2f4d-5b72-9dc8-3ca4e9c2f102");
+    public static readonly Guid AgentAccessTerminalId = Guid.Parse("8f7be0a6-2f4d-5b72-9dc8-3ca4e9c2f103");
 
     private static readonly ActionRepeatPolicy RepeatPolicy =
         new(ActionRepeatKind.Receipted, 3, TimeSpan.FromMilliseconds(100), "permission");
@@ -59,7 +63,7 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
         module.Services.AddScoped<HostModuleActionEntry>();
         module.Services.AddScoped<IModuleActionPipeline, ModuleActionPipeline>();
         module.Services.AddScoped<PermissionGrantAuthorizationHook>();
-        module.Services.AddScoped<PermissionCliHandler>();
+        module.Services.AddSingleton<PermissionCliHandler>();
 
         module.Contracts.Export<PermissionModuleContract>("sharpclaw.permission");
 
@@ -69,6 +73,15 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
         module.Actions.Add(ApiDescriptor);
         module.Actions.Add(PermissionActionDescriptors.ContextAccess);
         module.Actions.Add(PermissionActionDescriptors.AgentAccess);
+        module.AddActionEntry<PermissionApiAction, JsonElement, PermissionApiActionTerminal>(
+            ApiDescriptor,
+            ApiTerminalId);
+        module.AddActionEntry<PermissionContextAccessAction, PermissionDecision, PermissionContextAccessActionTerminal>(
+            PermissionActionDescriptors.ContextAccess,
+            ContextAccessTerminalId);
+        module.AddActionEntry<PermissionAgentAccessAction, PermissionDecision, PermissionAgentAccessActionTerminal>(
+            PermissionActionDescriptors.AgentAccess,
+            AgentAccessTerminalId);
 
         module.Actions.Add(new ActionDescriptor<PermissionEvaluateAction, PermissionDecision>(
             new("permission.evaluate"), 1, "permission",
