@@ -139,7 +139,7 @@ public sealed class ModuleCompositionTests
             Assert.Multiple(() =>
             {
                 Assert.That(root.GetProperty("id").GetString(), Is.EqualTo(item.Item2));
-                Assert.That(root.GetProperty("version").GetString(), Is.EqualTo("0.5.0-beta.1"));
+                Assert.That(root.GetProperty("version").GetString(), Is.EqualTo("0.5.0-beta.2"));
                 Assert.That(root.GetProperty("entryAssembly").GetString(), Is.EqualTo(item.Item4));
                 Assert.That(root.GetProperty("moduleType").GetString(), Is.EqualTo(item.Item3));
                 Assert.That(root.GetProperty("defaultEnabled").GetBoolean(), Is.True);
