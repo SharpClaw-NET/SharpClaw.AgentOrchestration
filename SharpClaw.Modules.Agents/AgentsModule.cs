@@ -61,6 +61,7 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
         module.Services.AddScoped<HostPermissionActionEntry>();
         module.Services.AddScoped<AgentsToolHandler>();
         module.Services.AddScoped<AgentsApiActionExecutor>();
+        module.Services.AddScoped<AgentsApiActionTerminal>();
         module.Services.AddScoped<AgentsEndpointContribution>();
         module.Services.AddScoped<IAgentsActionGateway, AgentsActionGateway>();
         module.Services.AddScoped<IModuleActionPipeline, ModuleActionPipeline>();

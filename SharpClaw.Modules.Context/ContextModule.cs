@@ -56,6 +56,7 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
         module.Services.AddScoped<ContextToolHandler>();
         module.Services.AddScoped<IContextActionExecutor, ContextActionExecutor>();
         module.Services.AddScoped<ContextApiActionExecutor>();
+        module.Services.AddScoped<ContextApiActionTerminal>();
         module.Services.AddScoped<ContextEndpointContribution>();
         module.Services.AddScoped<IContextActionGateway, ContextActionGateway>();
         module.Services.AddScoped<HostModuleActionEntry>();

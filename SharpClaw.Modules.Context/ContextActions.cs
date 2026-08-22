@@ -194,7 +194,7 @@ public interface IContextActionGateway
 
 public sealed class ContextActionGateway(
     HostModuleActionEntry entry,
-    ContextApiActionExecutor executor) : IContextActionGateway
+    ContextApiActionTerminal terminal) : IContextActionGateway
 {
     public ValueTask<JsonElement> ExecuteAsync(
         HostActionEntryRequestContext hostContext,
@@ -207,7 +207,7 @@ public sealed class ContextActionGateway(
             ContextModule.ApiDescriptor,
             action,
             hostContext,
-            (context, terminalCt) => executor.ExecuteAsync(context, terminalCt),
+            terminal,
             ct);
     }
 }

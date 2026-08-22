@@ -235,7 +235,7 @@ public interface IAgentsActionGateway
 
 public sealed class AgentsActionGateway(
     HostModuleActionEntry entry,
-    AgentsApiActionExecutor executor) : IAgentsActionGateway
+    AgentsApiActionTerminal terminal) : IAgentsActionGateway
 {
     public ValueTask<JsonElement> ExecuteAsync(
         HostActionEntryRequestContext hostContext,
@@ -248,7 +248,7 @@ public sealed class AgentsActionGateway(
             AgentsModule.ApiDescriptor,
             action,
             hostContext,
-            (context, terminalCt) => executor.ExecuteAsync(context, terminalCt),
+            terminal,
             ct);
     }
 }

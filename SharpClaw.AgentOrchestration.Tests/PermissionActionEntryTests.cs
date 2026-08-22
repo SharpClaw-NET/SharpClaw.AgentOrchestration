@@ -35,11 +35,11 @@ public sealed class PermissionActionEntryTests
         {
             Assert.That(decision.Allowed, Is.True);
             Assert.That(decision.Code, Is.EqualTo("context_allowed"));
-            Assert.That(host.ContextRequest, Is.Not.Null);
-            Assert.That(host.ContextRequest!.Descriptor, Is.SameAs(PermissionActionDescriptors.ContextAccess));
-            Assert.That(host.ContextRequest.Caller, Is.EqualTo(caller));
-            Assert.That(host.ContextRequest.Action.Request.Principal, Is.EqualTo(caller));
-            Assert.That(host.ContextRequest.Action.Request.ChannelId, Is.EqualTo(request.ChannelId));
+            Assert.That(host.ContextCrossSidecarRequest, Is.Not.Null);
+            Assert.That(host.ContextCrossSidecarRequest!.Descriptor, Is.SameAs(PermissionActionDescriptors.ContextAccess));
+            Assert.That(host.ContextCrossSidecarRequest.Action.Request.Principal, Is.EqualTo(caller));
+            Assert.That(host.ContextCrossSidecarRequest.Action.Request.ChannelId, Is.EqualTo(request.ChannelId));
+            Assert.That(host.CrossSidecarKeys, Is.EqualTo(["permission.context-access"]));
         });
     }
 
@@ -67,11 +67,11 @@ public sealed class PermissionActionEntryTests
         {
             Assert.That(decision.Allowed, Is.False);
             Assert.That(decision.Code, Is.EqualTo("capability_denied"));
-            Assert.That(host.AgentRequest, Is.Not.Null);
-            Assert.That(host.AgentRequest!.Descriptor, Is.SameAs(PermissionActionDescriptors.AgentAccess));
-            Assert.That(host.AgentRequest.Caller, Is.EqualTo(caller));
-            Assert.That(host.AgentRequest.Action.Capability, Is.EqualTo("manage_agents"));
-            Assert.That(host.AgentRequest.Action.TargetAgentId, Is.EqualTo(targetAgentId));
+            Assert.That(host.AgentCrossSidecarRequest, Is.Not.Null);
+            Assert.That(host.AgentCrossSidecarRequest!.Descriptor, Is.SameAs(PermissionActionDescriptors.AgentAccess));
+            Assert.That(host.AgentCrossSidecarRequest.Action.Capability, Is.EqualTo("manage_agents"));
+            Assert.That(host.AgentCrossSidecarRequest.Action.TargetAgentId, Is.EqualTo(targetAgentId));
+            Assert.That(host.CrossSidecarKeys, Is.EqualTo(["permission.agent-access"]));
         });
     }
 
@@ -117,7 +117,7 @@ public sealed class PermissionActionEntryTests
     }
 
     [Test]
-    public async Task HostEntryPreservesTheIssuedAuthorityContext()
+    public async Task HostEntryUsesTheRegisteredCrossSidecarPermissionRoute()
     {
         var host = new RecordingHostActionEntry
         {
@@ -135,16 +135,10 @@ public sealed class PermissionActionEntryTests
 
         Assert.Multiple(() =>
         {
-            Assert.That(host.AgentRequest, Is.Not.Null);
-            Assert.That(host.AgentRequest!.Context, Is.SameAs(hostContext));
-            Assert.That(host.AgentRequest.Caller, Is.EqualTo(caller));
-            Assert.That(host.AgentRequest.Features, Is.SameAs(hostContext.Features));
-            Assert.That(host.AgentRequest.TraceId, Is.EqualTo(hostContext.TraceId));
-            Assert.That(host.AgentRequest.IdempotencyKey, Is.EqualTo(hostContext.IdempotencyKey));
-            Assert.That(host.AgentRequest.Deadline, Is.EqualTo(hostContext.Deadline));
-            Assert.That(host.AgentRequest.Context.CapabilityId, Is.EqualTo(hostContext.CapabilityId));
-            Assert.That(host.AgentRequest.Context.CapabilityHandle, Is.EqualTo(hostContext.CapabilityHandle));
-            Assert.That(host.AgentRequest.Context.Ingress, Is.EqualTo(hostContext.Ingress));
+            Assert.That(host.AgentCrossSidecarRequest, Is.Not.Null);
+            Assert.That(host.AgentCrossSidecarRequest!.Descriptor, Is.SameAs(PermissionActionDescriptors.AgentAccess));
+            Assert.That(host.AgentCrossSidecarRequest.Action.Capability, Is.EqualTo("manage_agents"));
+            Assert.That(host.CrossSidecarKeys, Is.EqualTo(["permission.agent-access"]));
         });
     }
 
@@ -194,8 +188,8 @@ public sealed class PermissionActionEntryTests
             Assert.That(host.CrossSidecarKeys, Is.EqualTo([
                 "permission.context-access",
                 "permission.agent-access"]));
-            Assert.That(host.ContextRequest, Is.Null);
-            Assert.That(host.AgentRequest, Is.Null);
+            Assert.That(host.ContextCrossSidecarRequest, Is.Not.Null);
+            Assert.That(host.AgentCrossSidecarRequest, Is.Not.Null);
         });
     }
 
@@ -209,9 +203,9 @@ public sealed class PermissionActionEntryTests
 
         public ActionUncertainty? Uncertainty { get; set; }
 
-        public HostActionEntryRequest<PermissionContextAccessAction, PermissionDecision>? ContextRequest { get; private set; }
+        public ModuleCrossSidecarActionEntryRequest<PermissionContextAccessAction, PermissionDecision>? ContextCrossSidecarRequest { get; private set; }
 
-        public HostActionEntryRequest<PermissionAgentAccessAction, PermissionDecision>? AgentRequest { get; private set; }
+        public ModuleCrossSidecarActionEntryRequest<PermissionAgentAccessAction, PermissionDecision>? AgentCrossSidecarRequest { get; private set; }
 
         public List<string> CrossSidecarKeys { get; } = [];
 
@@ -220,11 +214,6 @@ public sealed class PermissionActionEntryTests
             IHostActionEntryTerminal<TAction, TResult> terminal,
             CancellationToken ct)
         {
-            if (request.Action is PermissionContextAccessAction)
-                ContextRequest = (HostActionEntryRequest<PermissionContextAccessAction, PermissionDecision>)(object)request;
-            else if (request.Action is PermissionAgentAccessAction)
-                AgentRequest = (HostActionEntryRequest<PermissionAgentAccessAction, PermissionDecision>)(object)request;
-
             return ValueTask.FromResult<IActionOutcome<TResult>>(
                 new TestActionOutcome<TResult>(
                     OutcomeKind,
@@ -249,6 +238,14 @@ public sealed class PermissionActionEntryTests
             CancellationToken ct)
         {
             CrossSidecarKeys.Add(request.Descriptor.Key.Value);
+            if (request.Action is PermissionContextAccessAction contextAction)
+                ContextCrossSidecarRequest = new ModuleCrossSidecarActionEntryRequest<PermissionContextAccessAction, PermissionDecision>(
+                    PermissionActionDescriptors.ContextAccess,
+                    contextAction);
+            else if (request.Action is PermissionAgentAccessAction agentAction)
+                AgentCrossSidecarRequest = new ModuleCrossSidecarActionEntryRequest<PermissionAgentAccessAction, PermissionDecision>(
+                    PermissionActionDescriptors.AgentAccess,
+                    agentAction);
             return ValueTask.FromResult<IActionOutcome<TResult>>(
                 new TestActionOutcome<TResult>(
                     OutcomeKind,

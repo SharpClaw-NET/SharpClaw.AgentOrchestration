@@ -212,7 +212,7 @@ public interface IPermissionActionGateway
 
 public sealed class PermissionActionGateway(
     HostModuleActionEntry entry,
-    PermissionApiActionExecutor executor) : IPermissionActionGateway
+    PermissionApiActionTerminal terminal) : IPermissionActionGateway
 {
     public ValueTask<JsonElement> ExecuteAsync(
         HostActionEntryRequestContext hostContext,
@@ -225,7 +225,7 @@ public sealed class PermissionActionGateway(
             TwoTierPermissionModule.ApiDescriptor,
             action,
             hostContext,
-            (context, terminalCt) => executor.ExecuteAsync(context, terminalCt),
+            terminal,
             ct);
     }
 }

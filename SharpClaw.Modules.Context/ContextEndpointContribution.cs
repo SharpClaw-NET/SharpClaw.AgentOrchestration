@@ -9,7 +9,7 @@ using SharpClaw.ModuleSDK;
 namespace SharpClaw.Modules.Context;
 
 public sealed class ContextEndpointContribution(
-    ContextApiActionExecutor executor) : IModuleEndpointHandler
+    ContextApiActionTerminal terminal) : IModuleEndpointHandler
 {
     private static readonly JsonElement EmptyPayload =
         JsonSerializer.SerializeToElement(new { });
@@ -120,7 +120,7 @@ public sealed class ContextEndpointContribution(
             invocation.HostActionContext);
         var outcome = await hostActionEntry.InvokeAsync(
             request,
-            new ContextApiActionTerminal(executor),
+            terminal,
             cancellationToken);
         return ToResult(outcome);
     }

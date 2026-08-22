@@ -9,7 +9,7 @@ using SharpClaw.ModuleSDK;
 namespace SharpClaw.Modules.TwoTierPermission;
 
 public sealed class PermissionEndpointContribution(
-    PermissionApiActionExecutor executor) : IModuleEndpointHandler
+    PermissionApiActionTerminal terminal) : IModuleEndpointHandler
 {
     private static readonly JsonElement EmptyPayload =
         JsonSerializer.SerializeToElement(new { });
@@ -90,7 +90,7 @@ public sealed class PermissionEndpointContribution(
             invocation.HostActionContext);
         var outcome = await hostActionEntry.InvokeAsync(
             request,
-            new PermissionApiActionTerminal(executor),
+            terminal,
             cancellationToken);
         return ToResult(outcome);
     }

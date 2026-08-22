@@ -268,23 +268,13 @@ public sealed class HostPermissionActionEntry(IHostActionEntry host) : IPermissi
         HostActionEntryRequestContext hostContext,
         CancellationToken ct)
     {
-        var request = new HostActionEntryRequest<TAction, PermissionDecision>(
-            descriptor,
-            action,
-            hostContext);
-        var outcome = await host.InvokeAsync(
-            request,
-            CreateUnavailableTerminal<TAction>(),
+        var outcome = await host.InvokeCrossSidecarAsync(
+            new ModuleCrossSidecarActionEntryRequest<TAction, PermissionDecision>(
+                descriptor,
+                action),
             ct);
         return RequireResult(descriptor.Key.Value, outcome, ct);
     }
-
-    private static IHostActionEntryTerminal<TAction, PermissionDecision>
-        CreateUnavailableTerminal<TAction>() =>
-        new DelegateHostActionEntryTerminal<TAction, PermissionDecision>(
-            (_, _) => ValueTask.FromException<PermissionDecision>(
-                new InvalidOperationException(
-                    "The host must provide the Permission action terminal.")));
 
     private static PermissionDecision RequireResult(
         string actionKey,

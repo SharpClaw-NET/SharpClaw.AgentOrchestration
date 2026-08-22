@@ -126,9 +126,9 @@ public sealed class ModuleCompositionTests
     {
         var expected = new[]
         {
-            ("Context.module.json", "sharpclaw_context", "SharpClaw.Modules.Context.ContextModule", "SharpClaw.Modules.Context.dll", "0.5.0-beta.3"),
-            ("TwoTierPermission.module.json", "sharpclaw_two_tier_permission", "SharpClaw.Modules.TwoTierPermission.TwoTierPermissionModule", "SharpClaw.Modules.TwoTierPermission.dll", "0.5.0-beta.3"),
-            ("Agents.module.json", "sharpclaw_agents", "SharpClaw.Modules.Agents.AgentsModule", "SharpClaw.Modules.Agents.dll", "0.5.0-beta.4"),
+        ("Context.module.json", "sharpclaw_context", "SharpClaw.Modules.Context.ContextModule", "SharpClaw.Modules.Context.dll", "0.5.0-beta.4"),
+        ("TwoTierPermission.module.json", "sharpclaw_two_tier_permission", "SharpClaw.Modules.TwoTierPermission.TwoTierPermissionModule", "SharpClaw.Modules.TwoTierPermission.dll", "0.5.0-beta.4"),
+        ("Agents.module.json", "sharpclaw_agents", "SharpClaw.Modules.Agents.AgentsModule", "SharpClaw.Modules.Agents.dll", "0.5.0-beta.5"),
         };
 
         foreach (var item in expected)
@@ -390,11 +390,17 @@ public sealed class ModuleCompositionTests
         var agentsCatalog = new AgentsCatalog(new InMemoryStorageGateway(), AllowAllEntry());
         var agentsExecutor = new AgentsApiActionExecutor(agentsCatalog, AllowAllEntry());
 
-        await new ContextActionGateway(new HostModuleActionEntry(host), contextExecutor)
+        await new ContextActionGateway(
+                new HostModuleActionEntry(host),
+                new ContextApiActionTerminal(contextExecutor))
             .ExecuteAsync(hostContext, ContextApiOperations.ListChannels, payload);
-        await new PermissionActionGateway(new HostModuleActionEntry(host), permissionExecutor)
+        await new PermissionActionGateway(
+                new HostModuleActionEntry(host),
+                new PermissionApiActionTerminal(permissionExecutor))
             .ExecuteAsync(hostContext, PermissionApiOperations.ListPolicies, payload);
-        await new AgentsActionGateway(new HostModuleActionEntry(host), agentsExecutor)
+        await new AgentsActionGateway(
+                new HostModuleActionEntry(host),
+                new AgentsApiActionTerminal(agentsExecutor))
             .ExecuteAsync(hostContext, AgentsApiOperations.ListAgents, payload);
 
         Assert.That(host.Keys, Is.EqualTo([
@@ -404,6 +410,10 @@ public sealed class ModuleCompositionTests
         ]));
         Assert.That(host.Contexts, Has.Exactly(3).Items);
         Assert.That(host.Contexts, Is.All.SameAs(hostContext));
+        Assert.That(host.TerminalTypes, Is.EqualTo([
+            typeof(ContextApiActionTerminal),
+            typeof(PermissionApiActionTerminal),
+            typeof(AgentsApiActionTerminal)]));
     }
 
     [Test]
@@ -2131,6 +2141,7 @@ public sealed class ModuleCompositionTests
     {
         public List<string> Keys { get; } = [];
         public List<HostActionEntryRequestContext> Contexts { get; } = [];
+        public List<Type> TerminalTypes { get; } = [];
         public PermissionDecision? PermissionResult { get; set; }
 
         public ValueTask<IActionOutcome<TResult>> InvokeAsync<TAction, TResult>(
@@ -2140,6 +2151,7 @@ public sealed class ModuleCompositionTests
         {
             Keys.Add(request.Descriptor.Key.Value);
             Contexts.Add(request.Context);
+            TerminalTypes.Add(terminal.GetType());
             var result = typeof(TResult) == typeof(JsonElement)
                 ? (TResult)(object)JsonSerializer.SerializeToElement(new { accepted = true })
                 : typeof(TResult) == typeof(PermissionDecision)
@@ -2157,6 +2169,7 @@ public sealed class ModuleCompositionTests
             IHostActionEntryTerminal<TAction, TResult> terminal,
             CancellationToken ct)
         {
+            TerminalTypes.Add(terminal.GetType());
             var result = typeof(TResult) == typeof(JsonElement)
                 ? (TResult)(object)JsonSerializer.SerializeToElement(new { accepted = true })
                 : typeof(TResult) == typeof(PermissionDecision)
@@ -2266,11 +2279,10 @@ public sealed class ModuleCompositionTests
                 PermissionContextAccessAction action =>
                     await policy.EvaluateDetailedAsync(action.Request, ct),
                 PermissionAgentAccessAction action =>
-                    await policy.EvaluateAgentDetailedAsync(
-                        RequestPrincipal.Anonymous,
-                        action.Capability,
-                        action.TargetAgentId,
-                        ct),
+                    PermissionDecision.Allow(
+                        "test_allowed",
+                        1,
+                        PermissionClearance.Independent),
                 _ => throw new InvalidOperationException(
                     $"The test host does not support '{request.Descriptor.Key.Value}'."),
             };
