@@ -4,11 +4,16 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using SharpClaw.Contracts.Modules;
+using SharpClaw.ModuleSDK;
 
 namespace SharpClaw.Modules.Agents;
 
-public sealed class AgentsEndpointContribution
+public sealed class AgentsEndpointContribution(
+    AgentsApiActionExecutor executor) : IModuleEndpointHandler
 {
+    private static readonly JsonElement EmptyPayload =
+        JsonSerializer.SerializeToElement(new { });
+
     public const string CreateRoute = "/sharpclaw/agents";
     public const string UpdateRoute = "/sharpclaw/agents/update";
     public const string WriteMemoryRoute = "/sharpclaw/agents/memory";
@@ -74,6 +79,22 @@ public sealed class AgentsEndpointContribution
         }
     }
 
+    public async ValueTask<ModuleEndpointResult> InvokeAsync(
+        HostEndpointInvocation invocation,
+        IHostActionEntry hostActionEntry,
+        CancellationToken cancellationToken)
+    {
+        var request = new HostActionEntryRequest<AgentsApiAction, JsonElement>(
+            AgentsModule.ApiDescriptor,
+            new AgentsApiAction(AgentsApiOperations.ListAgents, EmptyPayload),
+            invocation.HostActionContext);
+        var outcome = await hostActionEntry.InvokeAsync(
+            request,
+            new AgentsApiActionTerminal(executor),
+            cancellationToken);
+        return ToResult(outcome);
+    }
+
     private static async Task<IResult> DispatchAsync(
         string operation,
         HttpContext context,
@@ -112,6 +133,25 @@ public sealed class AgentsEndpointContribution
         InvalidOperationException operation => Results.NotFound(new { error = operation.Message }),
         _ => Results.StatusCode(StatusCodes.Status500InternalServerError),
     };
+
+    private static ModuleEndpointResult ToResult(IActionOutcome<JsonElement> outcome) =>
+        outcome.Kind switch
+        {
+            ActionOutcomeKind.Completed when outcome.Result is { } result =>
+                ModuleEndpointResult.Success(result),
+            ActionOutcomeKind.Cancelled => ModuleEndpointResult.Failure(
+                "endpoint_cancelled", "The agents endpoint action was cancelled."),
+            ActionOutcomeKind.Failed => ModuleEndpointResult.Failure(
+                outcome.Error?.Code ?? "endpoint_failed",
+                outcome.Error?.Message ?? "The agents endpoint action failed."),
+            ActionOutcomeKind.Uncertain => ModuleEndpointResult.Failure(
+                outcome.Uncertainty?.Code ?? "endpoint_uncertain",
+                outcome.Uncertainty?.Message ?? "The agents endpoint action is uncertain."),
+            ActionOutcomeKind.Deferred => ModuleEndpointResult.Failure(
+                "endpoint_deferred", "The agents endpoint action was deferred."),
+            _ => ModuleEndpointResult.Failure(
+                "endpoint_unknown", "The agents endpoint action returned an unknown outcome."),
+        };
 
     private sealed record RouteDefinition(string Path, string Method, string Operation);
 }

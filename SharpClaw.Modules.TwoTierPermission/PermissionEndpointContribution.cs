@@ -4,11 +4,16 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using SharpClaw.Contracts.Modules;
+using SharpClaw.ModuleSDK;
 
 namespace SharpClaw.Modules.TwoTierPermission;
 
-public sealed class PermissionEndpointContribution
+public sealed class PermissionEndpointContribution(
+    PermissionApiActionExecutor executor) : IModuleEndpointHandler
 {
+    private static readonly JsonElement EmptyPayload =
+        JsonSerializer.SerializeToElement(new { });
+
     public const string EvaluateRoute = "/sharpclaw/permission/evaluate";
     public const string GrantRoute = "/sharpclaw/permission/grants";
     public const string RevokeRoute = "/sharpclaw/permission/grants/revoke";
@@ -74,6 +79,22 @@ public sealed class PermissionEndpointContribution
         }
     }
 
+    public async ValueTask<ModuleEndpointResult> InvokeAsync(
+        HostEndpointInvocation invocation,
+        IHostActionEntry hostActionEntry,
+        CancellationToken cancellationToken)
+    {
+        var request = new HostActionEntryRequest<PermissionApiAction, JsonElement>(
+            TwoTierPermissionModule.ApiDescriptor,
+            new PermissionApiAction(PermissionApiOperations.ListPolicies, EmptyPayload),
+            invocation.HostActionContext);
+        var outcome = await hostActionEntry.InvokeAsync(
+            request,
+            new PermissionApiActionTerminal(executor),
+            cancellationToken);
+        return ToResult(outcome);
+    }
+
     private static async Task<IResult> DispatchAsync(
         string operation,
         HttpContext context,
@@ -112,6 +133,25 @@ public sealed class PermissionEndpointContribution
         InvalidOperationException operation => Results.NotFound(new { error = operation.Message }),
         _ => Results.StatusCode(StatusCodes.Status500InternalServerError),
     };
+
+    private static ModuleEndpointResult ToResult(IActionOutcome<JsonElement> outcome) =>
+        outcome.Kind switch
+        {
+            ActionOutcomeKind.Completed when outcome.Result is { } result =>
+                ModuleEndpointResult.Success(result),
+            ActionOutcomeKind.Cancelled => ModuleEndpointResult.Failure(
+                "endpoint_cancelled", "The permission endpoint action was cancelled."),
+            ActionOutcomeKind.Failed => ModuleEndpointResult.Failure(
+                outcome.Error?.Code ?? "endpoint_failed",
+                outcome.Error?.Message ?? "The permission endpoint action failed."),
+            ActionOutcomeKind.Uncertain => ModuleEndpointResult.Failure(
+                outcome.Uncertainty?.Code ?? "endpoint_uncertain",
+                outcome.Uncertainty?.Message ?? "The permission endpoint action is uncertain."),
+            ActionOutcomeKind.Deferred => ModuleEndpointResult.Failure(
+                "endpoint_deferred", "The permission endpoint action was deferred."),
+            _ => ModuleEndpointResult.Failure(
+                "endpoint_unknown", "The permission endpoint action returned an unknown outcome."),
+        };
 
     private sealed record RouteDefinition(string Path, string Method, string Operation);
 }

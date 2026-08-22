@@ -139,7 +139,7 @@ public sealed class ModuleCompositionTests
             Assert.Multiple(() =>
             {
                 Assert.That(root.GetProperty("id").GetString(), Is.EqualTo(item.Item2));
-                Assert.That(root.GetProperty("version").GetString(), Is.EqualTo("0.5.0-beta.2"));
+                Assert.That(root.GetProperty("version").GetString(), Is.EqualTo("0.5.0-beta.3"));
                 Assert.That(root.GetProperty("entryAssembly").GetString(), Is.EqualTo(item.Item4));
                 Assert.That(root.GetProperty("moduleType").GetString(), Is.EqualTo(item.Item3));
                 Assert.That(root.GetProperty("defaultEnabled").GetBoolean(), Is.True);
@@ -205,6 +205,28 @@ public sealed class ModuleCompositionTests
                 Assert.That(item.Routes, Is.All.Not.Empty);
             });
         }
+    }
+
+    [Test]
+    public void PublicEndpointContributionsImplementTheSidecarEndpointContract()
+    {
+        Assert.Multiple(() =>
+        {
+            Assert.That(typeof(IModuleEndpointHandler).IsAssignableFrom(typeof(ContextEndpointContribution)), Is.True);
+            Assert.That(typeof(IModuleEndpointHandler).IsAssignableFrom(typeof(PermissionEndpointContribution)), Is.True);
+            Assert.That(typeof(IModuleEndpointHandler).IsAssignableFrom(typeof(AgentsEndpointContribution)), Is.True);
+        });
+
+        var contextGraph = CompileModule(new ContextModule());
+        var permissionGraph = CompileModule(new TwoTierPermissionModule());
+        var agentsGraph = CompileModule(new AgentsModule());
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(contextGraph.Services.Any(item => item.ServiceType == typeof(ContextEndpointContribution)), Is.True);
+            Assert.That(permissionGraph.Services.Any(item => item.ServiceType == typeof(PermissionEndpointContribution)), Is.True);
+            Assert.That(agentsGraph.Services.Any(item => item.ServiceType == typeof(AgentsEndpointContribution)), Is.True);
+        });
     }
 
     [Test]
