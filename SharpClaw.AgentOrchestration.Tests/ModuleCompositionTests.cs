@@ -126,9 +126,9 @@ public sealed class ModuleCompositionTests
     {
         var expected = new[]
         {
-            ("Context.module.json", "sharpclaw_context", "SharpClaw.Modules.Context.ContextModule", "SharpClaw.Modules.Context.dll"),
-            ("TwoTierPermission.module.json", "sharpclaw_two_tier_permission", "SharpClaw.Modules.TwoTierPermission.TwoTierPermissionModule", "SharpClaw.Modules.TwoTierPermission.dll"),
-            ("Agents.module.json", "sharpclaw_agents", "SharpClaw.Modules.Agents.AgentsModule", "SharpClaw.Modules.Agents.dll"),
+            ("Context.module.json", "sharpclaw_context", "SharpClaw.Modules.Context.ContextModule", "SharpClaw.Modules.Context.dll", "0.5.0-beta.3"),
+            ("TwoTierPermission.module.json", "sharpclaw_two_tier_permission", "SharpClaw.Modules.TwoTierPermission.TwoTierPermissionModule", "SharpClaw.Modules.TwoTierPermission.dll", "0.5.0-beta.3"),
+            ("Agents.module.json", "sharpclaw_agents", "SharpClaw.Modules.Agents.AgentsModule", "SharpClaw.Modules.Agents.dll", "0.5.0-beta.4"),
         };
 
         foreach (var item in expected)
@@ -139,7 +139,7 @@ public sealed class ModuleCompositionTests
             Assert.Multiple(() =>
             {
                 Assert.That(root.GetProperty("id").GetString(), Is.EqualTo(item.Item2));
-                Assert.That(root.GetProperty("version").GetString(), Is.EqualTo("0.5.0-beta.3"));
+                Assert.That(root.GetProperty("version").GetString(), Is.EqualTo(item.Item5));
                 Assert.That(root.GetProperty("entryAssembly").GetString(), Is.EqualTo(item.Item4));
                 Assert.That(root.GetProperty("moduleType").GetString(), Is.EqualTo(item.Item3));
                 Assert.That(root.GetProperty("defaultEnabled").GetBoolean(), Is.True);
@@ -265,6 +265,7 @@ public sealed class ModuleCompositionTests
             Assert.That(contextGraph.Actions.Select(item => item.Descriptor.Key.Value), Does.Contain("context.api.dispatch"));
             Assert.That(permissionGraph.Actions.Select(item => item.Descriptor.Key.Value), Does.Contain("permission.api.dispatch"));
             Assert.That(agentsGraph.Actions.Select(item => item.Descriptor.Key.Value), Does.Contain("agents.api.dispatch"));
+            Assert.That(AgentsApiOperations.ImportAgentJobs, Is.EqualTo(AgentsModule.ImportAgentJobsAction));
         });
     }
 
@@ -403,6 +404,58 @@ public sealed class ModuleCompositionTests
         ]));
         Assert.That(host.Contexts, Has.Exactly(3).Items);
         Assert.That(host.Contexts, Is.All.SameAs(hostContext));
+    }
+
+    [Test]
+    public async Task AgentsApiActionExecutorRoutesAgentJobImportOperation()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var source = NeutralRecord(now, "queued");
+        var snapshot = new CanonicalJobsImportSnapshot(
+            "api-import",
+            now,
+            [source],
+            [new("legacy.agent", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1)]);
+        var caller = new RequestPrincipal(
+            "importer",
+            "Importer",
+            new HashSet<string>(["admin"]),
+            true);
+        var action = new AgentsApiAction(
+            AgentsApiOperations.ImportAgentJobs,
+            JsonSerializer.SerializeToElement(snapshot));
+        var context = new ActionContext<AgentsApiAction>(
+            Guid.NewGuid(),
+            null,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            0,
+            1,
+            now.AddMinutes(1),
+            AgentsModule.ApiDescriptor.Key,
+            AgentsModule.ModuleIdValue,
+            caller,
+            action,
+            ExtensionFeatureSet.Empty,
+            new ActionPipelineSnapshot("test", [], [], 16))
+        {
+            HostActionEntry = new RecordingHostActionEntry(),
+        };
+        var gateway = new InMemoryStorageGateway();
+        var executor = new AgentsApiActionExecutor(
+            new AgentsCatalog(gateway, AllowAllEntry()),
+            AllowAllEntry());
+
+        var result = await executor.ExecuteAsync(context);
+        var imported = result.Deserialize<List<AgentJob>>(
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(imported, Has.Count.EqualTo(1));
+            Assert.That(imported![0].Id, Is.EqualTo(source.SourceId));
+            Assert.That(imported[0].RecoveryMode, Is.EqualTo(AgentJobRecoveryModes.CanonicalHandler));
+        });
     }
 
     [Test]

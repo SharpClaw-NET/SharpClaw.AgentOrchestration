@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using SharpClaw.Contracts.Modules;
 
 namespace SharpClaw.Modules.Agents;
@@ -130,6 +131,7 @@ public sealed record CanonicalJobsImportSnapshot
         MappingHash = AgentsJobImportIntegrity.ComputeMappingHash(ActionMappings);
     }
 
+    [JsonConstructor]
     public CanonicalJobsImportSnapshot(
         string snapshotId,
         DateTimeOffset capturedAt,

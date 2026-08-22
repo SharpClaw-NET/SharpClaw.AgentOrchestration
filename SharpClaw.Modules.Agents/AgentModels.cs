@@ -95,6 +95,7 @@ public sealed record MemoryChangedEvent(
 
 public static class AgentsApiOperations
 {
+    public const string ImportAgentJobs = AgentsModule.ImportAgentJobsAction;
     public const string ListAgents = "agent.list";
     public const string GetAgent = "agent.get";
     public const string CreateAgent = "agent.create";

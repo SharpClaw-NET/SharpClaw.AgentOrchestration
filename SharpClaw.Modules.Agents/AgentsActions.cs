@@ -135,6 +135,11 @@ public sealed class AgentsApiActionExecutor(
                 StringValue(action.Payload, "query"),
                 ct,
                 null)),
+            AgentsApiOperations.ImportAgentJobs => Json(await catalog.ImportAgentJobsAsync(
+                caller,
+                Deserialize<CanonicalJobsImportSnapshot>(action.Payload),
+                ct,
+                null)),
             _ => throw new ArgumentException($"Unknown Agents operation '{action.Operation}'.", nameof(action)),
         };
     }
