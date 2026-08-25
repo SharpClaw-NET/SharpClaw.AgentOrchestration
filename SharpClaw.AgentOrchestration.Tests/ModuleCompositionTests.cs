@@ -2135,6 +2135,24 @@ public sealed class ModuleCompositionTests
                 snapshot);
             return await terminal(context, ct);
         }
+
+        public ValueTask<IActionOutcome<TResult>> RunExternalAsync<TAction, TResult>(
+            ActionDescriptor<TAction, TResult> descriptor,
+            TAction action,
+            Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,
+            ActionPipelineSnapshot snapshot,
+            SidecarExternalActionDispatchAuthority authority,
+            CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public ValueTask<TResult> RunExternalRequiredAsync<TAction, TResult>(
+            ActionDescriptor<TAction, TResult> descriptor,
+            TAction action,
+            Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,
+            ActionPipelineSnapshot snapshot,
+            SidecarExternalActionDispatchAuthority authority,
+            CancellationToken ct) =>
+            throw new NotSupportedException();
     }
 
     private sealed class RecordingHostActionEntry : IHostActionEntry, IModuleCrossSidecarActionEntry
