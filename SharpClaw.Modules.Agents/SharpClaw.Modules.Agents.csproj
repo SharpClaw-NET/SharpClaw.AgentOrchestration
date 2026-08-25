@@ -30,7 +30,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\SharpClaw.AgentOrchestration.Contracts\SharpClaw.AgentOrchestration.Contracts.csproj" />
+    <ProjectReference Include="..\SharpClaw.AgentOrchestration.Contracts\SharpClaw.AgentOrchestration.Contracts.csproj"
+                      GlobalPropertiesToRemove="Version;InformationalVersion" />
     <Content Include="module.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
