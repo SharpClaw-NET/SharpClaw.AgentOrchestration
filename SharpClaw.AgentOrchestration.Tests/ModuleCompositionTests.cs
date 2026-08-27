@@ -469,6 +469,116 @@ public sealed class ModuleCompositionTests
     }
 
     [Test]
+    public async Task AgentsJobImportUsesTypedPermissionClearanceForAuthorizedWorker()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var worker = new RequestPrincipal(
+            "22222222-2222-2222-2222-222222222222",
+            Roles: new HashSet<string>(["admin"]),
+            IsAuthenticated: true);
+        var gateway = new InMemoryStorageGateway();
+        var permissionStore = new PermissionPolicyStore(gateway);
+        var policy = new TwoTierPermissionPolicy(permissionStore);
+        await permissionStore.SaveAsync(new PermissionPolicyRecord(
+            worker.SubjectId,
+            [],
+            ["manage_agent_jobs"],
+            [],
+            PermissionClearance.Independent,
+            false,
+            [],
+            null,
+            now));
+        var storedPolicy = await permissionStore.GetAsync(worker.SubjectId);
+
+        var host = new TypedPermissionHostActionEntry(policy, worker);
+        var permission = new HostPermissionActionEntry(host);
+        var catalog = new AgentsCatalog(gateway, permission);
+        var executor = new AgentsApiActionExecutor(catalog, permission);
+        var source = NeutralRecord(now, "queued");
+        var snapshot = new CanonicalJobsImportSnapshot(
+            "authorized-api-import",
+            now,
+            [source],
+            [new("legacy.agent", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1)]);
+        var action = new AgentsApiAction(
+            AgentsApiOperations.ImportAgentJobs,
+            JsonSerializer.SerializeToElement(snapshot));
+
+        var result = await executor.ExecuteAsync(
+            CreateAgentsApiContext(worker, action, host, now));
+        var imported = result.Deserialize<List<AgentJob>>(
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var state = await catalog.GetAgentJobImportStateAsync(snapshot.SnapshotId);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(storedPolicy?.Capabilities, Does.Contain("manage_agent_jobs"));
+            Assert.That(storedPolicy?.Clearance, Is.EqualTo(PermissionClearance.Independent));
+            Assert.That(storedPolicy?.RequireSourceOptIn, Is.False);
+            Assert.That(storedPolicy?.Roles, Is.Empty);
+            Assert.That(host.LastCallerSubjectId, Is.EqualTo(worker.SubjectId));
+            Assert.That(host.LastCallerRoles, Is.EquivalentTo(new[] { "admin" }));
+            Assert.That(host.AgentAccessCalls, Is.EqualTo(1));
+            Assert.That(host.LastDescriptorKey, Is.EqualTo(PermissionActionDescriptors.AgentAccess.Key.Value));
+            Assert.That(host.LastAction?.Capability, Is.EqualTo("manage_agent_jobs"));
+            Assert.That(host.LastDecision?.Allowed, Is.True);
+            Assert.That(host.LastDecision?.Code, Is.EqualTo("administrator"));
+            Assert.That(host.LastDecision?.Tier, Is.EqualTo(2));
+            Assert.That(host.LastDecision?.Clearance, Is.EqualTo(PermissionClearance.Independent));
+            Assert.That(imported, Has.Count.EqualTo(1));
+            Assert.That(state?.Completed, Is.True);
+        });
+    }
+
+    [Test]
+    public async Task AgentsJobImportDeniesUngrantedWorkerBeforeAgentWrites()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var worker = new RequestPrincipal(
+            "33333333-3333-3333-3333-333333333333",
+            IsAuthenticated: true);
+        var gateway = new InMemoryStorageGateway();
+        var host = new TypedPermissionHostActionEntry(
+            new TwoTierPermissionPolicy(new PermissionPolicyStore(gateway)),
+            worker);
+        var permission = new HostPermissionActionEntry(host);
+        var catalog = new AgentsCatalog(gateway, permission);
+        var executor = new AgentsApiActionExecutor(catalog, permission);
+        var source = NeutralRecord(now, "queued");
+        var snapshot = new CanonicalJobsImportSnapshot(
+            "denied-api-import",
+            now,
+            [source],
+            [new("legacy.agent", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1)]);
+        var action = new AgentsApiAction(
+            AgentsApiOperations.ImportAgentJobs,
+            JsonSerializer.SerializeToElement(snapshot));
+
+        var exception = Assert.ThrowsAsync<UnauthorizedAccessException>(async () =>
+            await executor.ExecuteAsync(CreateAgentsApiContext(worker, action, host, now)));
+        var jobs = await catalog.ListAgentJobsAsync();
+        var state = await catalog.GetAgentJobImportStateAsync(snapshot.SnapshotId);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(exception!.Message, Is.EqualTo("The caller has no usable clearance."));
+            Assert.That(host.LastCallerSubjectId, Is.EqualTo(worker.SubjectId));
+            Assert.That(host.LastCallerRoles, Is.Null);
+            Assert.That(host.AgentAccessCalls, Is.EqualTo(1));
+            Assert.That(host.LastDescriptorKey, Is.EqualTo(PermissionActionDescriptors.AgentAccess.Key.Value));
+            Assert.That(host.LastAction?.Capability, Is.EqualTo("manage_agent_jobs"));
+            Assert.That(host.LastDecision?.Allowed, Is.False);
+            Assert.That(host.LastDecision?.Code, Is.EqualTo("clearance_denied"));
+            Assert.That(host.LastDecision?.Tier, Is.EqualTo(1));
+            Assert.That(host.LastDecision?.Message, Is.EqualTo("The caller has no usable clearance."));
+            Assert.That(host.LastDecision?.Clearance, Is.EqualTo(PermissionClearance.Unset));
+            Assert.That(jobs, Is.Empty);
+            Assert.That(state, Is.Null);
+        });
+    }
+
+    [Test]
     public async Task ContextCliPassesTheIssuedAuthorityContextToTheTypedAction()
     {
         var gateway = new RecordingContextGateway();
@@ -1792,6 +1902,29 @@ public sealed class ModuleCompositionTests
             error,
             resultAuthority);
 
+    private static ActionContext<AgentsApiAction> CreateAgentsApiContext(
+        RequestPrincipal caller,
+        AgentsApiAction action,
+        IHostActionEntry hostEntry,
+        DateTimeOffset now) =>
+        new(
+            Guid.NewGuid(),
+            null,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            0,
+            1,
+            now.AddMinutes(1),
+            AgentsModule.ApiDescriptor.Key,
+            AgentsModule.ModuleIdValue,
+            caller,
+            action,
+            ExtensionFeatureSet.Empty,
+            new ActionPipelineSnapshot("test", [], [], 16))
+        {
+            HostActionEntry = hostEntry,
+        };
+
     [Test]
     public async Task DirectChatFailsClosedWithoutHostActionContext()
     {
@@ -2233,6 +2366,76 @@ public sealed class ModuleCompositionTests
 
     private static HostPermissionActionEntry PolicyEntry(TwoTierPermissionPolicy policy) =>
         new(new PolicyHostActionEntry(policy));
+
+    private sealed class TypedPermissionHostActionEntry(
+        TwoTierPermissionPolicy policy,
+        RequestPrincipal caller) : IHostActionEntry, IModuleCrossSidecarActionEntry
+    {
+        private readonly PermissionAgentAccessActionTerminal _terminal =
+            new(new PermissionActionExecutor(policy));
+
+        public int AgentAccessCalls { get; private set; }
+
+        public string? LastCallerSubjectId { get; private set; }
+
+        public IReadOnlyList<string>? LastCallerRoles { get; private set; }
+
+        public string? LastDescriptorKey { get; private set; }
+
+        public PermissionAgentAccessAction? LastAction { get; private set; }
+
+        public PermissionDecision? LastDecision { get; private set; }
+
+        public ValueTask<IActionOutcome<TResult>> InvokeAsync<TAction, TResult>(
+            HostActionEntryRequest<TAction, TResult> request,
+            IHostActionEntryTerminal<TAction, TResult> terminal,
+            CancellationToken ct) =>
+            throw new NotSupportedException("The test host supports only cross-sidecar Permission calls.");
+
+        public ValueTask<IActionOutcome<TResult>> InvokeNestedAsync<TParentAction, TAction, TResult>(
+            HostActionEntryNestedRequest<TParentAction, TAction, TResult> request,
+            IHostActionEntryTerminal<TAction, TResult> terminal,
+            CancellationToken ct) =>
+            throw new NotSupportedException("The test host supports only cross-sidecar Permission calls.");
+
+        public async ValueTask<IActionOutcome<TResult>> InvokeCrossSidecarAsync<TAction, TResult>(
+            ModuleCrossSidecarActionEntryRequest<TAction, TResult> request,
+            CancellationToken ct)
+        {
+            if (request.Action is not PermissionAgentAccessAction action
+                || typeof(TResult) != typeof(PermissionDecision)
+                || !ReferenceEquals(request.Descriptor, PermissionActionDescriptors.AgentAccess))
+            {
+                throw new InvalidOperationException(
+                    $"The test host does not support '{request.Descriptor.Key.Value}'.");
+            }
+
+            AgentAccessCalls++;
+            LastCallerSubjectId = caller.SubjectId;
+            LastCallerRoles = caller.Roles?.ToArray();
+            LastDescriptorKey = request.Descriptor.Key.Value;
+            LastAction = action;
+            var now = DateTimeOffset.UtcNow;
+            var context = new ActionContext<PermissionAgentAccessAction>(
+                Guid.NewGuid(),
+                null,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                0,
+                1,
+                now.AddMinutes(1),
+                PermissionActionDescriptors.AgentAccess.Key,
+                TwoTierPermissionModule.ModuleIdValue,
+                caller,
+                action,
+                ExtensionFeatureSet.Empty,
+                new ActionPipelineSnapshot("test", [], [], 16));
+            LastDecision = await _terminal.InvokeAsync(context, ct);
+            return new HostActionOutcome<TResult>(
+                ActionOutcomeKind.Completed,
+                (TResult)(object)LastDecision);
+        }
+    }
 
     private sealed class PolicyHostActionEntry(TwoTierPermissionPolicy policy) : IHostActionEntry, IModuleCrossSidecarActionEntry
     {
