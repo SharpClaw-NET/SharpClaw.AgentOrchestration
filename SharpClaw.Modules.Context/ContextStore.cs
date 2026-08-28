@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using SharpClaw.Contracts.Modules;
 using SharpClaw.Contracts.Providers;
@@ -12,6 +13,7 @@ public sealed class ContextStore : IConversationStore
     public const string ContextsStorage = "contexts";
     public const string ThreadsStorage = "threads";
     public const string MessagesStorage = "messages";
+    public const string SteeringStorage = "steering";
 
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web) { PropertyNameCaseInsensitive = true };
@@ -20,6 +22,7 @@ public sealed class ContextStore : IConversationStore
     private readonly ModuleDocumentStore<ContextRecord> _contexts;
     private readonly ModuleDocumentStore<ContextThreadRecord> _threads;
     private readonly ModuleDocumentStore<ContextMessageRecord> _messages;
+    private readonly ModuleDocumentStore<ContextSteeringRecord> _steering;
     private readonly HostPermissionActionEntry _permission;
     private readonly AsyncLocal<IModuleActionAuthorization?> _authorization = new();
 
@@ -31,6 +34,7 @@ public sealed class ContextStore : IConversationStore
         _contexts = new(gateway, ModuleId, ContextsStorage, $"{ModuleId}:{ContextsStorage}", JsonOptions);
         _threads = new(gateway, ModuleId, ThreadsStorage, $"{ModuleId}:{ThreadsStorage}", JsonOptions);
         _messages = new(gateway, ModuleId, MessagesStorage, $"{ModuleId}:{MessagesStorage}", JsonOptions);
+        _steering = new(gateway, ModuleId, SteeringStorage, $"{ModuleId}:{SteeringStorage}", JsonOptions);
         _permission = permission;
     }
 
@@ -50,6 +54,123 @@ public sealed class ContextStore : IConversationStore
 
     internal Task<ContextRecord?> GetContextAsync(Guid id, CancellationToken ct = default) =>
         _contexts.GetAsync(Key(id), ct);
+
+    internal async Task<ContextSteeringRecord> RecordSteeringAsync(
+        ActionContext<ContextRecordSteeringAction> actionContext,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(actionContext);
+        ct.ThrowIfCancellationRequested();
+        var caller = actionContext.Caller;
+        var action = actionContext.Action;
+        RequireAuthenticatedAgent(caller);
+        var normalized = ValidateAndNormalizeSteeringAction(action);
+        var target = await ResolveSteeringTargetAsync(action.ChannelId, action.ThreadId, ct);
+        await RequireAllowedAsync(
+            caller,
+            target.Channel,
+            target.Context?.Id,
+            ContextAccessCapabilities.CommitExchange,
+            ct);
+        ct.ThrowIfCancellationRequested();
+
+        var recordId = actionContext.IdempotencyKey;
+        if (recordId == Guid.Empty)
+            throw new InvalidOperationException(
+                "The steering action has no host-issued idempotency identity.");
+        var existing = await _steering.GetRecordAsync(Key(recordId), ct);
+        if (existing is not null)
+        {
+            var replay = existing.Value
+                ?? throw new InvalidOperationException(
+                    $"The steering record '{recordId}' has no stored value.");
+            var expectedReplay = replay with
+            {
+                ChannelId = normalized.ChannelId,
+                ThreadId = normalized.ThreadId,
+                Source = normalized.Source,
+                Category = normalized.Category,
+                Summary = normalized.Summary,
+                Details = normalized.Details,
+                ClientType = normalized.ClientType,
+                Caller = caller,
+            };
+            if (SteeringRecordsEqual(replay, expectedReplay))
+                return replay;
+            throw new InvalidOperationException(
+                $"The steering action '{recordId}' replay conflicts with stored data.");
+        }
+
+        var record = new ContextSteeringRecord(
+            recordId,
+            normalized.ChannelId,
+            normalized.ThreadId,
+            normalized.Source,
+            normalized.Category,
+            normalized.Summary,
+            normalized.Details,
+            normalized.ClientType,
+            caller,
+            DateTimeOffset.UtcNow);
+
+        try
+        {
+            await _steering.UpsertAsync(
+                Key(record.Id),
+                record,
+                SteeringIndexes(record),
+                expectedRevision: 0,
+                ct: ct);
+        }
+        catch (Exception error) when (error is InvalidOperationException or IOException)
+        {
+            var raced = await _steering.GetRecordAsync(Key(record.Id), ct);
+            if (raced?.Value is { } racedValue
+                && SteeringActionMatches(
+                    racedValue,
+                    record.Id,
+                    normalized,
+                    caller))
+                return racedValue;
+            throw;
+        }
+
+        var persisted = await _steering.GetRecordAsync(Key(record.Id), ct);
+        if (persisted?.Value is not { } persistedValue
+            || !SteeringRecordsEqual(persistedValue, record))
+            throw new InvalidOperationException(
+                $"The steering record '{record.Id}' was not stored as requested.");
+        return persistedValue;
+    }
+
+    internal async Task<IReadOnlyList<ContextSteeringRecord>> ListSteeringAsync(
+        RequestPrincipal caller,
+        ContextListSteeringAction action,
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
+    {
+        ct.ThrowIfCancellationRequested();
+        RequireAuthenticatedAgent(caller);
+        if (action.ChannelId == Guid.Empty)
+            throw new ArgumentException("A channel id is required.", nameof(action));
+        if (action.ThreadId == Guid.Empty)
+            throw new ArgumentException("A thread id cannot be empty.", nameof(action));
+
+        var target = await ResolveSteeringTargetAsync(action.ChannelId, action.ThreadId, ct);
+        await RequireAllowedAsync(
+            caller,
+            target.Channel,
+            target.Context?.Id,
+            ContextAccessCapabilities.ReadHistory,
+            ct,
+            hostContext);
+        ct.ThrowIfCancellationRequested();
+        return await QuerySteeringAsync(
+            action.ChannelId,
+            action.ThreadId,
+            Math.Clamp(action.MaxRecords, 1, 200),
+            ct);
+    }
 
     internal async Task<ContextChannelRecord> EnsureConversationChannelAsync(
         RequestPrincipal caller,
@@ -705,6 +826,65 @@ public sealed class ContextStore : IConversationStore
             .ToArray();
     }
 
+    internal async Task<IReadOnlyList<ContextSteeringRecord>> LoadSteeringForThreadAsync(
+        RequestPrincipal caller,
+        Guid threadId,
+        int maxRecords,
+        CancellationToken ct = default,
+        HostActionEntryRequestContext? hostContext = null)
+    {
+        ct.ThrowIfCancellationRequested();
+        RequireAuthenticatedAgent(caller);
+        if (threadId == Guid.Empty)
+            throw new ArgumentException("A thread id is required.", nameof(threadId));
+
+        var thread = await GetThreadAsync(threadId, ct)
+            ?? throw new InvalidOperationException("The conversation thread was not found.");
+        var target = await ResolveSteeringTargetAsync(thread.ChannelId, threadId, ct);
+        await RequireAllowedAsync(
+            caller,
+            target.Channel,
+            target.Context?.Id,
+            ContextAccessCapabilities.ReadHistory,
+            ct,
+            hostContext);
+        ct.ThrowIfCancellationRequested();
+
+        var limit = Math.Clamp(maxRecords, 1, 200);
+        var channelRecords = await QuerySteeringScopeAsync(
+            thread.ChannelId,
+            null,
+            limit,
+            ct);
+        var threadRecords = await QuerySteeringScopeAsync(
+            thread.ChannelId,
+            threadId,
+            limit,
+            ct);
+        return MergeSteeringRecords(channelRecords, threadRecords, limit);
+    }
+
+    internal static string FormatSteering(ContextSteeringRecord record) =>
+        JsonSerializer.Serialize(new
+        {
+            id = record.Id,
+            channelId = record.ChannelId,
+            threadId = record.ThreadId,
+            source = record.Source,
+            category = record.Category,
+            summary = record.Summary,
+            details = record.Details,
+            clientType = record.ClientType,
+            caller = new
+            {
+                subjectId = record.Caller.SubjectId,
+                displayName = record.Caller.DisplayName,
+                roles = record.Caller.Roles?.OrderBy(role => role, StringComparer.Ordinal).ToArray(),
+                isAuthenticated = record.Caller.IsAuthenticated,
+            },
+            createdAt = record.CreatedAt,
+        }, JsonOptions);
+
     public ValueTask<IReadOnlyList<ChatCompletionMessage>> LoadHistoryAsync(
         Guid conversationId,
         CancellationToken ct)
@@ -984,6 +1164,185 @@ public sealed class ContextStore : IConversationStore
         return contextId is { } id
             ? await GetContextAsync(id, ct)
             : null;
+    }
+
+    private async Task<(ContextChannelRecord Channel, ContextRecord? Context)> ResolveSteeringTargetAsync(
+        Guid channelId,
+        Guid? threadId,
+        CancellationToken ct)
+    {
+        if (channelId == Guid.Empty)
+            throw new ArgumentException("A channel id is required.", nameof(channelId));
+        if (threadId == Guid.Empty)
+            throw new ArgumentException("A thread id cannot be empty.", nameof(threadId));
+
+        var channel = await GetChannelAsync(channelId, ct)
+            ?? throw new InvalidOperationException("The steering channel was not found.");
+        if (threadId is { } requestedThreadId)
+        {
+            var thread = await GetThreadAsync(requestedThreadId, ct)
+                ?? throw new InvalidOperationException("The steering thread was not found.");
+            if (thread.ChannelId != channelId)
+                throw new InvalidOperationException(
+                    "The steering thread does not belong to the specified channel.");
+            return (channel, await ResolveContextAsync(channel, thread, ct));
+        }
+
+        var context = channel.ContextId is { } contextId
+            ? await GetContextAsync(contextId, ct)
+            : null;
+        return (channel, context);
+    }
+
+    private async Task<IReadOnlyList<ContextSteeringRecord>> QuerySteeringAsync(
+        Guid channelId,
+        Guid? threadId,
+        int maxRecords,
+        CancellationToken ct)
+    {
+        return await QuerySteeringScopeAsync(channelId, threadId, maxRecords, ct);
+    }
+
+    private async Task<IReadOnlyList<ContextSteeringRecord>> QuerySteeringScopeAsync(
+        Guid channelId,
+        Guid? threadId,
+        int maxRecords,
+        CancellationToken ct)
+    {
+        var scope = threadId is null ? "channel" : "thread";
+        var query = _steering.Query()
+            .WhereIndex("channelId").EqualTo(channelId.ToString("N"))
+            .WhereIndex("scope").EqualTo(scope);
+        if (threadId is { } targetThreadId)
+            query = query.WhereIndex("threadId").EqualTo(targetThreadId.ToString("N"));
+        var records = await query
+            .OrderByIndexDescending("createdAtId")
+            .Take(maxRecords)
+            .ToListAsync(ct);
+        return records
+            .OrderByDescending(record => record.CreatedAt)
+            .ThenByDescending(record => record.Id.ToString("N"), StringComparer.Ordinal)
+            .Take(maxRecords)
+            .ToArray();
+    }
+
+    private static IReadOnlyList<ContextSteeringRecord> MergeSteeringRecords(
+        IReadOnlyList<ContextSteeringRecord> channelRecords,
+        IReadOnlyList<ContextSteeringRecord> threadRecords,
+        int maxRecords)
+    {
+        return channelRecords.Concat(threadRecords)
+            .OrderByDescending(record => record.CreatedAt)
+            .ThenByDescending(record => record.Id.ToString("N"), StringComparer.Ordinal)
+            .Take(maxRecords)
+            .OrderBy(record => record.CreatedAt)
+            .ThenBy(record => record.Id.ToString("N"), StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private static object SteeringIndexes(ContextSteeringRecord record) => new
+    {
+        channelId = record.ChannelId.ToString("N"),
+        threadId = record.ThreadId?.ToString("N"),
+        scope = record.ThreadId is null ? "channel" : "thread",
+        source = record.Source,
+        category = record.Category,
+        createdAt = record.CreatedAt,
+        createdAtId = SteeringOrderKey(record),
+    };
+
+    private static string SteeringOrderKey(ContextSteeringRecord record) =>
+        $"{record.CreatedAt.UtcDateTime.Ticks:D19}:{record.Id:N}";
+
+    private static ContextRecordSteeringAction ValidateAndNormalizeSteeringAction(
+        ContextRecordSteeringAction action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        if (action.ChannelId == Guid.Empty)
+            throw new ArgumentException("A steering record requires a channel id.", nameof(action));
+        if (action.ThreadId == Guid.Empty)
+            throw new ArgumentException("A steering thread id cannot be empty.", nameof(action));
+        var normalized = NormalizeSteeringAction(action);
+        EnsureTextLength(normalized.Source, 128, nameof(action.Source));
+        EnsureTextLength(normalized.Category, 128, nameof(action.Category));
+        EnsureTextLength(normalized.Summary, 8000, nameof(action.Summary));
+        EnsureTextLength(normalized.Details, 16000, nameof(action.Details));
+        EnsureTextLength(normalized.ClientType, 128, nameof(action.ClientType));
+        return normalized;
+    }
+
+    private static ContextRecordSteeringAction NormalizeSteeringAction(
+        ContextRecordSteeringAction action) =>
+        action with
+        {
+            Source = NormalizeRequired(action.Source, nameof(action.Source)),
+            Category = NormalizeRequired(action.Category, nameof(action.Category)),
+            Summary = NormalizeRequired(action.Summary, nameof(action.Summary)),
+            Details = NormalizeOptional(action.Details),
+            ClientType = NormalizeRequired(action.ClientType, nameof(action.ClientType)),
+        };
+
+    private static string NormalizeRequired(string? value, string name)
+    {
+        var normalized = value?.Normalize(NormalizationForm.FormC).Trim();
+        return string.IsNullOrWhiteSpace(normalized)
+            ? throw new ArgumentException($"A steering record requires {name}.", name)
+            : normalized;
+    }
+
+    private static string? NormalizeOptional(string? value)
+    {
+        if (value is null)
+            return null;
+        var normalized = value.Normalize(NormalizationForm.FormC).Trim();
+        return normalized.Length == 0 ? null : normalized;
+    }
+
+    private static void EnsureTextLength(string? value, int maxLength, string name)
+    {
+        if (value is not null && value.Length > maxLength)
+            throw new ArgumentException(
+                $"The steering field {name} cannot exceed {maxLength} characters.",
+                name);
+    }
+
+    private static bool SteeringRecordsEqual(
+        ContextSteeringRecord left,
+        ContextSteeringRecord right) =>
+        left.Id == right.Id
+        && left.ChannelId == right.ChannelId
+        && left.ThreadId == right.ThreadId
+        && string.Equals(left.Source, right.Source, StringComparison.Ordinal)
+        && string.Equals(left.Category, right.Category, StringComparison.Ordinal)
+        && string.Equals(left.Summary, right.Summary, StringComparison.Ordinal)
+        && string.Equals(left.Details, right.Details, StringComparison.Ordinal)
+        && string.Equals(left.ClientType, right.ClientType, StringComparison.Ordinal)
+        && left.CreatedAt == right.CreatedAt
+        && PrincipalsEqual(left.Caller, right.Caller);
+
+    private static bool SteeringActionMatches(
+        ContextSteeringRecord stored,
+        Guid id,
+        ContextRecordSteeringAction action,
+        RequestPrincipal caller) =>
+        stored.Id == id
+        && stored.ChannelId == action.ChannelId
+        && stored.ThreadId == action.ThreadId
+        && string.Equals(stored.Source, action.Source, StringComparison.Ordinal)
+        && string.Equals(stored.Category, action.Category, StringComparison.Ordinal)
+        && string.Equals(stored.Summary, action.Summary, StringComparison.Ordinal)
+        && string.Equals(stored.Details, action.Details, StringComparison.Ordinal)
+        && string.Equals(stored.ClientType, action.ClientType, StringComparison.Ordinal)
+        && PrincipalsEqual(stored.Caller, caller);
+
+    private static bool PrincipalsEqual(RequestPrincipal left, RequestPrincipal right)
+    {
+        var leftRoles = left.Roles ?? new HashSet<string>();
+        var rightRoles = right.Roles ?? new HashSet<string>();
+        return string.Equals(left.SubjectId, right.SubjectId, StringComparison.Ordinal)
+            && string.Equals(left.DisplayName, right.DisplayName, StringComparison.Ordinal)
+            && left.IsAuthenticated == right.IsAuthenticated
+            && leftRoles.SetEquals(rightRoles);
     }
 
     private static void RequireAuthenticatedAgent(RequestPrincipal? caller)

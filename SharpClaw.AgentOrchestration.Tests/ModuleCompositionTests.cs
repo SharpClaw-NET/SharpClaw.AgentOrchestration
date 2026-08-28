@@ -28,6 +28,8 @@ public sealed class ModuleCompositionTests
         var agentsGraph = CompileModule(agents);
         var contextCreate = GetAction<ContextCreateThreadAction, ContextThreadRecord>(contextGraph, "context.thread.create");
         var contextCommit = GetAction<ContextCommitExchangeAction, bool>(contextGraph, "context.conversation.commit");
+        var contextSteeringRecord = GetAction<ContextRecordSteeringAction, ContextSteeringRecord>(contextGraph, ContextSteeringActionKeys.Record);
+        var contextSteeringList = GetAction<ContextListSteeringAction, IReadOnlyList<ContextSteeringRecord>>(contextGraph, ContextSteeringActionKeys.List);
         var permissionGrant = GetAction<PermissionGrantAction, bool>(permissionGraph, "permission.grant");
         var agentsSaveSkill = GetAction<AgentsSaveSkillAction, SkillRecord>(agentsGraph, "agents.skill.save");
         var agentsRecordJob = GetAction<AgentsRecordJobAction, AgentJob>(agentsGraph, AgentsModule.RecordAgentJobAction);
@@ -44,7 +46,7 @@ public sealed class ModuleCompositionTests
             Assert.That(agents.Identity, Is.EqualTo(new ModuleIdentity(
                 "sharpclaw_agents", "SharpClaw Agents", "agents")));
             Assert.That(contextGraph.Storage.Select(item => item.StorageName), Is.EquivalentTo(
-                new[] { "channels", "contexts", "threads", "messages" }));
+                new[] { "channels", "contexts", "threads", "messages", "steering" }));
             Assert.That(permissionGraph.Storage.Select(item => item.StorageName), Is.EquivalentTo(
                 new[] { "policies", "grants", "approvals", "roles", "permission_sets" }));
             Assert.That(agentsGraph.Storage.Select(item => item.StorageName), Is.EquivalentTo(
@@ -60,6 +62,7 @@ public sealed class ModuleCompositionTests
             Assert.That(permissionGraph.Contracts.Where(item => item.IsExport).Select(item => item.ContractName),
                 Does.Not.Contain("sharpclaw.agent-access"));
             Assert.That(contextGraph.Services.Any(item => item.ServiceType == typeof(IContextActionExecutor)), Is.True);
+            Assert.That(contextGraph.Services.Any(item => item.ServiceType == typeof(IContextSteeringActionExecutor)), Is.True);
             Assert.That(contextGraph.Services.Any(item => item.ServiceType == typeof(HostPermissionActionEntry)), Is.True);
             Assert.That(permissionGraph.Services.Any(item => item.ServiceType == typeof(IPermissionActionExecutor)), Is.True);
             Assert.That(agentsGraph.Services.Any(item => item.ServiceType == typeof(IAgentsActionExecutor)), Is.True);
@@ -68,6 +71,8 @@ public sealed class ModuleCompositionTests
             Assert.That(contextCreate.SafePoints, Is.Not.Empty);
             Assert.That(contextCommit.Capabilities,
                 Is.EqualTo(ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel));
+            Assert.That(contextSteeringRecord.Key.Value, Is.EqualTo(ContextSteeringActionKeys.Record));
+            Assert.That(contextSteeringList.Key.Value, Is.EqualTo(ContextSteeringActionKeys.List));
             Assert.That(permissionGrant.SafePoints, Is.Not.Empty);
             Assert.That(permissionGraph.Actions.Any(item => ReferenceEquals(item.TypedDescriptor, PermissionActionDescriptors.ContextAccess)), Is.True);
             Assert.That(permissionGraph.Actions.Any(item => ReferenceEquals(item.TypedDescriptor, PermissionActionDescriptors.AgentAccess)), Is.True);
@@ -108,13 +113,21 @@ public sealed class ModuleCompositionTests
             Assert.That(agentsGraph.ActionHooks.Any(item => item.ActionKey?.Value == "permission.agent-access"
                 && item.HandlerType == typeof(AgentsPermissionActionHook)
                 && item.HookId == "permission.agent-access.host-entry"), Is.True);
-            Assert.That(contextGraph.ActionEntries.Select(item => item.Descriptor.Key.Value), Is.EqualTo([ContextModule.ApiDescriptor.Key.Value]));
+            Assert.That(contextGraph.ActionEntries.Select(item => item.Descriptor.Key.Value), Is.EqualTo([
+                ContextModule.ApiDescriptor.Key.Value,
+                ContextSteeringActionKeys.Record,
+                ContextSteeringActionKeys.List]));
             Assert.That(permissionGraph.ActionEntries.Select(item => item.Descriptor.Key.Value), Is.EquivalentTo([
                 TwoTierPermissionModule.ApiDescriptor.Key.Value,
                 PermissionActionDescriptors.ContextAccess.Key.Value,
                 PermissionActionDescriptors.AgentAccess.Key.Value]));
             Assert.That(agentsGraph.ActionEntries.Select(item => item.Descriptor.Key.Value), Is.EqualTo([AgentsModule.ApiDescriptor.Key.Value]));
-            Assert.That(contextGraph.ActionEntries.Single().TerminalType, Is.EqualTo(typeof(ContextApiActionTerminal)));
+            Assert.That(contextGraph.ActionEntries.Single(item => item.Descriptor.Key.Value == ContextModule.ApiDescriptor.Key.Value).TerminalType,
+                Is.EqualTo(typeof(ContextApiActionTerminal)));
+            Assert.That(contextGraph.ActionEntries.Single(item => item.Descriptor.Key.Value == ContextSteeringActionKeys.Record).TerminalType,
+                Is.EqualTo(typeof(ContextSteeringRecordActionTerminal)));
+            Assert.That(contextGraph.ActionEntries.Single(item => item.Descriptor.Key.Value == ContextSteeringActionKeys.List).TerminalType,
+                Is.EqualTo(typeof(ContextSteeringListActionTerminal)));
             Assert.That(permissionGraph.ActionEntries.Single(item => item.Descriptor.Key.Value == PermissionActionDescriptors.ContextAccess.Key.Value).TerminalType,
                 Is.EqualTo(typeof(PermissionContextAccessActionTerminal)));
             Assert.That(agentsGraph.ActionEntries.Single().TerminalType, Is.EqualTo(typeof(AgentsApiActionTerminal)));
@@ -2077,6 +2090,676 @@ public sealed class ModuleCompositionTests
         });
     }
 
+    [Test]
+    public async Task ContextSteeringRecordsUseExplicitTargetsAndScopedPermissions()
+    {
+        var fixture = await CreateSteeringFixtureAsync();
+        var hostContext = TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule);
+        var action = new ContextRecordSteeringAction(
+            fixture.Channel.Id,
+            null,
+            "  moduledevkit  ",
+            "  steering  ",
+            "  Use the channel architecture rules.  ",
+            "  Keep the current provider.  ",
+            "  ModuleDevKit  ");
+        var context = CreateSteeringContext(
+            hostContext,
+            ContextSteeringActionDescriptors.Record.Key,
+            action,
+            fixture.Host);
+
+        var record = await fixture.Executor.RecordAsync(context);
+        var listed = await fixture.Executor.ListAsync(
+            CreateSteeringContext(
+                hostContext,
+                ContextSteeringActionDescriptors.List.Key,
+                new ContextListSteeringAction(fixture.Channel.Id, MaxRecords: 10),
+                fixture.Host));
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(record.Id, Is.EqualTo(hostContext.IdempotencyKey));
+            Assert.That(record.ChannelId, Is.EqualTo(fixture.Channel.Id));
+            Assert.That(record.ThreadId, Is.Null);
+            Assert.That(record.Source, Is.EqualTo("moduledevkit"));
+            Assert.That(record.Category, Is.EqualTo("steering"));
+            Assert.That(record.Summary, Is.EqualTo("Use the channel architecture rules."));
+            Assert.That(record.Details, Is.EqualTo("Keep the current provider."));
+            Assert.That(record.ClientType, Is.EqualTo("ModuleDevKit"));
+            Assert.That(record.Caller.SubjectId, Is.EqualTo(fixture.Caller.SubjectId));
+            Assert.That(record.CreatedAt, Is.Not.EqualTo(default(DateTimeOffset)));
+            Assert.That(listed.Select(item => item.Id), Is.EqualTo([record.Id]));
+            Assert.That(fixture.Gateway.Count(ContextStore.ModuleId, ContextStore.SteeringStorage), Is.EqualTo(1));
+        });
+    }
+
+    [Test]
+    public async Task ContextSteeringThreadTargetRequiresTheSpecifiedChannel()
+    {
+        var fixture = await CreateSteeringFixtureAsync();
+        var thread = await fixture.Store.CreateThreadAsync(
+            fixture.Caller,
+            fixture.Channel.Id,
+            "Steering thread",
+            hostContext: TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule));
+        var hostContext = TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule);
+        var record = await fixture.Executor.RecordAsync(
+            CreateSteeringContext(
+                hostContext,
+                ContextSteeringActionDescriptors.Record.Key,
+                new ContextRecordSteeringAction(
+                    fixture.Channel.Id,
+                    thread.Id,
+                    "moduledevkit",
+                    "thread",
+                    "Thread steering",
+                    null,
+                    "ModuleDevKit"),
+                fixture.Host));
+        var listed = await fixture.Executor.ListAsync(
+            CreateSteeringContext(
+                TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule),
+                ContextSteeringActionDescriptors.List.Key,
+                new ContextListSteeringAction(fixture.Channel.Id, thread.Id, 10),
+                fixture.Host));
+
+        var otherChannel = new ContextChannelRecord(
+            Guid.NewGuid(),
+            "Other channel",
+            Guid.Parse(fixture.Caller.SubjectId),
+            null,
+            [],
+            [],
+            false,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow);
+        await fixture.Store.SaveChannelAsync(otherChannel);
+        var before = fixture.Gateway.UpsertCount;
+        var wrongTarget = new ContextRecordSteeringAction(
+            otherChannel.Id,
+            thread.Id,
+            "moduledevkit",
+            "thread",
+            "Wrong channel",
+            null,
+            "ModuleDevKit");
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(record.ThreadId, Is.EqualTo(thread.Id));
+            Assert.That(listed.Select(item => item.Id), Is.EqualTo([record.Id]));
+        });
+        Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await fixture.Executor.RecordAsync(
+                CreateSteeringContext(
+                    TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule),
+                    ContextSteeringActionDescriptors.Record.Key,
+                    wrongTarget,
+                    fixture.Host)));
+        Assert.That(fixture.Gateway.UpsertCount, Is.EqualTo(before));
+    }
+
+    [Test]
+    public async Task ContextSteeringReplayUsesHostIdempotencyAndRejectsChangedContent()
+    {
+        var fixture = await CreateSteeringFixtureAsync();
+        var hostContext = TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule);
+        var action = new ContextRecordSteeringAction(
+            fixture.Channel.Id,
+            null,
+            "moduledevkit",
+            "replay",
+            "Stable steering",
+            "Details",
+            "ModuleDevKit");
+        var first = await fixture.Executor.RecordAsync(
+            CreateSteeringContext(hostContext, ContextSteeringActionDescriptors.Record.Key, action, fixture.Host));
+        var beforeReplay = fixture.Gateway.UpsertCount;
+        var replay = await fixture.Executor.RecordAsync(
+            CreateSteeringContext(hostContext, ContextSteeringActionDescriptors.Record.Key, action, fixture.Host));
+        var changed = action with { Summary = "Changed steering" };
+
+        Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await fixture.Executor.RecordAsync(
+                CreateSteeringContext(hostContext, ContextSteeringActionDescriptors.Record.Key, changed, fixture.Host)));
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(replay.Id, Is.EqualTo(first.Id));
+            Assert.That(replay.CreatedAt, Is.EqualTo(first.CreatedAt));
+            Assert.That(fixture.Gateway.UpsertCount, Is.EqualTo(beforeReplay));
+            Assert.That(fixture.Gateway.Count(ContextStore.ModuleId, ContextStore.SteeringStorage), Is.EqualTo(1));
+        });
+    }
+
+    [Test]
+    public async Task ContextSteeringRejectsUnauthorizedAndCancelledWrites()
+    {
+        var fixture = await CreateSteeringFixtureAsync();
+        var before = fixture.Gateway.UpsertCount;
+        var unauthorized = new RequestPrincipal(
+            Guid.NewGuid().ToString("D"),
+            "Unassigned",
+            new HashSet<string>(["agent"]),
+            true);
+        var unauthorizedAction = new ContextRecordSteeringAction(
+            fixture.Channel.Id,
+            null,
+            "moduledevkit",
+            "security",
+            "Denied",
+            null,
+            "ModuleDevKit");
+
+        Assert.ThrowsAsync<UnauthorizedAccessException>(async () =>
+            await fixture.Executor.RecordAsync(
+                CreateSteeringContext(
+                    TestHostActionContext.Create(unauthorized, HostActionEntryIngress.CrossModule),
+                    ContextSteeringActionDescriptors.Record.Key,
+                    unauthorizedAction,
+                    fixture.Host)));
+
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await fixture.Executor.RecordAsync(
+                CreateSteeringContext(
+                    TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule),
+                    ContextSteeringActionDescriptors.Record.Key,
+                    unauthorizedAction,
+                    fixture.Host),
+                cancellation.Token));
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(fixture.Gateway.UpsertCount, Is.EqualTo(before));
+            Assert.That(fixture.Gateway.Count(ContextStore.ModuleId, ContextStore.SteeringStorage), Is.Zero);
+        });
+    }
+
+    [Test]
+    public async Task ContextSteeringAcceptsFieldMaximumsAndRejectsOverLimitWrites()
+    {
+        var fixture = await CreateSteeringFixtureAsync();
+        var acceptedActions = new[]
+        {
+            new ContextRecordSteeringAction(
+                fixture.Channel.Id,
+                null,
+                new string('s', 128),
+                "category",
+                "summary",
+                "details",
+                "client"),
+            new ContextRecordSteeringAction(
+                fixture.Channel.Id,
+                null,
+                "source",
+                new string('c', 128),
+                "summary",
+                "details",
+                "client"),
+            new ContextRecordSteeringAction(
+                fixture.Channel.Id,
+                null,
+                "source",
+                "category",
+                new string('m', 8000),
+                "details",
+                "client"),
+            new ContextRecordSteeringAction(
+                fixture.Channel.Id,
+                null,
+                "source",
+                "category",
+                "summary",
+                new string('d', 16000),
+                "client"),
+            new ContextRecordSteeringAction(
+                fixture.Channel.Id,
+                null,
+                "source",
+                "category",
+                "summary",
+                "details",
+                new string('t', 128)),
+        };
+        var acceptedRecords = new List<ContextSteeringRecord>();
+
+        foreach (var acceptedAction in acceptedActions)
+        {
+            acceptedRecords.Add(await fixture.Executor.RecordAsync(
+                CreateSteeringContext(
+                    TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule),
+                    ContextSteeringActionDescriptors.Record.Key,
+                    acceptedAction,
+                    fixture.Host)));
+        }
+
+        var beforeRejectedWrites = fixture.Gateway.UpsertCount;
+        var overLimitActions = new[]
+        {
+            acceptedActions[0] with { Source = new string('s', 129) },
+            acceptedActions[1] with { Category = new string('c', 129) },
+            acceptedActions[2] with { Summary = new string('m', 8001) },
+            acceptedActions[3] with { Details = new string('d', 16001) },
+            acceptedActions[4] with { ClientType = new string('t', 129) },
+        };
+
+        foreach (var overLimitAction in overLimitActions)
+        {
+            Assert.ThrowsAsync<ArgumentException>(async () =>
+                await fixture.Executor.RecordAsync(
+                    CreateSteeringContext(
+                        TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule),
+                        ContextSteeringActionDescriptors.Record.Key,
+                        overLimitAction,
+                        fixture.Host)));
+        }
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(acceptedRecords[0].Source, Has.Length.EqualTo(128));
+            Assert.That(acceptedRecords[1].Category, Has.Length.EqualTo(128));
+            Assert.That(acceptedRecords[2].Summary, Has.Length.EqualTo(8000));
+            Assert.That(acceptedRecords[3].Details, Has.Length.EqualTo(16000));
+            Assert.That(acceptedRecords[4].ClientType, Has.Length.EqualTo(128));
+            Assert.That(fixture.Gateway.Count(ContextStore.ModuleId, ContextStore.SteeringStorage), Is.EqualTo(5));
+            Assert.That(fixture.Gateway.UpsertCount, Is.EqualTo(beforeRejectedWrites));
+        });
+    }
+
+    [Test]
+    public async Task ContextSteeringAssemblyMergesBoundedChannelAndThreadRecords()
+    {
+        var fixture = await CreateSteeringFixtureAsync();
+        var thread = await fixture.Store.CreateThreadAsync(
+            fixture.Caller,
+            fixture.Channel.Id,
+            "Assembly thread",
+            hostContext: TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule));
+        var channelRecords = new List<ContextSteeringRecord>();
+        var threadRecords = new List<ContextSteeringRecord>();
+        for (var index = 0; index < 5; index++)
+        {
+            channelRecords.Add(await fixture.Executor.RecordAsync(
+                CreateSteeringContext(
+                    TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule),
+                    ContextSteeringActionDescriptors.Record.Key,
+                    new ContextRecordSteeringAction(
+                        fixture.Channel.Id,
+                        null,
+                        "moduledevkit",
+                        "channel",
+                        $"Channel {index}",
+                        null,
+                        "ModuleDevKit"),
+                    fixture.Host)));
+            threadRecords.Add(await fixture.Executor.RecordAsync(
+                CreateSteeringContext(
+                    TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule),
+                    ContextSteeringActionDescriptors.Record.Key,
+                    new ContextRecordSteeringAction(
+                        fixture.Channel.Id,
+                        thread.Id,
+                        "moduledevkit",
+                        "thread",
+                        $"Thread {index}",
+                        null,
+                        "ModuleDevKit"),
+                    fixture.Host)));
+        }
+
+        var assembled = await fixture.Store.LoadSteeringForThreadAsync(
+            fixture.Caller,
+            thread.Id,
+            4,
+            hostContext: TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule));
+        var newestChannel = channelRecords.OrderByDescending(item => item.CreatedAt).ThenByDescending(item => item.Id).First();
+        var newestThread = threadRecords.OrderByDescending(item => item.CreatedAt).ThenByDescending(item => item.Id).First();
+        var steeringQueries = fixture.Gateway.QueryLimits
+            .Where(item => item.Storage == ContextStore.SteeringStorage)
+            .ToArray();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(assembled, Has.Count.EqualTo(4));
+            Assert.That(assembled.Select(item => item.Id), Does.Contain(newestChannel.Id));
+            Assert.That(assembled.Select(item => item.Id), Does.Contain(newestThread.Id));
+            Assert.That(assembled.Select(item => item.CreatedAt), Is.Ordered.Ascending);
+            Assert.That(steeringQueries.Select(item => item.Limit), Is.EqualTo([4, 4]));
+        });
+    }
+
+    [Test]
+    public async Task ContextSteeringAssemblySelectsNewestGlobalUnion()
+    {
+        var fixture = await CreateSteeringFixtureAsync();
+        var thread = await fixture.Store.CreateThreadAsync(
+            fixture.Caller,
+            fixture.Channel.Id,
+            "Skewed assembly thread",
+            hostContext: TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule));
+        var oldChannel = new ContextSteeringRecord(
+            Guid.Parse("11111111-1111-4111-8111-111111111111"),
+            fixture.Channel.Id,
+            null,
+            "moduledevkit",
+            "channel",
+            "Old channel steering",
+            null,
+            "ModuleDevKit",
+            fixture.Caller,
+            DateTimeOffset.Parse("2026-08-28T09:00:00+00:00"));
+        SeedSteeringRecord(fixture.Gateway, oldChannel);
+        var threadRecords = new[]
+        {
+            new ContextSteeringRecord(
+                Guid.Parse("22222222-2222-4222-8222-222222222221"),
+                fixture.Channel.Id,
+                thread.Id,
+                "moduledevkit",
+                "thread",
+                "New thread steering 0",
+                null,
+                "ModuleDevKit",
+                fixture.Caller,
+                DateTimeOffset.Parse("2026-08-28T10:00:00+00:00")),
+            new ContextSteeringRecord(
+                Guid.Parse("22222222-2222-4222-8222-222222222222"),
+                fixture.Channel.Id,
+                thread.Id,
+                "moduledevkit",
+                "thread",
+                "New thread steering 1",
+                null,
+                "ModuleDevKit",
+                fixture.Caller,
+                DateTimeOffset.Parse("2026-08-28T11:00:00+00:00")),
+            new ContextSteeringRecord(
+                Guid.Parse("22222222-2222-4222-8222-222222222223"),
+                fixture.Channel.Id,
+                thread.Id,
+                "moduledevkit",
+                "thread",
+                "New thread steering 2",
+                null,
+                "ModuleDevKit",
+                fixture.Caller,
+                DateTimeOffset.Parse("2026-08-28T12:00:00+00:00")),
+        };
+        foreach (var record in threadRecords)
+            SeedSteeringRecord(fixture.Gateway, record);
+
+        var assembled = await fixture.Store.LoadSteeringForThreadAsync(
+            fixture.Caller,
+            thread.Id,
+            2,
+            hostContext: TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule));
+        var steeringQueries = fixture.Gateway.QueryLimits
+            .Where(item => item.Storage == ContextStore.SteeringStorage)
+            .TakeLast(2)
+            .ToArray();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(assembled, Has.Count.EqualTo(2));
+            Assert.That(assembled.Select(item => item.Id), Does.Not.Contain(oldChannel.Id));
+            Assert.That(assembled.All(item => item.ThreadId == thread.Id), Is.True);
+            Assert.That(assembled.Select(item => item.Id), Is.EqualTo(threadRecords.Skip(1).Select(item => item.Id)));
+            Assert.That(assembled.Select(item => item.CreatedAt), Is.Ordered.Ascending);
+            Assert.That(steeringQueries.Select(item => item.Limit), Is.EqualTo([2, 2]));
+        });
+    }
+
+    [Test]
+    public async Task ContextSteeringScopeOrderAppliesIdTieBreakBeforeLimit()
+    {
+        var fixture = await CreateSteeringFixtureAsync();
+        var createdAt = DateTimeOffset.Parse("2026-08-28T13:00:00+00:00");
+        var records = new[] { 2, 4, 1, 3 }
+            .Select(value => new ContextSteeringRecord(
+                Guid.Parse($"33333333-3333-4333-8333-33333333333{value}"),
+                fixture.Channel.Id,
+                null,
+                "moduledevkit",
+                "tie-order",
+                $"Tie record {value}",
+                null,
+                "ModuleDevKit",
+                fixture.Caller,
+                createdAt))
+            .ToArray();
+        foreach (var record in records)
+            SeedSteeringRecord(fixture.Gateway, record);
+
+        var selected = await fixture.Store.ListSteeringAsync(
+            fixture.Caller,
+            new ContextListSteeringAction(fixture.Channel.Id, null, 2),
+            hostContext: TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule));
+        var steeringQueries = fixture.Gateway.QueryLimits
+            .Where(item => item.Storage == ContextStore.SteeringStorage)
+            .ToArray();
+        var expectedIds = records
+            .OrderByDescending(record => record.Id.ToString("N"), StringComparer.Ordinal)
+            .Take(2)
+            .Select(record => record.Id)
+            .ToArray();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(selected.Select(record => record.Id), Is.EqualTo(expectedIds));
+            Assert.That(selected.Select(record => record.CreatedAt), Is.All.EqualTo(createdAt));
+            Assert.That(steeringQueries.Select(item => item.Limit), Is.EqualTo([2]));
+        });
+    }
+
+    [Test]
+    public async Task ContextSteeringConcurrentIdenticalReplayConvergesToStoredWinner()
+    {
+        var fixture = await CreateSteeringFixtureAsync();
+        var hostContext = TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule);
+        var action = new ContextRecordSteeringAction(
+            fixture.Channel.Id,
+            null,
+            "moduledevkit",
+            "concurrent",
+            "Concurrent steering",
+            "Stable details",
+            "ModuleDevKit");
+        var bothUpsertsEntered = new TaskCompletionSource<object?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseUpserts = new TaskCompletionSource<object?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var upsertsEntered = 0;
+        fixture.Gateway.BeforeOperationAsync = async (module, storage, operation) =>
+        {
+            if (module != ContextStore.ModuleId
+                || storage != ContextStore.SteeringStorage
+                || operation != ModuleStorageOperations.Upsert)
+                return;
+
+            if (Interlocked.Increment(ref upsertsEntered) == 2)
+                bothUpsertsEntered.TrySetResult(null);
+            await releaseUpserts.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        };
+
+        var firstTask = fixture.Executor.RecordAsync(
+            CreateSteeringContext(
+                hostContext,
+                ContextSteeringActionDescriptors.Record.Key,
+                action,
+                fixture.Host));
+        var secondTask = fixture.Executor.RecordAsync(
+            CreateSteeringContext(
+                hostContext,
+                ContextSteeringActionDescriptors.Record.Key,
+                action,
+                fixture.Host));
+
+        try
+        {
+            await bothUpsertsEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            releaseUpserts.TrySetResult(null);
+            var results = await Task.WhenAll(firstTask, secondTask)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Multiple(() =>
+            {
+                Assert.That(results, Has.Length.EqualTo(2));
+                Assert.That(results[0].Id, Is.EqualTo(results[1].Id));
+                Assert.That(results[0].CreatedAt, Is.EqualTo(results[1].CreatedAt));
+                Assert.That(results[0].Summary, Is.EqualTo(results[1].Summary));
+                Assert.That(
+                    ContextStore.FormatSteering(results[0]),
+                    Is.EqualTo(ContextStore.FormatSteering(results[1])));
+                Assert.That(fixture.Gateway.Count(
+                    ContextStore.ModuleId,
+                    ContextStore.SteeringStorage), Is.EqualTo(1));
+            });
+        }
+        finally
+        {
+            releaseUpserts.TrySetResult(null);
+            fixture.Gateway.BeforeOperationAsync = null;
+        }
+    }
+
+    private static void SeedSteeringRecord(
+        InMemoryStorageGateway gateway,
+        ContextSteeringRecord record) =>
+        gateway.Seed(
+            ContextStore.ModuleId,
+            ContextStore.SteeringStorage,
+            record.Id.ToString("N"),
+            record,
+            new
+            {
+                channelId = record.ChannelId.ToString("N"),
+                threadId = record.ThreadId?.ToString("N"),
+                scope = record.ThreadId is null ? "channel" : "thread",
+                source = record.Source,
+                category = record.Category,
+                createdAt = record.CreatedAt,
+                createdAtId = $"{record.CreatedAt.UtcDateTime.Ticks:D19}:{record.Id:N}",
+            });
+
+    [Test]
+    public async Task ContextSteeringAssemblyPayloadSortsCallerRolesDeterministically()
+    {
+        var fixture = await CreateSteeringFixtureAsync();
+        var firstCaller = new RequestPrincipal(
+            fixture.Caller.SubjectId,
+            fixture.Caller.DisplayName,
+            new HashSet<string>(["zulu", "alpha"]),
+            true);
+        var secondCaller = new RequestPrincipal(
+            fixture.Caller.SubjectId,
+            fixture.Caller.DisplayName,
+            new HashSet<string>(["alpha", "zulu"]),
+            true);
+        var record = new ContextSteeringRecord(
+            Guid.NewGuid(),
+            fixture.Channel.Id,
+            null,
+            "source",
+            "category",
+            "summary",
+            null,
+            "ModuleDevKit",
+            firstCaller,
+            DateTimeOffset.Parse("2026-08-28T10:00:00+00:00"));
+
+        var first = ContextStore.FormatSteering(record);
+        var second = ContextStore.FormatSteering(record with { Caller = secondCaller });
+
+        Assert.That(first, Is.EqualTo(second));
+        Assert.That(first.IndexOf("alpha", StringComparison.Ordinal), Is.LessThan(first.IndexOf("zulu", StringComparison.Ordinal)));
+    }
+
+    private static async Task<SteeringFixture> CreateSteeringFixtureAsync()
+    {
+        var gateway = new InMemoryStorageGateway();
+        var permissionStore = new PermissionPolicyStore(gateway);
+        var policy = new TwoTierPermissionPolicy(permissionStore);
+        var callerId = Guid.NewGuid();
+        var caller = new RequestPrincipal(
+            callerId.ToString("D"),
+            "Steering caller",
+            new HashSet<string>(["zulu", "alpha"]),
+            true);
+        var now = DateTimeOffset.UtcNow;
+        await permissionStore.SaveAsync(new PermissionPolicyRecord(
+            caller.SubjectId,
+            [],
+            [
+                ContextAccessCapabilities.CreateThread,
+                ContextAccessCapabilities.ReadHistory,
+                ContextAccessCapabilities.CommitExchange,
+            ],
+            [],
+            PermissionClearance.Independent,
+            false,
+            [],
+            null,
+            now));
+        var host = new PolicyHostActionEntry(policy);
+        var permission = new HostPermissionActionEntry(host);
+        var store = new ContextStore(gateway, permission);
+        var channel = new ContextChannelRecord(
+            Guid.NewGuid(),
+            "Steering channel",
+            callerId,
+            null,
+            [],
+            [],
+            false,
+            now,
+            now);
+        await store.SaveChannelAsync(channel);
+        return new SteeringFixture(
+            gateway,
+            permission,
+            store,
+            new ContextSteeringActionExecutor(store, permission),
+            caller,
+            channel,
+            host);
+    }
+
+    private static ActionContext<TAction> CreateSteeringContext<TAction>(
+        HostActionEntryRequestContext hostContext,
+        SharpClawActionKey actionKey,
+        TAction action,
+        IHostActionEntry hostEntry) =>
+        new(
+            hostContext.InvocationId,
+            hostContext.ParentInvocationId,
+            hostContext.TraceId,
+            hostContext.IdempotencyKey,
+            hostContext.Depth,
+            hostContext.Attempt,
+            hostContext.Deadline,
+            actionKey,
+            ContextModule.ModuleIdValue,
+            hostContext.Caller,
+            action,
+            hostContext.Features,
+            new ActionPipelineSnapshot("test", [], [], 16))
+        {
+            HostActionEntry = hostEntry,
+        };
+
+    private sealed record SteeringFixture(
+        InMemoryStorageGateway Gateway,
+        HostPermissionActionEntry Permission,
+        ContextStore Store,
+        ContextSteeringActionExecutor Executor,
+        RequestPrincipal Caller,
+        ContextChannelRecord Channel,
+        PolicyHostActionEntry Host);
+
     private static ModuleContributionGraph CompileModule(ISharpClawModule module) =>
         SharpClawModuleCompiler.Compile(
             module,
@@ -2568,10 +3251,51 @@ public sealed class ModuleCompositionTests
         private sealed record Entry(JsonElement Value, JsonElement Indexes, long Revision);
         private readonly object _sync = new();
         private readonly Dictionary<(string Module, string Storage, string Key), Entry> _records = [];
+        private readonly List<(string Storage, int Limit)> _queryLimits = [];
         private int _upsertCount;
 
         public int? FailAfterUpserts { get; set; }
         public Func<string, string, string, Task>? BeforeOperationAsync { get; set; }
+        public int UpsertCount
+        {
+            get
+            {
+                lock (_sync)
+                    return _upsertCount;
+            }
+        }
+
+        public IReadOnlyList<(string Storage, int Limit)> QueryLimits
+        {
+            get
+            {
+                lock (_sync)
+                    return _queryLimits.ToArray();
+            }
+        }
+
+        public int Count(string moduleId, string storageName)
+        {
+            lock (_sync)
+                return _records.Count(item => item.Key.Module == moduleId && item.Key.Storage == storageName);
+        }
+
+        public void Seed(
+            string moduleId,
+            string storageName,
+            string key,
+            object value,
+            object indexes,
+            long revision = 1)
+        {
+            lock (_sync)
+            {
+                _records[(moduleId, storageName, key)] = new(
+                    JsonSerializer.SerializeToElement(value),
+                    JsonSerializer.SerializeToElement(indexes),
+                    revision);
+            }
+        }
 
         public IReadOnlyList<ModuleStorageContractDescriptor> ListContracts() => [];
 
@@ -2682,6 +3406,7 @@ public sealed class ModuleCompositionTests
         {
             lock (_sync)
             {
+                var queryLimit = -1;
                 var records = _records.Where(item => item.Key.Module == prefix.Module && item.Key.Storage == prefix.Storage)
                     .Select(item => new { key = item.Key.Key, entry = item.Value })
                     .ToList();
@@ -2704,7 +3429,11 @@ public sealed class ModuleCompositionTests
                         : records.OrderBy(item => item.entry.Indexes.TryGetProperty(indexName, out var value) ? value.ToString() : "")).ToList();
                 }
                 if (parameters.TryGetProperty("limit", out var limit) && limit.ValueKind == JsonValueKind.Number && limit.TryGetInt32(out var count))
+                {
+                    queryLimit = count;
                     records = records.Take(count).ToList();
+                }
+                _queryLimits.Add((prefix.Storage, queryLimit));
                 return JsonSerializer.SerializeToElement(new
                 {
                     records = records.Select(item => new { key = item.key, value = item.entry.Value, revision = item.entry.Revision, indexes = item.entry.Indexes }),

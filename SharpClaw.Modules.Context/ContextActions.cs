@@ -78,6 +78,81 @@ public sealed class ContextActionExecutor(ContextStore store) : IContextActionEx
         store.CommitExchangeAsync(exchange, ct);
 }
 
+public interface IContextSteeringActionExecutor
+{
+    Task<ContextSteeringRecord> RecordAsync(
+        ActionContext<ContextRecordSteeringAction> actionContext,
+        CancellationToken ct = default);
+
+    Task<IReadOnlyList<ContextSteeringRecord>> ListAsync(
+        ActionContext<ContextListSteeringAction> actionContext,
+        CancellationToken ct = default);
+}
+
+public sealed class ContextSteeringActionExecutor(
+    ContextStore store,
+    HostPermissionActionEntry permission) : IContextSteeringActionExecutor
+{
+    public async Task<ContextSteeringRecord> RecordAsync(
+        ActionContext<ContextRecordSteeringAction> actionContext,
+        CancellationToken ct = default)
+    {
+        using var authorization = store.PushAuthorization(
+            new ModuleActionAuthorization<ContextRecordSteeringAction>(actionContext, permission));
+        return await store.RecordSteeringAsync(actionContext, ct);
+    }
+
+    public async Task<IReadOnlyList<ContextSteeringRecord>> ListAsync(
+        ActionContext<ContextListSteeringAction> actionContext,
+        CancellationToken ct = default)
+    {
+        using var authorization = store.PushAuthorization(
+            new ModuleActionAuthorization<ContextListSteeringAction>(actionContext, permission));
+        return await store.ListSteeringAsync(actionContext.Caller, actionContext.Action, ct);
+    }
+}
+
+public interface IContextSteeringActionGateway
+{
+    ValueTask<ContextSteeringRecord> RecordAsync(
+        HostActionEntryRequestContext hostContext,
+        ContextRecordSteeringAction action,
+        CancellationToken ct = default);
+
+    ValueTask<IReadOnlyList<ContextSteeringRecord>> ListAsync(
+        HostActionEntryRequestContext hostContext,
+        ContextListSteeringAction action,
+        CancellationToken ct = default);
+}
+
+public sealed class ContextSteeringActionGateway(
+    HostModuleActionEntry entry,
+    ContextSteeringRecordActionTerminal recordTerminal,
+    ContextSteeringListActionTerminal listTerminal) : IContextSteeringActionGateway
+{
+    public ValueTask<ContextSteeringRecord> RecordAsync(
+        HostActionEntryRequestContext hostContext,
+        ContextRecordSteeringAction action,
+        CancellationToken ct = default) =>
+        entry.InvokeAsync(
+            ContextSteeringActionDescriptors.Record,
+            action,
+            hostContext,
+            recordTerminal,
+            ct);
+
+    public ValueTask<IReadOnlyList<ContextSteeringRecord>> ListAsync(
+        HostActionEntryRequestContext hostContext,
+        ContextListSteeringAction action,
+        CancellationToken ct = default) =>
+        entry.InvokeAsync(
+            ContextSteeringActionDescriptors.List,
+            action,
+            hostContext,
+            listTerminal,
+            ct);
+}
+
 public sealed record ContextApiAction(
     string Operation,
     JsonElement Payload);

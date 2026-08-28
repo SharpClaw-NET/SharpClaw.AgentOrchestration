@@ -15,6 +15,8 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
     public const string ThreadChangedEvent = "context.thread.changed";
     public const string ExchangeCommittedEvent = "context.exchange.committed";
     public static readonly Guid ApiTerminalId = Guid.Parse("8f7be0a6-2f4d-5b72-9dc8-3ca4e9c2f001");
+    public static readonly Guid SteeringRecordTerminalId = Guid.Parse("8f7be0a6-2f4d-5b72-9dc8-3ca4e9c2f002");
+    public static readonly Guid SteeringListTerminalId = Guid.Parse("8f7be0a6-2f4d-5b72-9dc8-3ca4e9c2f003");
 
     private static readonly JsonElement EmptySchema = ToolSchemas.EmptyObject;
     private static readonly ActionRepeatPolicy RepeatPolicy =
@@ -55,6 +57,10 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
         module.Services.AddScoped<IChatContextContributor, ContextHistoryContributor>();
         module.Services.AddScoped<ContextToolHandler>();
         module.Services.AddScoped<IContextActionExecutor, ContextActionExecutor>();
+        module.Services.AddScoped<IContextSteeringActionExecutor, ContextSteeringActionExecutor>();
+        module.Services.AddScoped<ContextSteeringRecordActionTerminal>();
+        module.Services.AddScoped<ContextSteeringListActionTerminal>();
+        module.Services.AddScoped<IContextSteeringActionGateway, ContextSteeringActionGateway>();
         module.Services.AddScoped<ContextApiActionExecutor>();
         module.Services.AddScoped<ContextApiActionTerminal>();
         module.Services.AddScoped<ContextEndpointContribution>();
@@ -76,6 +82,14 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
         module.AddActionEntry<ContextApiAction, JsonElement, ContextApiActionTerminal>(
             ApiDescriptor,
             ApiTerminalId);
+        module.Actions.Add(ContextSteeringActionDescriptors.Record);
+        module.Actions.Add(ContextSteeringActionDescriptors.List);
+        module.AddActionEntry<ContextRecordSteeringAction, ContextSteeringRecord, ContextSteeringRecordActionTerminal>(
+            ContextSteeringActionDescriptors.Record,
+            SteeringRecordTerminalId);
+        module.AddActionEntry<ContextListSteeringAction, IReadOnlyList<ContextSteeringRecord>, ContextSteeringListActionTerminal>(
+            ContextSteeringActionDescriptors.List,
+            SteeringListTerminalId);
 
         module.Actions.Add(new ActionDescriptor<ContextCreateThreadAction, ContextThreadRecord>(
             new("context.thread.create"), 1, "context.thread",
@@ -164,6 +178,8 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
             [new("channelId", ModuleStorageIndexValueKind.String), new("contextId", ModuleStorageIndexValueKind.String), new("updatedAt", ModuleStorageIndexValueKind.DateTime)]),
         Storage(ContextStore.MessagesStorage, "Ordered conversation history records.",
             [new("threadId", ModuleStorageIndexValueKind.String), new("channelId", ModuleStorageIndexValueKind.String), new("createdAt", ModuleStorageIndexValueKind.DateTime)]),
+        Storage(ContextStore.SteeringStorage, "Explicit channel and thread steering records.",
+            [new("channelId", ModuleStorageIndexValueKind.String), new("threadId", ModuleStorageIndexValueKind.String), new("scope", ModuleStorageIndexValueKind.String), new("source", ModuleStorageIndexValueKind.String), new("category", ModuleStorageIndexValueKind.String), new("createdAt", ModuleStorageIndexValueKind.DateTime), new("createdAtId", ModuleStorageIndexValueKind.String)]),
     ];
 
     private static ModuleStorageContractDescriptor Storage(
