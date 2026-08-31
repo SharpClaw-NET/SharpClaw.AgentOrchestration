@@ -3,13 +3,27 @@
     <TargetFramework>net10.0</TargetFramework>
     <Version>0.5.0-beta.11</Version>
     <InformationalVersion>0.5.0-beta.11</InformationalVersion>
-    <IsPackable>false</IsPackable>
+    <IsPackable>true</IsPackable>
+    <PackageId>SharpClaw.AgentOrchestration.Contracts</PackageId>
+    <Title>SharpClaw Agent Orchestration Contracts</Title>
+    <Authors>SharpClaw-NET</Authors>
+    <Description>Neutral typed contracts shared by SharpClaw Agent Orchestration modules.</Description>
+    <PackageTags>sharpclaw;agents;context;permissions;contracts</PackageTags>
+    <PackageLicenseExpression>AGPL-3.0-only</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/SharpClaw-NET/SharpClaw.AgentOrchestration</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/SharpClaw-NET/SharpClaw.AgentOrchestration</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
     <AssemblyName>SharpClaw.AgentOrchestration.Contracts</AssemblyName>
     <RootNamespace>SharpClaw.Modules.AgentOrchestration.Contracts</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="SharpClaw.Contracts" />
-    <PackageReference Include="SharpClaw.ModuleSDK" PrivateAssets="all" IncludeAssets="compile;build;buildTransitive" />
+    <PackageReference Include="SharpClaw.ModuleSDK" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\README.md" Link="README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 </Project>
