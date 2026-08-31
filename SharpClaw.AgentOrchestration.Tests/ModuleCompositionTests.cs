@@ -134,24 +134,24 @@ public sealed class ModuleCompositionTests
     [Test]
     public void ManifestsUseCurrentThreeOwnerComposition()
     {
-        var expected = new[]
+        (string Manifest, string Id, string ModuleType, string Assembly, string Version)[] expected =
         {
-        ("Context.module.json", "sharpclaw_context", "SharpClaw.Modules.Context.ContextModule", "SharpClaw.Modules.Context.dll", "0.5.0-beta.10"),
-        ("TwoTierPermission.module.json", "sharpclaw_two_tier_permission", "SharpClaw.Modules.TwoTierPermission.TwoTierPermissionModule", "SharpClaw.Modules.TwoTierPermission.dll", "0.5.0-beta.10"),
-        ("Agents.module.json", "sharpclaw_agents", "SharpClaw.Modules.Agents.AgentsModule", "SharpClaw.Modules.Agents.dll", "0.5.0-beta.11"),
+        ("Context.module.json", "sharpclaw_context", "SharpClaw.Modules.Context.ContextModule", "SharpClaw.Modules.Context.dll", "0.5.0-beta.11"),
+        ("TwoTierPermission.module.json", "sharpclaw_two_tier_permission", "SharpClaw.Modules.TwoTierPermission.TwoTierPermissionModule", "SharpClaw.Modules.TwoTierPermission.dll", "0.5.0-beta.11"),
+        ("Agents.module.json", "sharpclaw_agents", "SharpClaw.Modules.Agents.AgentsModule", "SharpClaw.Modules.Agents.dll", "0.5.0-beta.12"),
         };
 
         foreach (var item in expected)
         {
-            var path = Path.Combine(TestContext.CurrentContext.TestDirectory, "manifests", item.Item1);
+            var path = Path.Combine(TestContext.CurrentContext.TestDirectory, "manifests", item.Manifest);
             using var document = JsonDocument.Parse(File.ReadAllText(path));
             var root = document.RootElement;
             Assert.Multiple(() =>
             {
-                Assert.That(root.GetProperty("id").GetString(), Is.EqualTo(item.Item2));
-                Assert.That(root.GetProperty("version").GetString(), Is.EqualTo(item.Item5));
-                Assert.That(root.GetProperty("entryAssembly").GetString(), Is.EqualTo(item.Item4));
-                Assert.That(root.GetProperty("moduleType").GetString(), Is.EqualTo(item.Item3));
+                Assert.That(root.GetProperty("id").GetString(), Is.EqualTo(item.Id));
+                Assert.That(root.GetProperty("version").GetString(), Is.EqualTo(item.Version));
+                Assert.That(root.GetProperty("entryAssembly").GetString(), Is.EqualTo(item.Assembly));
+                Assert.That(root.GetProperty("moduleType").GetString(), Is.EqualTo(item.ModuleType));
                 Assert.That(root.GetProperty("defaultEnabled").GetBoolean(), Is.True);
                 Assert.That(root.GetProperty("hostMode").GetString(), Is.EqualTo("sidecar"));
                 Assert.That(root.GetProperty("requestedHooks").GetArrayLength(), Is.GreaterThan(0));
