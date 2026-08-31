@@ -1,15 +1,10 @@
 using System.Text.Json;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Routing;
-using Microsoft.Extensions.DependencyInjection;
 using SharpClaw.Contracts.Modules;
-using SharpClaw.ModuleSDK;
 
 namespace SharpClaw.Modules.TwoTierPermission;
 
 public sealed class PermissionEndpointContribution(
-    PermissionApiActionTerminal terminal) : IModuleEndpointHandler
+    PermissionApiActionTerminal terminal) : IModuleHttpEndpointHandler
 {
     private static readonly JsonElement EmptyPayload =
         JsonSerializer.SerializeToElement(new { });
@@ -47,111 +42,145 @@ public sealed class PermissionEndpointContribution(
 
     private static IReadOnlyList<RouteDefinition> Routes { get; } =
     [
-        new(EvaluateRoute, "POST", PermissionApiOperations.Evaluate),
-        new(GrantRoute, "POST", PermissionApiOperations.Grant),
-        new(RevokeRoute, "POST", PermissionApiOperations.Revoke),
-        new(ApproveRoute, "POST", PermissionApiOperations.Approve),
-        new(PolicyRoutes[0], "GET", PermissionApiOperations.ListPolicies),
-        new(PolicyRoutes[1], "GET", PermissionApiOperations.GetPolicy),
-        new(PolicyRoutes[2], "POST", PermissionApiOperations.SavePolicy),
-        new(PolicyRoutes[3], "DELETE", PermissionApiOperations.DeletePolicy),
-        new(RoleRoutes[0], "GET", PermissionApiOperations.ListRoles),
-        new(RoleRoutes[1], "GET", PermissionApiOperations.GetRole),
-        new(RoleRoutes[2], "POST", PermissionApiOperations.SaveRole),
-        new(RoleRoutes[3], "DELETE", PermissionApiOperations.DeleteRole),
-        new(RoleRoutes[4], "POST", PermissionApiOperations.AssignRole),
-        new(PermissionSetRoutes[0], "GET", PermissionApiOperations.ListPermissionSets),
-        new(PermissionSetRoutes[1], "GET", PermissionApiOperations.GetPermissionSet),
-        new(PermissionSetRoutes[2], "POST", PermissionApiOperations.SavePermissionSet),
-        new(PermissionSetRoutes[3], "DELETE", PermissionApiOperations.DeletePermissionSet),
-        new(PermissionSetRoutes[4], "POST", PermissionApiOperations.AssignPermissionSet),
+        Route(EvaluateRoute, "POST", PermissionApiOperations.Evaluate),
+        Route(GrantRoute, "POST", PermissionApiOperations.Grant),
+        Route(RevokeRoute, "POST", PermissionApiOperations.Revoke),
+        Route(ApproveRoute, "POST", PermissionApiOperations.Approve),
+        Route(PolicyRoutes[0], "GET", PermissionApiOperations.ListPolicies),
+        Route(PolicyRoutes[1], "GET", PermissionApiOperations.GetPolicy),
+        Route(PolicyRoutes[2], "POST", PermissionApiOperations.SavePolicy),
+        Route(PolicyRoutes[3], "DELETE", PermissionApiOperations.DeletePolicy),
+        Route(RoleRoutes[0], "GET", PermissionApiOperations.ListRoles),
+        Route(RoleRoutes[1], "GET", PermissionApiOperations.GetRole),
+        Route(RoleRoutes[2], "POST", PermissionApiOperations.SaveRole),
+        Route(RoleRoutes[3], "DELETE", PermissionApiOperations.DeleteRole),
+        Route(RoleRoutes[4], "POST", PermissionApiOperations.AssignRole),
+        Route(PermissionSetRoutes[0], "GET", PermissionApiOperations.ListPermissionSets),
+        Route(PermissionSetRoutes[1], "GET", PermissionApiOperations.GetPermissionSet),
+        Route(PermissionSetRoutes[2], "POST", PermissionApiOperations.SavePermissionSet),
+        Route(PermissionSetRoutes[3], "DELETE", PermissionApiOperations.DeletePermissionSet),
+        Route(PermissionSetRoutes[4], "POST", PermissionApiOperations.AssignPermissionSet),
     ];
 
-    public static void Map(IEndpointRouteBuilder endpoints)
-    {
-        foreach (var route in Routes)
-        {
-            endpoints.MapMethods(
-                route.Path,
-                [route.Method],
-                (HttpContext context, IPermissionActionGateway gateway, CancellationToken ct) =>
-                    DispatchAsync(route.Operation, context, gateway, ct));
-        }
-    }
+    public static IReadOnlyList<ModuleEndpointRouteDescriptor> EndpointRoutes { get; } =
+        Routes.Select(route => route.Descriptor).ToArray();
 
-    public async ValueTask<ModuleEndpointResult> InvokeAsync(
-        HostEndpointInvocation invocation,
+    public async ValueTask<ModuleHttpEndpointResponse> InvokeAsync(
+        HostEndpointRouteRequest request,
         IHostActionEntry hostActionEntry,
         CancellationToken cancellationToken)
     {
-        var request = new HostActionEntryRequest<PermissionApiAction, JsonElement>(
-            TwoTierPermissionModule.ApiDescriptor,
-            new PermissionApiAction(PermissionApiOperations.ListPolicies, EmptyPayload),
-            invocation.HostActionContext);
-        var outcome = await hostActionEntry.InvokeAsync(
-            request,
-            terminal,
-            cancellationToken);
-        return ToResult(outcome);
-    }
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(hostActionEntry);
 
-    private static async Task<IResult> DispatchAsync(
-        string operation,
-        HttpContext context,
-        IPermissionActionGateway gateway,
-        CancellationToken ct)
-    {
+        RouteDefinition? route = Routes.SingleOrDefault(candidate =>
+            candidate.Descriptor.ToRouteIdentity().Equals(request.Route));
+        if (route is null)
+        {
+            return ErrorResponse(
+                404,
+                "endpoint_route_not_found",
+                "The Permission endpoint route is not registered.");
+        }
+
+        JsonElement payload;
         try
         {
-            var payload = await context.Request.ReadFromJsonAsync<JsonElement>(cancellationToken: ct);
-            if (payload.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
-                payload = JsonSerializer.SerializeToElement(new { });
-            var hostInvocation = context.RequestServices
-                .GetRequiredService<HostEndpointInvocation>();
-            var result = await gateway.ExecuteAsync(
-                hostInvocation.HostActionContext,
-                operation,
-                payload,
-                ct);
-            return Results.Ok(result);
+            payload = ReadPayload(request.Body);
         }
-        catch (Exception exception) when (IsClientFailure(exception))
+        catch (JsonException)
         {
-            return Failure(exception);
+            return ErrorResponse(
+                400,
+                "endpoint_invalid_json",
+                "The Permission endpoint payload is not valid JSON.");
+        }
+
+        try
+        {
+            IActionOutcome<JsonElement> outcome = await hostActionEntry.InvokeAsync(
+                new HostActionEntryRequest<PermissionApiAction, JsonElement>(
+                    TwoTierPermissionModule.ApiDescriptor,
+                    new PermissionApiAction(route.Operation, payload),
+                    request.Invocation.HostActionContext),
+                terminal,
+                cancellationToken);
+            return ToResponse(outcome);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return ErrorResponse(403, "endpoint_forbidden", "The Permission endpoint request is not authorized.");
+        }
+        catch (ArgumentException)
+        {
+            return ErrorResponse(400, "endpoint_invalid_request", "The Permission endpoint request is invalid.");
+        }
+        catch (InvalidOperationException)
+        {
+            return ErrorResponse(404, "endpoint_resource_not_found", "The Permission endpoint resource was not found.");
         }
     }
 
-    private static bool IsClientFailure(Exception exception) =>
-        exception is UnauthorizedAccessException
-            or ArgumentException
-            or InvalidOperationException;
+    private static RouteDefinition Route(string path, string method, string operation) =>
+        new(
+            new ModuleEndpointRouteDescriptor(
+                $"{TwoTierPermissionModule.ModuleIdValue}:http:{method}:{path}",
+                path,
+                method,
+                HostEndpointTransport.Http),
+            operation);
 
-    private static IResult Failure(Exception exception) => exception switch
+    private static JsonElement ReadPayload(byte[] body)
     {
-        UnauthorizedAccessException => Results.StatusCode(StatusCodes.Status403Forbidden),
-        ArgumentException argument => Results.BadRequest(new { error = argument.Message }),
-        InvalidOperationException operation => Results.NotFound(new { error = operation.Message }),
-        _ => Results.StatusCode(StatusCodes.Status500InternalServerError),
-    };
+        if (body is null || body.Length == 0)
+            return EmptyPayload;
 
-    private static ModuleEndpointResult ToResult(IActionOutcome<JsonElement> outcome) =>
+        using JsonDocument document = JsonDocument.Parse(body);
+        return document.RootElement.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
+            ? EmptyPayload
+            : document.RootElement.Clone();
+    }
+
+    private static ModuleHttpEndpointResponse ToResponse(IActionOutcome<JsonElement> outcome) =>
         outcome.Kind switch
         {
             ActionOutcomeKind.Completed when outcome.Result is { } result =>
-                ModuleEndpointResult.Success(result),
-            ActionOutcomeKind.Cancelled => ModuleEndpointResult.Failure(
-                "endpoint_cancelled", "The permission endpoint action was cancelled."),
-            ActionOutcomeKind.Failed => ModuleEndpointResult.Failure(
+                ModuleHttpEndpointResponse.Json(200, result),
+            ActionOutcomeKind.Cancelled => ErrorResponse(
+                409,
+                "endpoint_cancelled",
+                "The Permission endpoint action was cancelled."),
+            ActionOutcomeKind.Failed => ErrorResponse(
+                500,
                 outcome.Error?.Code ?? "endpoint_failed",
-                outcome.Error?.Message ?? "The permission endpoint action failed."),
-            ActionOutcomeKind.Uncertain => ModuleEndpointResult.Failure(
+                "The Permission endpoint action failed."),
+            ActionOutcomeKind.Uncertain => ErrorResponse(
+                503,
                 outcome.Uncertainty?.Code ?? "endpoint_uncertain",
-                outcome.Uncertainty?.Message ?? "The permission endpoint action is uncertain."),
-            ActionOutcomeKind.Deferred => ModuleEndpointResult.Failure(
-                "endpoint_deferred", "The permission endpoint action was deferred."),
-            _ => ModuleEndpointResult.Failure(
-                "endpoint_unknown", "The permission endpoint action returned an unknown outcome."),
+                "The Permission endpoint action result is uncertain."),
+            ActionOutcomeKind.Deferred => ErrorResponse(
+                503,
+                "endpoint_deferred",
+                "The Permission endpoint action was deferred."),
+            _ => ErrorResponse(
+                500,
+                "endpoint_unknown",
+                "The Permission endpoint action returned an unknown outcome."),
         };
 
-    private sealed record RouteDefinition(string Path, string Method, string Operation);
+    private static ModuleHttpEndpointResponse ErrorResponse(
+        int statusCode,
+        string code,
+        string message) =>
+        ModuleHttpEndpointResponse.Json(
+            statusCode,
+            JsonSerializer.SerializeToElement(new { error = code, message }));
+
+    private sealed record RouteDefinition(
+        ModuleEndpointRouteDescriptor Descriptor,
+        string Operation);
 }

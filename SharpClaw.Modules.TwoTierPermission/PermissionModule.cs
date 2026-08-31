@@ -146,7 +146,8 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
 
     public void ConfigureApplication(ISharpClawApplicationBuilder application)
     {
-        application.Endpoints.Add<PermissionEndpointContribution>();
+        foreach (ModuleEndpointRouteDescriptor route in PermissionEndpointContribution.EndpointRoutes)
+            application.Endpoints.AddHttp<PermissionEndpointContribution>(route);
         foreach (var command in PermissionCliHandler.Commands)
         {
             application.Cli.Add<PermissionCliHandler>(new ModuleCliCommandDescriptor(

@@ -210,7 +210,8 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
 
     public void ConfigureApplication(ISharpClawApplicationBuilder application)
     {
-        application.Endpoints.Add<AgentsEndpointContribution>();
+        foreach (ModuleEndpointRouteDescriptor route in AgentsEndpointContribution.EndpointRoutes)
+            application.Endpoints.AddHttp<AgentsEndpointContribution>(route);
         foreach (var command in AgentsCliHandler.Commands)
         {
             application.Cli.Add<AgentsCliHandler>(new ModuleCliCommandDescriptor(

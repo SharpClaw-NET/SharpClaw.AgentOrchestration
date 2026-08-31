@@ -1,15 +1,10 @@
 using System.Text.Json;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Routing;
-using Microsoft.Extensions.DependencyInjection;
 using SharpClaw.Contracts.Modules;
-using SharpClaw.ModuleSDK;
 
 namespace SharpClaw.Modules.Agents;
 
 public sealed class AgentsEndpointContribution(
-    AgentsApiActionTerminal terminal) : IModuleEndpointHandler
+    AgentsApiActionTerminal terminal) : IModuleHttpEndpointHandler
 {
     private static readonly JsonElement EmptyPayload =
         JsonSerializer.SerializeToElement(new { });
@@ -50,108 +45,142 @@ public sealed class AgentsEndpointContribution(
 
     private static IReadOnlyList<RouteDefinition> Routes { get; } =
     [
-        new(AgentRoutes[0], "GET", AgentsApiOperations.ListAgents),
-        new(AgentRoutes[1], "GET", AgentsApiOperations.GetAgent),
-        new(AgentRoutes[2], "POST", AgentsApiOperations.CreateAgent),
-        new(AgentRoutes[3], "PUT", AgentsApiOperations.UpdateAgent),
-        new(AgentRoutes[4], "DELETE", AgentsApiOperations.DeleteAgent),
-        new(AgentRoutes[5], "POST", AgentsApiOperations.AssignRole),
-        new(AgentRoutes[6], "POST", AgentsApiOperations.SynchronizeAgent),
-        new(AgentRoutes[7], "GET", AgentsApiOperations.GetCost),
-        new(SkillRoutes[0], "GET", AgentsApiOperations.ListSkills),
-        new(SkillRoutes[1], "GET", AgentsApiOperations.GetSkill),
-        new(SkillRoutes[2], "POST", AgentsApiOperations.SaveSkill),
-        new(SkillRoutes[3], "DELETE", AgentsApiOperations.DeleteSkill),
-        new(SkillRoutes[4], "POST", AgentsApiOperations.AccessSkill),
-        new(MemoryRoutes[0], "POST", AgentsApiOperations.WriteMemory),
-        new(MemoryRoutes[1], "POST", AgentsApiOperations.SearchMemory),
+        Route(AgentRoutes[0], "GET", AgentsApiOperations.ListAgents),
+        Route(AgentRoutes[1], "GET", AgentsApiOperations.GetAgent),
+        Route(AgentRoutes[2], "POST", AgentsApiOperations.CreateAgent),
+        Route(AgentRoutes[3], "PUT", AgentsApiOperations.UpdateAgent),
+        Route(AgentRoutes[4], "DELETE", AgentsApiOperations.DeleteAgent),
+        Route(AgentRoutes[5], "POST", AgentsApiOperations.AssignRole),
+        Route(AgentRoutes[6], "POST", AgentsApiOperations.SynchronizeAgent),
+        Route(AgentRoutes[7], "GET", AgentsApiOperations.GetCost),
+        Route(SkillRoutes[0], "GET", AgentsApiOperations.ListSkills),
+        Route(SkillRoutes[1], "GET", AgentsApiOperations.GetSkill),
+        Route(SkillRoutes[2], "POST", AgentsApiOperations.SaveSkill),
+        Route(SkillRoutes[3], "DELETE", AgentsApiOperations.DeleteSkill),
+        Route(SkillRoutes[4], "POST", AgentsApiOperations.AccessSkill),
+        Route(MemoryRoutes[0], "POST", AgentsApiOperations.WriteMemory),
+        Route(MemoryRoutes[1], "POST", AgentsApiOperations.SearchMemory),
     ];
 
-    public static void Map(IEndpointRouteBuilder endpoints)
-    {
-        foreach (var route in Routes)
-        {
-            endpoints.MapMethods(
-                route.Path,
-                [route.Method],
-                (HttpContext context, IAgentsActionGateway gateway, CancellationToken ct) =>
-                    DispatchAsync(route.Operation, context, gateway, ct));
-        }
-    }
+    public static IReadOnlyList<ModuleEndpointRouteDescriptor> EndpointRoutes { get; } =
+        Routes.Select(route => route.Descriptor).ToArray();
 
-    public async ValueTask<ModuleEndpointResult> InvokeAsync(
-        HostEndpointInvocation invocation,
+    public async ValueTask<ModuleHttpEndpointResponse> InvokeAsync(
+        HostEndpointRouteRequest request,
         IHostActionEntry hostActionEntry,
         CancellationToken cancellationToken)
     {
-        var request = new HostActionEntryRequest<AgentsApiAction, JsonElement>(
-            AgentsModule.ApiDescriptor,
-            new AgentsApiAction(AgentsApiOperations.ListAgents, EmptyPayload),
-            invocation.HostActionContext);
-        var outcome = await hostActionEntry.InvokeAsync(
-            request,
-            terminal,
-            cancellationToken);
-        return ToResult(outcome);
-    }
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(hostActionEntry);
 
-    private static async Task<IResult> DispatchAsync(
-        string operation,
-        HttpContext context,
-        IAgentsActionGateway gateway,
-        CancellationToken ct)
-    {
+        RouteDefinition? route = Routes.SingleOrDefault(candidate =>
+            candidate.Descriptor.ToRouteIdentity().Equals(request.Route));
+        if (route is null)
+        {
+            return ErrorResponse(
+                404,
+                "endpoint_route_not_found",
+                "The Agents endpoint route is not registered.");
+        }
+
+        JsonElement payload;
         try
         {
-            var payload = await context.Request.ReadFromJsonAsync<JsonElement>(cancellationToken: ct);
-            if (payload.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
-                payload = JsonSerializer.SerializeToElement(new { });
-            var hostInvocation = context.RequestServices
-                .GetRequiredService<HostEndpointInvocation>();
-            var result = await gateway.ExecuteAsync(
-                hostInvocation.HostActionContext,
-                operation,
-                payload,
-                ct);
-            return Results.Ok(result);
+            payload = ReadPayload(request.Body);
         }
-        catch (Exception exception) when (IsClientFailure(exception))
+        catch (JsonException)
         {
-            return Failure(exception);
+            return ErrorResponse(
+                400,
+                "endpoint_invalid_json",
+                "The Agents endpoint payload is not valid JSON.");
+        }
+
+        try
+        {
+            IActionOutcome<JsonElement> outcome = await hostActionEntry.InvokeAsync(
+                new HostActionEntryRequest<AgentsApiAction, JsonElement>(
+                    AgentsModule.ApiDescriptor,
+                    new AgentsApiAction(route.Operation, payload),
+                    request.Invocation.HostActionContext),
+                terminal,
+                cancellationToken);
+            return ToResponse(outcome);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return ErrorResponse(403, "endpoint_forbidden", "The Agents endpoint request is not authorized.");
+        }
+        catch (ArgumentException)
+        {
+            return ErrorResponse(400, "endpoint_invalid_request", "The Agents endpoint request is invalid.");
+        }
+        catch (InvalidOperationException)
+        {
+            return ErrorResponse(404, "endpoint_resource_not_found", "The Agents endpoint resource was not found.");
         }
     }
 
-    private static bool IsClientFailure(Exception exception) =>
-        exception is UnauthorizedAccessException
-            or ArgumentException
-            or InvalidOperationException;
+    private static RouteDefinition Route(string path, string method, string operation) =>
+        new(
+            new ModuleEndpointRouteDescriptor(
+                $"{AgentsModule.ModuleIdValue}:http:{method}:{path}",
+                path,
+                method,
+                HostEndpointTransport.Http),
+            operation);
 
-    private static IResult Failure(Exception exception) => exception switch
+    private static JsonElement ReadPayload(byte[] body)
     {
-        UnauthorizedAccessException => Results.StatusCode(StatusCodes.Status403Forbidden),
-        ArgumentException argument => Results.BadRequest(new { error = argument.Message }),
-        InvalidOperationException operation => Results.NotFound(new { error = operation.Message }),
-        _ => Results.StatusCode(StatusCodes.Status500InternalServerError),
-    };
+        if (body is null || body.Length == 0)
+            return EmptyPayload;
 
-    private static ModuleEndpointResult ToResult(IActionOutcome<JsonElement> outcome) =>
+        using JsonDocument document = JsonDocument.Parse(body);
+        return document.RootElement.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
+            ? EmptyPayload
+            : document.RootElement.Clone();
+    }
+
+    private static ModuleHttpEndpointResponse ToResponse(IActionOutcome<JsonElement> outcome) =>
         outcome.Kind switch
         {
             ActionOutcomeKind.Completed when outcome.Result is { } result =>
-                ModuleEndpointResult.Success(result),
-            ActionOutcomeKind.Cancelled => ModuleEndpointResult.Failure(
-                "endpoint_cancelled", "The agents endpoint action was cancelled."),
-            ActionOutcomeKind.Failed => ModuleEndpointResult.Failure(
+                ModuleHttpEndpointResponse.Json(200, result),
+            ActionOutcomeKind.Cancelled => ErrorResponse(
+                409,
+                "endpoint_cancelled",
+                "The Agents endpoint action was cancelled."),
+            ActionOutcomeKind.Failed => ErrorResponse(
+                500,
                 outcome.Error?.Code ?? "endpoint_failed",
-                outcome.Error?.Message ?? "The agents endpoint action failed."),
-            ActionOutcomeKind.Uncertain => ModuleEndpointResult.Failure(
+                "The Agents endpoint action failed."),
+            ActionOutcomeKind.Uncertain => ErrorResponse(
+                503,
                 outcome.Uncertainty?.Code ?? "endpoint_uncertain",
-                outcome.Uncertainty?.Message ?? "The agents endpoint action is uncertain."),
-            ActionOutcomeKind.Deferred => ModuleEndpointResult.Failure(
-                "endpoint_deferred", "The agents endpoint action was deferred."),
-            _ => ModuleEndpointResult.Failure(
-                "endpoint_unknown", "The agents endpoint action returned an unknown outcome."),
+                "The Agents endpoint action result is uncertain."),
+            ActionOutcomeKind.Deferred => ErrorResponse(
+                503,
+                "endpoint_deferred",
+                "The Agents endpoint action was deferred."),
+            _ => ErrorResponse(
+                500,
+                "endpoint_unknown",
+                "The Agents endpoint action returned an unknown outcome."),
         };
 
-    private sealed record RouteDefinition(string Path, string Method, string Operation);
+    private static ModuleHttpEndpointResponse ErrorResponse(
+        int statusCode,
+        string code,
+        string message) =>
+        ModuleHttpEndpointResponse.Json(
+            statusCode,
+            JsonSerializer.SerializeToElement(new { error = code, message }));
+
+    private sealed record RouteDefinition(
+        ModuleEndpointRouteDescriptor Descriptor,
+        string Operation);
 }

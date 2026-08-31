@@ -149,7 +149,8 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
 
     public void ConfigureApplication(ISharpClawApplicationBuilder application)
     {
-        application.Endpoints.Add<ContextEndpointContribution>();
+        foreach (ModuleEndpointRouteDescriptor route in ContextEndpointContribution.EndpointRoutes)
+            application.Endpoints.AddHttp<ContextEndpointContribution>(route);
         foreach (var command in ContextCliHandler.Commands)
         {
             application.Cli.Add<ContextCliHandler>(new ModuleCliCommandDescriptor(

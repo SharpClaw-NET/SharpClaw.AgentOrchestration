@@ -1,7 +1,4 @@
 using System.Text.Json;
-using System.Reflection;
-using System.Text;
-using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using NUnit.Framework;
 using SharpClaw.Contracts.Modules;
@@ -212,8 +209,15 @@ public sealed class ModuleCompositionTests
 
             Assert.Multiple(() =>
             {
-                Assert.That(application.Endpoints.Items, Does.Contain(item.Contribution));
-                Assert.That(item.Contribution.GetMethod("Map"), Is.Not.Null);
+                Assert.That(
+                    application.Endpoints.Items.Select(endpoint => endpoint.HandlerType),
+                    Is.All.EqualTo(item.Contribution));
+                Assert.That(
+                    application.Endpoints.Items.Select(endpoint => endpoint.Descriptor.Path),
+                    Is.SupersetOf(item.Routes));
+                Assert.That(
+                    application.Endpoints.Items.Select(endpoint => endpoint.Descriptor.Transport),
+                    Is.All.EqualTo(HostEndpointTransport.Http));
                 Assert.That(item.Routes, Is.All.Not.Null);
                 Assert.That(item.Routes, Is.All.Not.Empty);
             });
@@ -225,9 +229,9 @@ public sealed class ModuleCompositionTests
     {
         Assert.Multiple(() =>
         {
-            Assert.That(typeof(IModuleEndpointHandler).IsAssignableFrom(typeof(ContextEndpointContribution)), Is.True);
-            Assert.That(typeof(IModuleEndpointHandler).IsAssignableFrom(typeof(PermissionEndpointContribution)), Is.True);
-            Assert.That(typeof(IModuleEndpointHandler).IsAssignableFrom(typeof(AgentsEndpointContribution)), Is.True);
+            Assert.That(typeof(IModuleHttpEndpointHandler).IsAssignableFrom(typeof(ContextEndpointContribution)), Is.True);
+            Assert.That(typeof(IModuleHttpEndpointHandler).IsAssignableFrom(typeof(PermissionEndpointContribution)), Is.True);
+            Assert.That(typeof(IModuleHttpEndpointHandler).IsAssignableFrom(typeof(AgentsEndpointContribution)), Is.True);
         });
 
         var contextGraph = CompileModule(new ContextModule());
@@ -652,39 +656,148 @@ public sealed class ModuleCompositionTests
     [Test]
     public async Task ContextEndpointPassesTheIssuedAuthorityContextToTheTypedAction()
     {
-        var gateway = new RecordingContextGateway();
         var hostContext = TestHostActionContext.Create(
             new RequestPrincipal(Guid.NewGuid().ToString("D"), IsAuthenticated: true),
             HostActionEntryIngress.Endpoint);
+        ModuleEndpointRouteDescriptor route = ContextEndpointContribution.EndpointRoutes.Single(
+            candidate => candidate.Path == ContextEndpointContribution.CreateThreadRoute &&
+                         candidate.Method == "POST");
         var invocation = new HostEndpointInvocation(
-            Guid.NewGuid(),
-            ContextEndpointContribution.CreateThreadRoute,
+            hostContext.InvocationId,
+            route.Id,
             hostContext);
-        var services = new ServiceCollection()
-            .AddSingleton(invocation)
-            .BuildServiceProvider();
-        var httpContext = new DefaultHttpContext
-        {
-            RequestServices = services,
-        };
-        httpContext.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes("{}"));
-        httpContext.Request.ContentType = "application/json";
-        var dispatch = typeof(ContextEndpointContribution).GetMethod(
-            "DispatchAsync",
-            BindingFlags.NonPublic | BindingFlags.Static);
+        var request = new HostEndpointRouteRequest(
+            invocation,
+            route.ToRouteIdentity(),
+            new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase),
+            new Dictionary<string, string[]>(StringComparer.Ordinal),
+            JsonSerializer.SerializeToUtf8Bytes(new { }));
+        var hostEntry = new RecordingHostActionEntry();
+        var handler = new ContextEndpointContribution(new ContextApiActionTerminal(null!));
 
-        Assert.That(dispatch, Is.Not.Null);
-        var task = (Task<IResult>)dispatch!.Invoke(
-            null,
-            [ContextApiOperations.CreateThread, httpContext, gateway, default(CancellationToken)])!;
-        await task;
+        ModuleHttpEndpointResponse response = await handler.InvokeAsync(
+            request,
+            hostEntry,
+            default);
 
         Assert.Multiple(() =>
         {
-            Assert.That(gateway.Contexts, Has.Exactly(1).Items);
-            Assert.That(gateway.Contexts.Single(), Is.SameAs(hostContext));
-            Assert.That(gateway.Operations.Single(), Is.EqualTo(ContextApiOperations.CreateThread));
+            Assert.That(response.StatusCode, Is.EqualTo(200));
+            Assert.That(hostEntry.Contexts, Has.Exactly(1).Items);
+            Assert.That(hostEntry.Contexts.Single(), Is.SameAs(hostContext));
+            Assert.That(hostEntry.Keys.Single(), Is.EqualTo(ContextModule.ApiDescriptor.Key.Value));
+            Assert.That(
+                hostEntry.Actions.OfType<ContextApiAction>().Single().Operation,
+                Is.EqualTo(ContextApiOperations.CreateThread));
         });
+    }
+
+    [Test]
+    public async Task NeutralEndpointHandlersBindEveryRouteToItsOwnedAction()
+    {
+        await AssertEndpointRoutesAsync(
+            new ContextEndpointContribution(new ContextApiActionTerminal(null!)),
+            ContextEndpointContribution.EndpointRoutes,
+            ContextEndpointOperations(),
+            ContextModule.ApiDescriptor.Key.Value,
+            action => ((ContextApiAction)action).Operation);
+        await AssertEndpointRoutesAsync(
+            new PermissionEndpointContribution(new PermissionApiActionTerminal(null!)),
+            PermissionEndpointContribution.EndpointRoutes,
+            PermissionEndpointOperations(),
+            TwoTierPermissionModule.ApiDescriptor.Key.Value,
+            action => ((PermissionApiAction)action).Operation);
+        await AssertEndpointRoutesAsync(
+            new AgentsEndpointContribution(new AgentsApiActionTerminal(null!)),
+            AgentsEndpointContribution.EndpointRoutes,
+            AgentsEndpointOperations(),
+            AgentsModule.ApiDescriptor.Key.Value,
+            action => ((AgentsApiAction)action).Operation);
+    }
+
+    [Test]
+    public async Task NeutralEndpointHandlersRejectUnknownRoutesAndMalformedJsonBeforeActionEntry()
+    {
+        foreach (var owner in EndpointOwners())
+        {
+            ModuleEndpointRouteDescriptor registered = owner.Routes[0];
+            var unknown = new ModuleEndpointRouteDescriptor(
+                $"{registered.Id}.unknown",
+                registered.Path,
+                registered.Method,
+                registered.Transport);
+            var unknownEntry = new RecordingHostActionEntry();
+
+            ModuleHttpEndpointResponse unknownResponse = await owner.Handler.InvokeAsync(
+                CreateEndpointRequest(unknown, []),
+                unknownEntry,
+                default);
+
+            var malformedEntry = new RecordingHostActionEntry();
+            ModuleHttpEndpointResponse malformedResponse = await owner.Handler.InvokeAsync(
+                CreateEndpointRequest(registered, [0x7B]),
+                malformedEntry,
+                default);
+
+            Assert.Multiple(() =>
+            {
+                Assert.That(unknownResponse.StatusCode, Is.EqualTo(404));
+                Assert.That(ReadErrorCode(unknownResponse), Is.EqualTo("endpoint_route_not_found"));
+                Assert.That(unknownEntry.Actions, Is.Empty);
+                Assert.That(malformedResponse.StatusCode, Is.EqualTo(400));
+                Assert.That(ReadErrorCode(malformedResponse), Is.EqualTo("endpoint_invalid_json"));
+                Assert.That(malformedEntry.Actions, Is.Empty);
+            });
+        }
+    }
+
+    [Test]
+    public void NeutralEndpointHandlersPropagateCancellationBeforeActionEntry()
+    {
+        foreach (var owner in EndpointOwners())
+        {
+            using var cancellation = new CancellationTokenSource();
+            cancellation.Cancel();
+            var hostEntry = new RecordingHostActionEntry();
+
+            Assert.ThrowsAsync<OperationCanceledException>(async () =>
+                await owner.Handler.InvokeAsync(
+                    CreateEndpointRequest(owner.Routes[0], []),
+                    hostEntry,
+                    cancellation.Token));
+
+            Assert.That(hostEntry.Actions, Is.Empty);
+        }
+    }
+
+    [Test]
+    public async Task NeutralEndpointHandlersRedactInternalActionFailures()
+    {
+        const string secret = "internal-storage-path-c:\\private\\data";
+
+        foreach (var owner in EndpointOwners())
+        {
+            var hostEntry = new RecordingHostActionEntry
+            {
+                ExceptionToThrow = new InvalidOperationException(secret),
+            };
+
+            ModuleHttpEndpointResponse response = await owner.Handler.InvokeAsync(
+                CreateEndpointRequest(owner.Routes[0], []),
+                hostEntry,
+                default);
+
+            using JsonDocument body = JsonDocument.Parse(response.Body);
+            Assert.Multiple(() =>
+            {
+                Assert.That(response.StatusCode, Is.EqualTo(404));
+                Assert.That(body.RootElement.GetProperty("error").GetString(),
+                    Is.EqualTo("endpoint_resource_not_found"));
+                Assert.That(body.RootElement.GetProperty("message").GetString(),
+                    Does.Not.Contain(secret));
+                Assert.That(hostEntry.Actions, Has.Exactly(1).Items);
+            });
+        }
     }
 
     [Test]
@@ -2808,10 +2921,20 @@ public sealed class ModuleCompositionTests
 
     private sealed class RecordingEndpoints : IEndpointContributionBuilder
     {
-        public List<Type> Items { get; } = [];
+        public List<EndpointRegistration> Items { get; } = [];
 
-        public void Add<TContribution>() => Items.Add(typeof(TContribution));
+        public void AddHttp<THandler>(ModuleEndpointRouteDescriptor descriptor)
+            where THandler : class, IModuleHttpEndpointHandler =>
+            Items.Add(new(typeof(THandler), descriptor));
+
+        public void AddWebSocket<THandler>(ModuleEndpointRouteDescriptor descriptor)
+            where THandler : class, IModuleWebSocketEndpointHandler =>
+            Items.Add(new(typeof(THandler), descriptor));
     }
+
+    private sealed record EndpointRegistration(
+        Type HandlerType,
+        ModuleEndpointRouteDescriptor Descriptor);
 
     private sealed class RecordingCli : ICliContributionBuilder
     {
@@ -2971,21 +3094,195 @@ public sealed class ModuleCompositionTests
             throw new NotSupportedException();
     }
 
+    private static async Task AssertEndpointRoutesAsync(
+        IModuleHttpEndpointHandler handler,
+        IReadOnlyList<ModuleEndpointRouteDescriptor> routes,
+        IReadOnlyDictionary<(string Path, string Method), string> expectedOperations,
+        string descriptorKey,
+        Func<object, string> readOperation)
+    {
+        Assert.Multiple(() =>
+        {
+            Assert.That(routes, Has.Count.EqualTo(expectedOperations.Count));
+            Assert.That(routes.All(route => route.IsWellFormed), Is.True);
+            Assert.That(routes.Select(route => route.Id), Is.Unique);
+            Assert.That(routes.Select(route => route.ToRouteIdentity()), Is.Unique);
+        });
+
+        foreach (ModuleEndpointRouteDescriptor route in routes)
+        {
+            Assert.That(
+                expectedOperations.TryGetValue((route.Path, route.Method), out string? expectedOperation),
+                Is.True,
+                $"No expected operation is defined for {route.Method} {route.Path}.");
+            var hostEntry = new RecordingHostActionEntry();
+            HostEndpointRouteRequest request = CreateEndpointRequest(route, []);
+
+            Assert.That(request.IsWellFormed(DateTimeOffset.UtcNow), Is.True);
+            ModuleHttpEndpointResponse response = await handler.InvokeAsync(
+                request,
+                hostEntry,
+                default);
+
+            Assert.Multiple(() =>
+            {
+                Assert.That(response.IsWellFormed, Is.True);
+                Assert.That(response.StatusCode, Is.EqualTo(200));
+                Assert.That(hostEntry.Keys, Is.EqualTo([descriptorKey]));
+                Assert.That(hostEntry.Contexts.Single(), Is.SameAs(request.Invocation.HostActionContext));
+                Assert.That(readOperation(hostEntry.Actions.Single()), Is.EqualTo(expectedOperation));
+            });
+        }
+    }
+
+    private static HostEndpointRouteRequest CreateEndpointRequest(
+        ModuleEndpointRouteDescriptor route,
+        byte[] body)
+    {
+        HostActionEntryRequestContext hostContext = TestHostActionContext.Create(
+            new RequestPrincipal(Guid.NewGuid().ToString("D"), IsAuthenticated: true),
+            HostActionEntryIngress.Endpoint) with
+        {
+            Contribution = new HostActionEntryContribution(
+                new HostActionEntryIngressBinding(HostActionEntryIngress.Endpoint, route.Id),
+                new HostActionEntryLineage(
+                    new SharpClawActionKey("test.endpoint.route"),
+                    1,
+                    "test-descriptor-hash",
+                    "test.endpoint.request",
+                    1,
+                    "test-input-schema-hash",
+                    null,
+                    null)),
+        };
+        return new HostEndpointRouteRequest(
+            new HostEndpointInvocation(hostContext.InvocationId, route.Id, hostContext),
+            route.ToRouteIdentity(),
+            new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase),
+            new Dictionary<string, string[]>(StringComparer.Ordinal),
+            body);
+    }
+
+    private static string? ReadErrorCode(ModuleHttpEndpointResponse response)
+    {
+        using JsonDocument body = JsonDocument.Parse(response.Body);
+        return body.RootElement.GetProperty("error").GetString();
+    }
+
+    private static (IModuleHttpEndpointHandler Handler, IReadOnlyList<ModuleEndpointRouteDescriptor> Routes)[]
+        EndpointOwners() =>
+        [
+            (new ContextEndpointContribution(new ContextApiActionTerminal(null!)),
+                ContextEndpointContribution.EndpointRoutes),
+            (new PermissionEndpointContribution(new PermissionApiActionTerminal(null!)),
+                PermissionEndpointContribution.EndpointRoutes),
+            (new AgentsEndpointContribution(new AgentsApiActionTerminal(null!)),
+                AgentsEndpointContribution.EndpointRoutes),
+        ];
+
+    private static IReadOnlyDictionary<(string Path, string Method), string> ContextEndpointOperations() =>
+        new Dictionary<(string Path, string Method), string>
+        {
+            [(ContextEndpointContribution.CreateThreadRoute, "POST")] = ContextApiOperations.CreateThread,
+            [(ContextEndpointContribution.ReadHistoryRoute, "POST")] = ContextApiOperations.ReadHistory,
+            [(ContextEndpointContribution.CommitExchangeRoute, "POST")] = ContextApiOperations.CommitExchange,
+            [(ContextEndpointContribution.ChannelRoutes[0], "GET")] = ContextApiOperations.ListChannels,
+            [(ContextEndpointContribution.ChannelRoutes[1], "GET")] = ContextApiOperations.ListChannels,
+            [(ContextEndpointContribution.ChannelRoutes[2], "GET")] = ContextApiOperations.GetChannel,
+            [(ContextEndpointContribution.ChannelRoutes[3], "POST")] = ContextApiOperations.CreateChannel,
+            [(ContextEndpointContribution.ChannelRoutes[4], "PUT")] = ContextApiOperations.UpdateChannel,
+            [(ContextEndpointContribution.ChannelRoutes[5], "DELETE")] = ContextApiOperations.DeleteChannel,
+            [(ContextEndpointContribution.ChannelRoutes[6], "POST")] = ContextApiOperations.AssignChannel,
+            [(ContextEndpointContribution.ChannelRoutes[7], "POST")] = ContextApiOperations.UnassignChannel,
+            [(ContextEndpointContribution.ChannelRoutes[8], "POST")] = ContextApiOperations.OptInChannel,
+            [(ContextEndpointContribution.ChannelRoutes[9], "POST")] = ContextApiOperations.OptOutChannel,
+            [(ContextEndpointContribution.ChannelRoutes[10], "GET")] = ContextApiOperations.ChannelPermissions,
+            [(ContextEndpointContribution.ChannelRoutes[11], "POST")] = ContextApiOperations.SynchronizeChannel,
+            [(ContextEndpointContribution.ChannelRoutes[12], "POST")] = ContextApiOperations.SynchronizeChannel,
+            [(ContextEndpointContribution.ChannelContextRoutes[0], "GET")] = ContextApiOperations.ListContexts,
+            [(ContextEndpointContribution.ChannelContextRoutes[1], "GET")] = ContextApiOperations.ListContexts,
+            [(ContextEndpointContribution.ChannelContextRoutes[2], "GET")] = ContextApiOperations.GetContext,
+            [(ContextEndpointContribution.ChannelContextRoutes[3], "POST")] = ContextApiOperations.CreateContext,
+            [(ContextEndpointContribution.ChannelContextRoutes[4], "PUT")] = ContextApiOperations.UpdateContext,
+            [(ContextEndpointContribution.ChannelContextRoutes[5], "DELETE")] = ContextApiOperations.DeleteContext,
+            [(ContextEndpointContribution.ChannelContextRoutes[6], "POST")] = ContextApiOperations.AssignContext,
+            [(ContextEndpointContribution.ChannelContextRoutes[7], "POST")] = ContextApiOperations.UnassignContext,
+            [(ContextEndpointContribution.ChannelContextRoutes[8], "POST")] = ContextApiOperations.ActivateContext,
+            [(ContextEndpointContribution.ChannelContextRoutes[9], "POST")] = ContextApiOperations.DeactivateContext,
+            [(ContextEndpointContribution.ChannelContextRoutes[10], "GET")] = ContextApiOperations.ContextPermissions,
+            [(ContextEndpointContribution.ChannelContextRoutes[11], "POST")] = ContextApiOperations.SynchronizeContext,
+            [(ContextEndpointContribution.ThreadRoutes[0], "GET")] = ContextApiOperations.ListThreads,
+            [(ContextEndpointContribution.ThreadRoutes[1], "GET")] = ContextApiOperations.GetThread,
+            [(ContextEndpointContribution.ThreadRoutes[2], "POST")] = ContextApiOperations.CreateThread,
+            [(ContextEndpointContribution.ThreadRoutes[3], "PUT")] = ContextApiOperations.UpdateThread,
+            [(ContextEndpointContribution.ThreadRoutes[4], "DELETE")] = ContextApiOperations.DeleteThread,
+        };
+
+    private static IReadOnlyDictionary<(string Path, string Method), string> PermissionEndpointOperations() =>
+        new Dictionary<(string Path, string Method), string>
+        {
+            [(PermissionEndpointContribution.EvaluateRoute, "POST")] = PermissionApiOperations.Evaluate,
+            [(PermissionEndpointContribution.GrantRoute, "POST")] = PermissionApiOperations.Grant,
+            [(PermissionEndpointContribution.RevokeRoute, "POST")] = PermissionApiOperations.Revoke,
+            [(PermissionEndpointContribution.ApproveRoute, "POST")] = PermissionApiOperations.Approve,
+            [(PermissionEndpointContribution.PolicyRoutes[0], "GET")] = PermissionApiOperations.ListPolicies,
+            [(PermissionEndpointContribution.PolicyRoutes[1], "GET")] = PermissionApiOperations.GetPolicy,
+            [(PermissionEndpointContribution.PolicyRoutes[2], "POST")] = PermissionApiOperations.SavePolicy,
+            [(PermissionEndpointContribution.PolicyRoutes[3], "DELETE")] = PermissionApiOperations.DeletePolicy,
+            [(PermissionEndpointContribution.RoleRoutes[0], "GET")] = PermissionApiOperations.ListRoles,
+            [(PermissionEndpointContribution.RoleRoutes[1], "GET")] = PermissionApiOperations.GetRole,
+            [(PermissionEndpointContribution.RoleRoutes[2], "POST")] = PermissionApiOperations.SaveRole,
+            [(PermissionEndpointContribution.RoleRoutes[3], "DELETE")] = PermissionApiOperations.DeleteRole,
+            [(PermissionEndpointContribution.RoleRoutes[4], "POST")] = PermissionApiOperations.AssignRole,
+            [(PermissionEndpointContribution.PermissionSetRoutes[0], "GET")] = PermissionApiOperations.ListPermissionSets,
+            [(PermissionEndpointContribution.PermissionSetRoutes[1], "GET")] = PermissionApiOperations.GetPermissionSet,
+            [(PermissionEndpointContribution.PermissionSetRoutes[2], "POST")] = PermissionApiOperations.SavePermissionSet,
+            [(PermissionEndpointContribution.PermissionSetRoutes[3], "DELETE")] = PermissionApiOperations.DeletePermissionSet,
+            [(PermissionEndpointContribution.PermissionSetRoutes[4], "POST")] = PermissionApiOperations.AssignPermissionSet,
+        };
+
+    private static IReadOnlyDictionary<(string Path, string Method), string> AgentsEndpointOperations() =>
+        new Dictionary<(string Path, string Method), string>
+        {
+            [(AgentsEndpointContribution.AgentRoutes[0], "GET")] = AgentsApiOperations.ListAgents,
+            [(AgentsEndpointContribution.AgentRoutes[1], "GET")] = AgentsApiOperations.GetAgent,
+            [(AgentsEndpointContribution.AgentRoutes[2], "POST")] = AgentsApiOperations.CreateAgent,
+            [(AgentsEndpointContribution.AgentRoutes[3], "PUT")] = AgentsApiOperations.UpdateAgent,
+            [(AgentsEndpointContribution.AgentRoutes[4], "DELETE")] = AgentsApiOperations.DeleteAgent,
+            [(AgentsEndpointContribution.AgentRoutes[5], "POST")] = AgentsApiOperations.AssignRole,
+            [(AgentsEndpointContribution.AgentRoutes[6], "POST")] = AgentsApiOperations.SynchronizeAgent,
+            [(AgentsEndpointContribution.AgentRoutes[7], "GET")] = AgentsApiOperations.GetCost,
+            [(AgentsEndpointContribution.SkillRoutes[0], "GET")] = AgentsApiOperations.ListSkills,
+            [(AgentsEndpointContribution.SkillRoutes[1], "GET")] = AgentsApiOperations.GetSkill,
+            [(AgentsEndpointContribution.SkillRoutes[2], "POST")] = AgentsApiOperations.SaveSkill,
+            [(AgentsEndpointContribution.SkillRoutes[3], "DELETE")] = AgentsApiOperations.DeleteSkill,
+            [(AgentsEndpointContribution.SkillRoutes[4], "POST")] = AgentsApiOperations.AccessSkill,
+            [(AgentsEndpointContribution.MemoryRoutes[0], "POST")] = AgentsApiOperations.WriteMemory,
+            [(AgentsEndpointContribution.MemoryRoutes[1], "POST")] = AgentsApiOperations.SearchMemory,
+        };
+
     private sealed class RecordingHostActionEntry : IHostActionEntry, IModuleCrossSidecarActionEntry
     {
         public List<string> Keys { get; } = [];
         public List<HostActionEntryRequestContext> Contexts { get; } = [];
+        public List<object> Actions { get; } = [];
         public List<Type> TerminalTypes { get; } = [];
         public PermissionDecision? PermissionResult { get; set; }
+        public Exception? ExceptionToThrow { get; init; }
 
         public ValueTask<IActionOutcome<TResult>> InvokeAsync<TAction, TResult>(
             HostActionEntryRequest<TAction, TResult> request,
             IHostActionEntryTerminal<TAction, TResult> terminal,
             CancellationToken ct)
         {
+            ct.ThrowIfCancellationRequested();
             Keys.Add(request.Descriptor.Key.Value);
             Contexts.Add(request.Context);
+            Actions.Add(request.Action!);
             TerminalTypes.Add(terminal.GetType());
+            if (ExceptionToThrow is not null)
+                throw ExceptionToThrow;
+
             var result = typeof(TResult) == typeof(JsonElement)
                 ? (TResult)(object)JsonSerializer.SerializeToElement(new { accepted = true })
                 : typeof(TResult) == typeof(PermissionDecision)

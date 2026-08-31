@@ -1,15 +1,10 @@
 using System.Text.Json;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Routing;
-using Microsoft.Extensions.DependencyInjection;
 using SharpClaw.Contracts.Modules;
-using SharpClaw.ModuleSDK;
 
 namespace SharpClaw.Modules.Context;
 
 public sealed class ContextEndpointContribution(
-    ContextApiActionTerminal terminal) : IModuleEndpointHandler
+    ContextApiActionTerminal terminal) : IModuleHttpEndpointHandler
 {
     private static readonly JsonElement EmptyPayload =
         JsonSerializer.SerializeToElement(new { });
@@ -62,126 +57,160 @@ public sealed class ContextEndpointContribution(
 
     private static IReadOnlyList<RouteDefinition> Routes { get; } =
     [
-        new(CreateThreadRoute, "POST", ContextApiOperations.CreateThread),
-        new(ReadHistoryRoute, "POST", ContextApiOperations.ReadHistory),
-        new(CommitExchangeRoute, "POST", ContextApiOperations.CommitExchange),
-        new(ChannelRoutes[0], "GET", ContextApiOperations.ListChannels),
-        new(ChannelRoutes[1], "GET", ContextApiOperations.ListChannels),
-        new(ChannelRoutes[2], "GET", ContextApiOperations.GetChannel),
-        new(ChannelRoutes[3], "POST", ContextApiOperations.CreateChannel),
-        new(ChannelRoutes[4], "PUT", ContextApiOperations.UpdateChannel),
-        new(ChannelRoutes[5], "DELETE", ContextApiOperations.DeleteChannel),
-        new(ChannelRoutes[6], "POST", ContextApiOperations.AssignChannel),
-        new(ChannelRoutes[7], "POST", ContextApiOperations.UnassignChannel),
-        new(ChannelRoutes[8], "POST", ContextApiOperations.OptInChannel),
-        new(ChannelRoutes[9], "POST", ContextApiOperations.OptOutChannel),
-        new(ChannelRoutes[10], "GET", ContextApiOperations.ChannelPermissions),
-        new(ChannelRoutes[11], "POST", ContextApiOperations.SynchronizeChannel),
-        new(ChannelRoutes[12], "POST", ContextApiOperations.SynchronizeChannel),
-        new(ChannelContextRoutes[0], "GET", ContextApiOperations.ListContexts),
-        new(ChannelContextRoutes[1], "GET", ContextApiOperations.ListContexts),
-        new(ChannelContextRoutes[2], "GET", ContextApiOperations.GetContext),
-        new(ChannelContextRoutes[3], "POST", ContextApiOperations.CreateContext),
-        new(ChannelContextRoutes[4], "PUT", ContextApiOperations.UpdateContext),
-        new(ChannelContextRoutes[5], "DELETE", ContextApiOperations.DeleteContext),
-        new(ChannelContextRoutes[6], "POST", ContextApiOperations.AssignContext),
-        new(ChannelContextRoutes[7], "POST", ContextApiOperations.UnassignContext),
-        new(ChannelContextRoutes[8], "POST", ContextApiOperations.ActivateContext),
-        new(ChannelContextRoutes[9], "POST", ContextApiOperations.DeactivateContext),
-        new(ChannelContextRoutes[10], "GET", ContextApiOperations.ContextPermissions),
-        new(ChannelContextRoutes[11], "POST", ContextApiOperations.SynchronizeContext),
-        new(ThreadRoutes[0], "GET", ContextApiOperations.ListThreads),
-        new(ThreadRoutes[1], "GET", ContextApiOperations.GetThread),
-        new(ThreadRoutes[2], "POST", ContextApiOperations.CreateThread),
-        new(ThreadRoutes[3], "PUT", ContextApiOperations.UpdateThread),
-        new(ThreadRoutes[4], "DELETE", ContextApiOperations.DeleteThread),
+        Route(CreateThreadRoute, "POST", ContextApiOperations.CreateThread),
+        Route(ReadHistoryRoute, "POST", ContextApiOperations.ReadHistory),
+        Route(CommitExchangeRoute, "POST", ContextApiOperations.CommitExchange),
+        Route(ChannelRoutes[0], "GET", ContextApiOperations.ListChannels),
+        Route(ChannelRoutes[1], "GET", ContextApiOperations.ListChannels),
+        Route(ChannelRoutes[2], "GET", ContextApiOperations.GetChannel),
+        Route(ChannelRoutes[3], "POST", ContextApiOperations.CreateChannel),
+        Route(ChannelRoutes[4], "PUT", ContextApiOperations.UpdateChannel),
+        Route(ChannelRoutes[5], "DELETE", ContextApiOperations.DeleteChannel),
+        Route(ChannelRoutes[6], "POST", ContextApiOperations.AssignChannel),
+        Route(ChannelRoutes[7], "POST", ContextApiOperations.UnassignChannel),
+        Route(ChannelRoutes[8], "POST", ContextApiOperations.OptInChannel),
+        Route(ChannelRoutes[9], "POST", ContextApiOperations.OptOutChannel),
+        Route(ChannelRoutes[10], "GET", ContextApiOperations.ChannelPermissions),
+        Route(ChannelRoutes[11], "POST", ContextApiOperations.SynchronizeChannel),
+        Route(ChannelRoutes[12], "POST", ContextApiOperations.SynchronizeChannel),
+        Route(ChannelContextRoutes[0], "GET", ContextApiOperations.ListContexts),
+        Route(ChannelContextRoutes[1], "GET", ContextApiOperations.ListContexts),
+        Route(ChannelContextRoutes[2], "GET", ContextApiOperations.GetContext),
+        Route(ChannelContextRoutes[3], "POST", ContextApiOperations.CreateContext),
+        Route(ChannelContextRoutes[4], "PUT", ContextApiOperations.UpdateContext),
+        Route(ChannelContextRoutes[5], "DELETE", ContextApiOperations.DeleteContext),
+        Route(ChannelContextRoutes[6], "POST", ContextApiOperations.AssignContext),
+        Route(ChannelContextRoutes[7], "POST", ContextApiOperations.UnassignContext),
+        Route(ChannelContextRoutes[8], "POST", ContextApiOperations.ActivateContext),
+        Route(ChannelContextRoutes[9], "POST", ContextApiOperations.DeactivateContext),
+        Route(ChannelContextRoutes[10], "GET", ContextApiOperations.ContextPermissions),
+        Route(ChannelContextRoutes[11], "POST", ContextApiOperations.SynchronizeContext),
+        Route(ThreadRoutes[0], "GET", ContextApiOperations.ListThreads),
+        Route(ThreadRoutes[1], "GET", ContextApiOperations.GetThread),
+        Route(ThreadRoutes[2], "POST", ContextApiOperations.CreateThread),
+        Route(ThreadRoutes[3], "PUT", ContextApiOperations.UpdateThread),
+        Route(ThreadRoutes[4], "DELETE", ContextApiOperations.DeleteThread),
     ];
 
-    public static void Map(IEndpointRouteBuilder endpoints)
-    {
-        foreach (var route in Routes)
-        {
-            endpoints.MapMethods(
-                route.Path,
-                [route.Method],
-                (HttpContext context, IContextActionGateway gateway, CancellationToken ct) =>
-                    DispatchAsync(route.Operation, context, gateway, ct));
-        }
-    }
+    public static IReadOnlyList<ModuleEndpointRouteDescriptor> EndpointRoutes { get; } =
+        Routes.Select(route => route.Descriptor).ToArray();
 
-    public async ValueTask<ModuleEndpointResult> InvokeAsync(
-        HostEndpointInvocation invocation,
+    public async ValueTask<ModuleHttpEndpointResponse> InvokeAsync(
+        HostEndpointRouteRequest request,
         IHostActionEntry hostActionEntry,
         CancellationToken cancellationToken)
     {
-        var request = new HostActionEntryRequest<ContextApiAction, JsonElement>(
-            ContextModule.ApiDescriptor,
-            new ContextApiAction(ContextApiOperations.ListChannels, EmptyPayload),
-            invocation.HostActionContext);
-        var outcome = await hostActionEntry.InvokeAsync(
-            request,
-            terminal,
-            cancellationToken);
-        return ToResult(outcome);
-    }
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(hostActionEntry);
 
-    private static async Task<IResult> DispatchAsync(
-        string operation,
-        HttpContext context,
-        IContextActionGateway gateway,
-        CancellationToken ct)
-    {
+        RouteDefinition? route = Routes.SingleOrDefault(candidate =>
+            candidate.Descriptor.ToRouteIdentity().Equals(request.Route));
+        if (route is null)
+        {
+            return ErrorResponse(
+                404,
+                "endpoint_route_not_found",
+                "The Context endpoint route is not registered.");
+        }
+
+        JsonElement payload;
         try
         {
-            var payload = await context.Request.ReadFromJsonAsync<JsonElement>(cancellationToken: ct);
-            if (payload.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
-                payload = JsonSerializer.SerializeToElement(new { });
-            var hostInvocation = context.RequestServices
-                .GetRequiredService<HostEndpointInvocation>();
-            var result = await gateway.ExecuteAsync(
-                hostInvocation.HostActionContext,
-                operation,
-                payload,
-                ct);
-            return Results.Ok(result);
+            payload = ReadPayload(request.Body);
         }
-        catch (Exception exception) when (IsClientFailure(exception))
+        catch (JsonException)
         {
-            return Failure(exception);
+            return ErrorResponse(
+                400,
+                "endpoint_invalid_json",
+                "The Context endpoint payload is not valid JSON.");
+        }
+
+        try
+        {
+            IActionOutcome<JsonElement> outcome = await hostActionEntry.InvokeAsync(
+                new HostActionEntryRequest<ContextApiAction, JsonElement>(
+                    ContextModule.ApiDescriptor,
+                    new ContextApiAction(route.Operation, payload),
+                    request.Invocation.HostActionContext),
+                terminal,
+                cancellationToken);
+            return ToResponse(outcome);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return ErrorResponse(403, "endpoint_forbidden", "The Context endpoint request is not authorized.");
+        }
+        catch (ArgumentException)
+        {
+            return ErrorResponse(400, "endpoint_invalid_request", "The Context endpoint request is invalid.");
+        }
+        catch (InvalidOperationException)
+        {
+            return ErrorResponse(404, "endpoint_resource_not_found", "The Context endpoint resource was not found.");
         }
     }
 
-    private static bool IsClientFailure(Exception exception) =>
-        exception is UnauthorizedAccessException
-            or ArgumentException
-            or InvalidOperationException;
+    private static RouteDefinition Route(string path, string method, string operation) =>
+        new(
+            new ModuleEndpointRouteDescriptor(
+                $"{ContextModule.ModuleIdValue}:http:{method}:{path}",
+                path,
+                method,
+                HostEndpointTransport.Http),
+            operation);
 
-    private static IResult Failure(Exception exception) => exception switch
+    private static JsonElement ReadPayload(byte[] body)
     {
-        UnauthorizedAccessException => Results.StatusCode(StatusCodes.Status403Forbidden),
-        ArgumentException argument => Results.BadRequest(new { error = argument.Message }),
-        InvalidOperationException operation => Results.NotFound(new { error = operation.Message }),
-        _ => Results.StatusCode(StatusCodes.Status500InternalServerError),
-    };
+        if (body is null || body.Length == 0)
+            return EmptyPayload;
 
-    private static ModuleEndpointResult ToResult(IActionOutcome<JsonElement> outcome) =>
+        using JsonDocument document = JsonDocument.Parse(body);
+        return document.RootElement.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
+            ? EmptyPayload
+            : document.RootElement.Clone();
+    }
+
+    private static ModuleHttpEndpointResponse ToResponse(IActionOutcome<JsonElement> outcome) =>
         outcome.Kind switch
         {
             ActionOutcomeKind.Completed when outcome.Result is { } result =>
-                ModuleEndpointResult.Success(result),
-            ActionOutcomeKind.Cancelled => ModuleEndpointResult.Failure(
-                "endpoint_cancelled", "The context endpoint action was cancelled."),
-            ActionOutcomeKind.Failed => ModuleEndpointResult.Failure(
+                ModuleHttpEndpointResponse.Json(200, result),
+            ActionOutcomeKind.Cancelled => ErrorResponse(
+                409,
+                "endpoint_cancelled",
+                "The Context endpoint action was cancelled."),
+            ActionOutcomeKind.Failed => ErrorResponse(
+                500,
                 outcome.Error?.Code ?? "endpoint_failed",
-                outcome.Error?.Message ?? "The context endpoint action failed."),
-            ActionOutcomeKind.Uncertain => ModuleEndpointResult.Failure(
+                "The Context endpoint action failed."),
+            ActionOutcomeKind.Uncertain => ErrorResponse(
+                503,
                 outcome.Uncertainty?.Code ?? "endpoint_uncertain",
-                outcome.Uncertainty?.Message ?? "The context endpoint action is uncertain."),
-            ActionOutcomeKind.Deferred => ModuleEndpointResult.Failure(
-                "endpoint_deferred", "The context endpoint action was deferred."),
-            _ => ModuleEndpointResult.Failure(
-                "endpoint_unknown", "The context endpoint action returned an unknown outcome."),
+                "The Context endpoint action result is uncertain."),
+            ActionOutcomeKind.Deferred => ErrorResponse(
+                503,
+                "endpoint_deferred",
+                "The Context endpoint action was deferred."),
+            _ => ErrorResponse(
+                500,
+                "endpoint_unknown",
+                "The Context endpoint action returned an unknown outcome."),
         };
 
-    private sealed record RouteDefinition(string Path, string Method, string Operation);
+    private static ModuleHttpEndpointResponse ErrorResponse(
+        int statusCode,
+        string code,
+        string message) =>
+        ModuleHttpEndpointResponse.Json(
+            statusCode,
+            JsonSerializer.SerializeToElement(new { error = code, message }));
+
+    private sealed record RouteDefinition(
+        ModuleEndpointRouteDescriptor Descriptor,
+        string Operation);
 }
