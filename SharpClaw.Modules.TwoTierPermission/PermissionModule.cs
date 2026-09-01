@@ -172,7 +172,11 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
     public static IReadOnlyList<ModuleStorageContractDescriptor> StorageContracts =>
     [
         Storage(PermissionPolicyStore.PoliciesStorage, "Subject clearance and two-tier capability policy.",
-            [new("subjectId", ModuleStorageIndexValueKind.String), new("clearance", ModuleStorageIndexValueKind.String)]),
+            [
+                new("subjectId", ModuleStorageIndexValueKind.String),
+                new("clearance", ModuleStorageIndexValueKind.String),
+                new("updatedAt", ModuleStorageIndexValueKind.DateTime),
+            ]),
         Storage(PermissionPolicyStore.GrantsStorage, "Delegated and administratively issued resource grants.",
             [new("subjectId", ModuleStorageIndexValueKind.String), new("capability", ModuleStorageIndexValueKind.String), new("scope", ModuleStorageIndexValueKind.String)]),
         Storage(PermissionPolicyStore.ApprovalsStorage, "Approval records for same-level and delegated checks.",
