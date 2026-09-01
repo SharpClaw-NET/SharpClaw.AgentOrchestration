@@ -9,8 +9,9 @@
     <FileVersion>0.5.0.0</FileVersion>
     <InformationalVersion>0.5.0-beta.15</InformationalVersion>
     <NoWarn>$(NoWarn);CS9113;NU1507;NU1510;NETSDK1201</NoWarn>
-    <BaseOutputPath Condition="'$(BaseOutputPath)' == ''">D:\SharpClaw\SharpClaw.AgentOrchestration\bin\$(MSBuildProjectName)\</BaseOutputPath>
-    <BaseIntermediateOutputPath Condition="'$(BaseIntermediateOutputPath)' == ''">D:\SharpClaw\SharpClaw.AgentOrchestration\obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
-    <DefaultItemExcludes>$(DefaultItemExcludes);$(MSBuildProjectDirectory)\bin\**;$(MSBuildProjectDirectory)\obj\**;D:\SharpClaw\SharpClaw.AgentOrchestration\bin\**;D:\SharpClaw\SharpClaw.AgentOrchestration\obj\**</DefaultItemExcludes>
+    <SharpClawArtifactsRoot Condition="'$(SharpClawArtifactsRoot)' == ''">D:\temp\SharpClaw.AgentOrchestration\build</SharpClawArtifactsRoot>
+    <BaseOutputPath Condition="'$(BaseOutputPath)' == ''">$(SharpClawArtifactsRoot)\bin\$(MSBuildProjectName)\</BaseOutputPath>
+    <BaseIntermediateOutputPath Condition="'$(BaseIntermediateOutputPath)' == ''">$(SharpClawArtifactsRoot)\obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
+    <DefaultItemExcludes>$(DefaultItemExcludes);$(MSBuildProjectDirectory)\bin\**;$(MSBuildProjectDirectory)\obj\**;$(SharpClawArtifactsRoot)\bin\**;$(SharpClawArtifactsRoot)\obj\**</DefaultItemExcludes>
   </PropertyGroup>
 </Project>

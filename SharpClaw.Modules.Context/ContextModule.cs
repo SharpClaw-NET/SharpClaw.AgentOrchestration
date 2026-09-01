@@ -53,8 +53,12 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
     {
         module.Services.AddScoped<ContextStore>();
         module.Services.AddScoped<IConversationStore>(sp => sp.GetRequiredService<ContextStore>());
-        module.Services.AddScoped<IConversationResolver, ContextConversationResolver>();
-        module.Services.AddScoped<IChatContextContributor, ContextHistoryContributor>();
+        module.Services.AddScoped<ContextConversationResolver>();
+        module.Services.AddScoped<IConversationResolver>(sp =>
+            sp.GetRequiredService<ContextConversationResolver>());
+        module.Services.AddScoped<ContextHistoryContributor>();
+        module.Services.AddScoped<IChatContextContributor>(sp =>
+            sp.GetRequiredService<ContextHistoryContributor>());
         module.Services.AddScoped<ContextToolHandler>();
         module.Services.AddScoped<IContextActionExecutor, ContextActionExecutor>();
         module.Services.AddScoped<IContextSteeringActionExecutor, ContextSteeringActionExecutor>();
@@ -172,9 +176,9 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
     public static IReadOnlyList<ModuleStorageContractDescriptor> StorageContracts =>
     [
         Storage(ContextStore.ChannelsStorage, "Context channel ownership and cross-thread opt-in.",
-            [new("ownerAgentId", ModuleStorageIndexValueKind.String), new("contextId", ModuleStorageIndexValueKind.String), new("optedIn", ModuleStorageIndexValueKind.Bool)]),
+            [new("ownerAgentId", ModuleStorageIndexValueKind.String), new("contextId", ModuleStorageIndexValueKind.String), new("optedIn", ModuleStorageIndexValueKind.Bool), new("updatedAt", ModuleStorageIndexValueKind.DateTime)]),
         Storage(ContextStore.ContextsStorage, "Context ownership and default-agent assignment.",
-            [new("defaultAgentId", ModuleStorageIndexValueKind.String)]),
+            [new("defaultAgentId", ModuleStorageIndexValueKind.String), new("updatedAt", ModuleStorageIndexValueKind.DateTime)]),
         Storage(ContextStore.ThreadsStorage, "Thread identity, channel identity, and update order.",
             [new("channelId", ModuleStorageIndexValueKind.String), new("contextId", ModuleStorageIndexValueKind.String), new("updatedAt", ModuleStorageIndexValueKind.DateTime)]),
         Storage(ContextStore.MessagesStorage, "Ordered conversation history records.",

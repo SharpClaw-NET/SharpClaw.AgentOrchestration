@@ -182,7 +182,7 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
         Storage(PermissionPolicyStore.ApprovalsStorage, "Approval records for same-level and delegated checks.",
             [new("subjectId", ModuleStorageIndexValueKind.String), new("capability", ModuleStorageIndexValueKind.String), new("scope", ModuleStorageIndexValueKind.String)]),
         Storage(PermissionPolicyStore.RolesStorage, "Permission roles and assigned subjects.",
-            [new("name", ModuleStorageIndexValueKind.String), new("clearance", ModuleStorageIndexValueKind.String)]),
+            [new("name", ModuleStorageIndexValueKind.String), new("clearance", ModuleStorageIndexValueKind.String), new("updatedAt", ModuleStorageIndexValueKind.DateTime)]),
         Storage(PermissionPolicyStore.PermissionSetsStorage, "Reusable permission capability sets.",
             [new("name", ModuleStorageIndexValueKind.String), new("updatedAt", ModuleStorageIndexValueKind.DateTime)]),
     ];

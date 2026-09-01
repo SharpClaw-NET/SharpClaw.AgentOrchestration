@@ -44,8 +44,20 @@ public sealed class ModuleCompositionTests
                 "sharpclaw_agents", "SharpClaw Agents", "agents")));
             Assert.That(contextGraph.Storage.Select(item => item.StorageName), Is.EquivalentTo(
                 new[] { "channels", "contexts", "threads", "messages", "steering" }));
+            Assert.That(ContextModule.StorageContracts
+                    .Single(item => item.StorageName == ContextStore.ChannelsStorage).Indexes!
+                    .Select(item => item.Name),
+                Is.EquivalentTo(new[] { "ownerAgentId", "contextId", "optedIn", "updatedAt" }));
+            Assert.That(ContextModule.StorageContracts
+                    .Single(item => item.StorageName == ContextStore.ContextsStorage).Indexes!
+                    .Select(item => item.Name),
+                Is.EquivalentTo(new[] { "defaultAgentId", "updatedAt" }));
             Assert.That(permissionGraph.Storage.Select(item => item.StorageName), Is.EquivalentTo(
                 new[] { "policies", "grants", "approvals", "roles", "permission_sets" }));
+            Assert.That(TwoTierPermissionModule.StorageContracts
+                    .Single(item => item.StorageName == PermissionPolicyStore.RolesStorage).Indexes!
+                    .Select(item => item.Name),
+                Is.EquivalentTo(new[] { "name", "clearance", "updatedAt" }));
             Assert.That(
                 TwoTierPermissionModule.StorageContracts
                     .Single(item => item.StorageName == PermissionPolicyStore.PoliciesStorage)
@@ -59,6 +71,10 @@ public sealed class ModuleCompositionTests
                 }));
             Assert.That(agentsGraph.Storage.Select(item => item.StorageName), Is.EquivalentTo(
                 new[] { "agents", "skills", "memory", "costs", "synchronization", "agent_jobs", "agent_job_imports" }));
+            Assert.That(AgentsModule.StorageContracts
+                    .Single(item => item.StorageName == AgentsCatalog.AgentsStorage).Indexes!
+                    .Select(item => item.Name),
+                Is.EquivalentTo(new[] { "name", "providerKey", "updatedAt" }));
             Assert.That(permissionGraph.Contracts.Where(item => item.IsExport).Select(item => item.ContractName),
                 Does.Contain("sharpclaw.permission"));
             Assert.That(agentsGraph.Contracts.Where(item => !item.IsExport).Select(item => item.ContractName),
@@ -72,6 +88,8 @@ public sealed class ModuleCompositionTests
             Assert.That(contextGraph.Services.Any(item => item.ServiceType == typeof(IContextActionExecutor)), Is.True);
             Assert.That(contextGraph.Services.Any(item => item.ServiceType == typeof(IContextSteeringActionExecutor)), Is.True);
             Assert.That(contextGraph.Services.Any(item => item.ServiceType == typeof(HostPermissionActionEntry)), Is.True);
+            Assert.That(contextGraph.Services.Any(item => item.ServiceType == typeof(ContextConversationResolver)), Is.True);
+            Assert.That(contextGraph.Services.Any(item => item.ServiceType == typeof(ContextHistoryContributor)), Is.True);
             Assert.That(permissionGraph.Services.Any(item => item.ServiceType == typeof(IPermissionActionExecutor)), Is.True);
             Assert.That(agentsGraph.Services.Any(item => item.ServiceType == typeof(IAgentsActionExecutor)), Is.True);
             Assert.That(agentsGraph.Services.Any(item => item.ServiceType == typeof(HostPermissionActionEntry)), Is.True);
@@ -182,9 +200,9 @@ public sealed class ModuleCompositionTests
     {
         (string Manifest, string Id, string ModuleType, string Assembly, string Version)[] expected =
         {
-        ("Context.module.json", "sharpclaw_context", "SharpClaw.Modules.Context.ContextModule", "SharpClaw.Modules.Context.dll", "0.5.0-beta.15"),
-        ("TwoTierPermission.module.json", "sharpclaw_two_tier_permission", "SharpClaw.Modules.TwoTierPermission.TwoTierPermissionModule", "SharpClaw.Modules.TwoTierPermission.dll", "0.5.0-beta.16"),
-        ("Agents.module.json", "sharpclaw_agents", "SharpClaw.Modules.Agents.AgentsModule", "SharpClaw.Modules.Agents.dll", "0.5.0-beta.16"),
+        ("Context.module.json", "sharpclaw_context", "SharpClaw.Modules.Context.ContextModule", "SharpClaw.Modules.Context.dll", "0.5.0-beta.16"),
+        ("TwoTierPermission.module.json", "sharpclaw_two_tier_permission", "SharpClaw.Modules.TwoTierPermission.TwoTierPermissionModule", "SharpClaw.Modules.TwoTierPermission.dll", "0.5.0-beta.17"),
+        ("Agents.module.json", "sharpclaw_agents", "SharpClaw.Modules.Agents.AgentsModule", "SharpClaw.Modules.Agents.dll", "0.5.0-beta.17"),
         };
 
         foreach (var item in expected)

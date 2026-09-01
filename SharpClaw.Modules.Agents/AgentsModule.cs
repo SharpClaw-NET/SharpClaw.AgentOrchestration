@@ -236,7 +236,7 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
     public static IReadOnlyList<ModuleStorageContractDescriptor> StorageContracts =>
     [
         Storage(AgentsCatalog.AgentsStorage, "Agent profiles and model selection.",
-            [new("name", ModuleStorageIndexValueKind.String), new("providerKey", ModuleStorageIndexValueKind.String)]),
+            [new("name", ModuleStorageIndexValueKind.String), new("providerKey", ModuleStorageIndexValueKind.String), new("updatedAt", ModuleStorageIndexValueKind.DateTime)]),
         Storage(AgentsCatalog.SkillsStorage, "Reusable agent skill instructions.",
             [new("name", ModuleStorageIndexValueKind.String), new("updatedAt", ModuleStorageIndexValueKind.DateTime)]),
         Storage(AgentsCatalog.MemoryStorage, "Agent-owned memory records and update order.",
