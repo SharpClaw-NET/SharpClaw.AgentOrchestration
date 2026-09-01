@@ -147,9 +147,9 @@ public sealed class ModuleCompositionTests
     {
         (string Manifest, string Id, string ModuleType, string Assembly, string Version)[] expected =
         {
-        ("Context.module.json", "sharpclaw_context", "SharpClaw.Modules.Context.ContextModule", "SharpClaw.Modules.Context.dll", "0.5.0-beta.12"),
-        ("TwoTierPermission.module.json", "sharpclaw_two_tier_permission", "SharpClaw.Modules.TwoTierPermission.TwoTierPermissionModule", "SharpClaw.Modules.TwoTierPermission.dll", "0.5.0-beta.13"),
-        ("Agents.module.json", "sharpclaw_agents", "SharpClaw.Modules.Agents.AgentsModule", "SharpClaw.Modules.Agents.dll", "0.5.0-beta.13"),
+        ("Context.module.json", "sharpclaw_context", "SharpClaw.Modules.Context.ContextModule", "SharpClaw.Modules.Context.dll", "0.5.0-beta.13"),
+        ("TwoTierPermission.module.json", "sharpclaw_two_tier_permission", "SharpClaw.Modules.TwoTierPermission.TwoTierPermissionModule", "SharpClaw.Modules.TwoTierPermission.dll", "0.5.0-beta.14"),
+        ("Agents.module.json", "sharpclaw_agents", "SharpClaw.Modules.Agents.AgentsModule", "SharpClaw.Modules.Agents.dll", "0.5.0-beta.14"),
         };
 
         foreach (var item in expected)
@@ -3090,6 +3090,16 @@ public sealed class ModuleCompositionTests
             ActionDescriptor<TAction, TResult> descriptor,
             TAction action,
             Func<ActionContext<TAction>, CancellationToken, ValueTask<TResult>> terminal,
+            ActionPipelineSnapshot snapshot,
+            SidecarExternalActionDispatchAuthority authority,
+            CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public ValueTask<IActionOutcome<JsonElement>> RunExternalSerializedAsync(
+            SidecarActionDefinition definition,
+            SidecarActionDescriptorIdentity descriptor,
+            JsonElement action,
+            Func<ActionContext<JsonElement>, CancellationToken, ValueTask<JsonElement>> terminal,
             ActionPipelineSnapshot snapshot,
             SidecarExternalActionDispatchAuthority authority,
             CancellationToken ct) =>
