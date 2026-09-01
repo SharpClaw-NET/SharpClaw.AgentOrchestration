@@ -1,7 +1,7 @@
 {
   "id": "sharpclaw_context",
   "displayName": "SharpClaw Context",
-  "version": "0.5.0-beta.16",
+  "version": "0.5.0-beta.17",
   "toolPrefix": "ctx",
   "runtime": "dotnet",
   "hostMode": "sidecar",
