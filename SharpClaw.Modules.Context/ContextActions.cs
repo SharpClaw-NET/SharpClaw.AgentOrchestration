@@ -24,9 +24,6 @@ public interface IContextActionExecutor
         CancellationToken ct = default,
         HostActionEntryRequestContext? hostContext = null);
 
-    ValueTask CommitExchangeAsync(
-        ChatExchange exchange,
-        CancellationToken ct = default);
 }
 
 public sealed class ContextActionExecutor(ContextStore store) : IContextActionExecutor
@@ -72,10 +69,6 @@ public sealed class ContextActionExecutor(ContextStore store) : IContextActionEx
         HostActionEntryRequestContext? hostContext = null) =>
         store.CommitExchangeAsync(caller, action, ct, hostContext);
 
-    public ValueTask CommitExchangeAsync(
-        ChatExchange exchange,
-        CancellationToken ct = default) =>
-        store.CommitExchangeAsync(exchange, ct);
 }
 
 public interface IContextSteeringActionExecutor

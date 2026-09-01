@@ -180,8 +180,73 @@ public sealed class ModuleActionAuthorization<TAction>(
         permission.EvaluateAgentAsync(context, capability, targetAgentId, ct);
 }
 
+public sealed class ChatOperationAuthorization(
+    ChatOperationContext context,
+    HostPermissionActionEntry permission) : IModuleActionAuthorization
+{
+    public RequestPrincipal Caller => context.Caller;
+
+    public ValueTask<ContextAccessDecision> EvaluateContextAsync(
+        ContextAccessRequest request,
+        CancellationToken ct = default) =>
+        permission.EvaluateContextAsync(context, request, ct);
+
+    public ValueTask<ContextAccessDecision> EvaluateAgentAsync(
+        string capability,
+        Guid? targetAgentId,
+        CancellationToken ct = default) =>
+        permission.EvaluateAgentAsync(context, capability, targetAgentId, ct);
+}
+
 public sealed class HostPermissionActionEntry(IHostActionEntry host) : IPermissionActionEntry
 {
+    public async ValueTask<ContextAccessDecision> EvaluateContextAsync(
+        ChatOperationContext context,
+        ContextAccessRequest request,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        var hostEntry = context.HostActionEntry
+            ?? throw new InvalidOperationException(
+                "The chat operation has no host action entry.");
+        var action = new PermissionContextAccessAction(
+            request with { Principal = context.Caller });
+        var decision = await hostEntry.InvokeCrossSidecarAsync(
+            new ModuleCrossSidecarActionEntryRequest<
+                PermissionContextAccessAction,
+                PermissionDecision>(
+                PermissionActionDescriptors.ContextAccess,
+                action),
+            ct);
+        return ToContextDecision(RequireResult(
+            PermissionActionDescriptors.ContextAccess.Key.Value,
+            decision,
+            ct));
+    }
+
+    public async ValueTask<ContextAccessDecision> EvaluateAgentAsync(
+        ChatOperationContext context,
+        string capability,
+        Guid? targetAgentId,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        var hostEntry = context.HostActionEntry
+            ?? throw new InvalidOperationException(
+                "The chat operation has no host action entry.");
+        var decision = await hostEntry.InvokeCrossSidecarAsync(
+            new ModuleCrossSidecarActionEntryRequest<
+                PermissionAgentAccessAction,
+                PermissionDecision>(
+                PermissionActionDescriptors.AgentAccess,
+                new PermissionAgentAccessAction(capability, targetAgentId)),
+            ct);
+        return ToContextDecision(RequireResult(
+            PermissionActionDescriptors.AgentAccess.Key.Value,
+            decision,
+            ct));
+    }
+
     public async ValueTask<ContextAccessDecision> EvaluateContextAsync(
         HostActionEntryRequestContext hostContext,
         ContextAccessRequest request,

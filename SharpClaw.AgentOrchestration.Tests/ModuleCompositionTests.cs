@@ -143,13 +143,48 @@ public sealed class ModuleCompositionTests
     }
 
     [Test]
+    public void OutOfProcessGraphsPublishNeutralChatActionEntries()
+    {
+        var context = CompileModule(new ContextModule(), ModuleHostingMode.OutOfProcess)
+            .CreateSidecarApplicationDiscovery();
+        var permission = CompileModule(
+                new TwoTierPermissionModule(),
+                ModuleHostingMode.OutOfProcess)
+            .CreateSidecarApplicationDiscovery();
+        var agents = CompileModule(new AgentsModule(), ModuleHostingMode.OutOfProcess)
+            .CreateSidecarApplicationDiscovery();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(context.Chat.Select(item => item.Kind), Is.EquivalentTo(new[]
+            {
+                SidecarChatContributionKind.ConversationResolver,
+                SidecarChatContributionKind.HistoryLoad,
+                SidecarChatContributionKind.ExchangeCommit,
+                SidecarChatContributionKind.ContextContributor,
+            }));
+            Assert.That(permission.Chat, Is.Empty);
+            Assert.That(agents.Chat.Select(item => item.Kind), Is.EqualTo(new[]
+            {
+                SidecarChatContributionKind.ProfileResolver,
+            }));
+            Assert.That(context.Chat.All(item => context.ActionEntries.Count(entry =>
+                entry.TerminalId == item.TerminalId
+                && entry.Descriptor == item.Descriptor) == 1), Is.True);
+            Assert.That(agents.Chat.All(item => agents.ActionEntries.Count(entry =>
+                entry.TerminalId == item.TerminalId
+                && entry.Descriptor == item.Descriptor) == 1), Is.True);
+        });
+    }
+
+    [Test]
     public void ManifestsUseCurrentThreeOwnerComposition()
     {
         (string Manifest, string Id, string ModuleType, string Assembly, string Version)[] expected =
         {
-        ("Context.module.json", "sharpclaw_context", "SharpClaw.Modules.Context.ContextModule", "SharpClaw.Modules.Context.dll", "0.5.0-beta.14"),
-        ("TwoTierPermission.module.json", "sharpclaw_two_tier_permission", "SharpClaw.Modules.TwoTierPermission.TwoTierPermissionModule", "SharpClaw.Modules.TwoTierPermission.dll", "0.5.0-beta.15"),
-        ("Agents.module.json", "sharpclaw_agents", "SharpClaw.Modules.Agents.AgentsModule", "SharpClaw.Modules.Agents.dll", "0.5.0-beta.15"),
+        ("Context.module.json", "sharpclaw_context", "SharpClaw.Modules.Context.ContextModule", "SharpClaw.Modules.Context.dll", "0.5.0-beta.15"),
+        ("TwoTierPermission.module.json", "sharpclaw_two_tier_permission", "SharpClaw.Modules.TwoTierPermission.TwoTierPermissionModule", "SharpClaw.Modules.TwoTierPermission.dll", "0.5.0-beta.16"),
+        ("Agents.module.json", "sharpclaw_agents", "SharpClaw.Modules.Agents.AgentsModule", "SharpClaw.Modules.Agents.dll", "0.5.0-beta.16"),
         };
 
         foreach (var item in expected)
@@ -1440,9 +1475,14 @@ public sealed class ModuleCompositionTests
             agent.Id,
             "concise",
             hostContext: ownerContext)).Single().Id, Is.EqualTo(memory.Id));
-        Assert.That((await new AgentChatProfileResolver(catalog).ResolveAsync(
+        var host = new PolicyHostActionEntry(permission);
+        Assert.That((await new AgentChatProfileResolver(
+            catalog,
+            new HostPermissionActionEntry(host)).ResolveAsync(
             new ChatTurnContext(Guid.NewGuid(), new ChatTurnInput("hi", Caller: owner),
-                new ConversationSelection(Guid.NewGuid())), default)).ModelName, Is.EqualTo("model"));
+                new ConversationSelection(Guid.NewGuid())),
+            CreateChatOperationContext(owner, host),
+            default)).ModelName, Is.EqualTo("model"));
     }
 
     [Test]
@@ -2063,6 +2103,83 @@ public sealed class ModuleCompositionTests
         };
 
     [Test]
+    public async Task DirectChatUsesHostAuthorityForContextHistoryAndCommit()
+    {
+        var fixture = await CreateSteeringFixtureAsync();
+        var resolver = new ContextConversationResolver(fixture.Store, fixture.Permission);
+        var forgedCaller = new RequestPrincipal(Guid.NewGuid().ToString("D"));
+        var context = CreateChatOperationContext(fixture.Caller, fixture.Host);
+        var input = new ChatTurnInput("hello", Caller: forgedCaller);
+
+        var selection = await resolver.ResolveAsync(input, context, default);
+        var thread = await fixture.Store.GetThreadAsync(selection.ConversationId);
+        var turn = new ChatTurnContext(Guid.NewGuid(), input, selection);
+        await fixture.Store.CommitExchangeAsync(
+            new ChatExchange(
+                turn,
+                "hello",
+                new ChatCompletionResult { Content = "answer" }),
+            context,
+            default);
+        var history = await fixture.Store.LoadHistoryAsync(
+            selection.ConversationId,
+            context,
+            default);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(selection.Created, Is.True);
+            Assert.That(thread, Is.Not.Null);
+            Assert.That(thread!.ChannelId.ToString("D"), Is.EqualTo(fixture.Caller.SubjectId));
+            Assert.That(history.Select(item => item.Content), Is.EqualTo(new[] { "hello", "answer" }));
+        });
+    }
+
+    [Test]
+    public async Task DirectChatPermissionDenialPreventsContextAndAgentStorageWrites()
+    {
+        var gateway = new InMemoryStorageGateway();
+        var storageCalls = 0;
+        gateway.BeforeOperationAsync = (_, _, _) =>
+        {
+            storageCalls++;
+            return Task.CompletedTask;
+        };
+        var host = new DenyingPermissionHostActionEntry();
+        var permission = new HostPermissionActionEntry(host);
+        var caller = new RequestPrincipal(Guid.NewGuid().ToString("D"));
+        var context = CreateChatOperationContext(caller, host);
+        var resolver = new ContextConversationResolver(
+            new ContextStore(gateway, permission),
+            permission);
+
+        Assert.ThrowsAsync<UnauthorizedAccessException>(async () =>
+            await resolver.ResolveAsync(new ChatTurnInput("blocked"), context, default));
+        Assert.That(gateway.UpsertCount, Is.Zero);
+        Assert.That(host.ContextAccessCalls, Is.EqualTo(1));
+
+        storageCalls = 0;
+        var profileResolver = new AgentChatProfileResolver(
+            new AgentsCatalog(gateway, permission),
+            permission);
+        Assert.ThrowsAsync<UnauthorizedAccessException>(async () =>
+            await profileResolver.ResolveAsync(
+                new ChatTurnContext(
+                    Guid.NewGuid(),
+                    new ChatTurnInput("blocked"),
+                    new ConversationSelection(Guid.NewGuid())),
+                context,
+                default));
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(storageCalls, Is.Zero);
+            Assert.That(gateway.UpsertCount, Is.Zero);
+            Assert.That(host.AgentAccessCalls, Is.EqualTo(1));
+        });
+    }
+
+    [Test]
     public async Task DirectChatFailsClosedWithoutHostActionContext()
     {
         var gateway = new InMemoryStorageGateway();
@@ -2085,16 +2202,21 @@ public sealed class ModuleCompositionTests
             null,
             DateTimeOffset.UtcNow));
 
-        var store = new ContextStore(gateway, PolicyEntry(permission));
-        var resolver = new ContextConversationResolver(store);
+        var permissionEntry = PolicyEntry(permission);
+        var store = new ContextStore(gateway, permissionEntry);
+        var resolver = new ContextConversationResolver(store, permissionEntry);
         Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await resolver.ResolveAsync(
                 new ChatTurnInput("hello", Caller: caller),
+                CreateChatOperationContext(caller),
                 default));
 
         var anonymous = new RequestPrincipal("", IsAuthenticated: false);
         Assert.ThrowsAsync<UnauthorizedAccessException>(async () =>
-            await resolver.ResolveAsync(new ChatTurnInput("blocked", Caller: anonymous), default));
+            await resolver.ResolveAsync(
+                new ChatTurnInput("blocked", Caller: anonymous),
+                CreateChatOperationContext(anonymous),
+                default));
     }
 
     [Test]
@@ -2884,12 +3006,14 @@ public sealed class ModuleCompositionTests
         ContextChannelRecord Channel,
         PolicyHostActionEntry Host);
 
-    private static ModuleContributionGraph CompileModule(ISharpClawModule module) =>
+    private static ModuleContributionGraph CompileModule(
+        ISharpClawModule module,
+        ModuleHostingMode hostingMode = ModuleHostingMode.InProcess) =>
         SharpClawModuleCompiler.Compile(
             module,
             options: new ModuleCompilationOptions
             {
-                HostingMode = ModuleHostingMode.InProcess,
+                HostingMode = hostingMode,
                 RequireManifestRequests = false,
             });
 
@@ -3368,6 +3492,21 @@ public sealed class ModuleCompositionTests
     private static HostPermissionActionEntry PolicyEntry(TwoTierPermissionPolicy policy) =>
         new(new PolicyHostActionEntry(policy));
 
+    private static ChatOperationContext CreateChatOperationContext(
+        RequestPrincipal caller,
+        IHostActionEntry? hostActionEntry = null) =>
+        new(
+            Guid.NewGuid(),
+            null,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            0,
+            1,
+            DateTimeOffset.UtcNow.AddMinutes(1),
+            caller,
+            ExtensionFeatureSet.Empty,
+            hostActionEntry);
+
     private sealed class TypedPermissionHostActionEntry(
         TwoTierPermissionPolicy policy,
         RequestPrincipal caller) : IHostActionEntry, IModuleCrossSidecarActionEntry
@@ -3435,6 +3574,46 @@ public sealed class ModuleCompositionTests
             return new HostActionOutcome<TResult>(
                 ActionOutcomeKind.Completed,
                 (TResult)(object)LastDecision);
+        }
+    }
+
+    private sealed class DenyingPermissionHostActionEntry :
+        IHostActionEntry,
+        IModuleCrossSidecarActionEntry
+    {
+        public int ContextAccessCalls { get; private set; }
+
+        public int AgentAccessCalls { get; private set; }
+
+        public ValueTask<IActionOutcome<TResult>> InvokeAsync<TAction, TResult>(
+            HostActionEntryRequest<TAction, TResult> request,
+            IHostActionEntryTerminal<TAction, TResult> terminal,
+            CancellationToken ct) =>
+            throw new NotSupportedException("The test host supports only cross-sidecar Permission calls.");
+
+        public ValueTask<IActionOutcome<TResult>> InvokeNestedAsync<TParentAction, TAction, TResult>(
+            HostActionEntryNestedRequest<TParentAction, TAction, TResult> request,
+            IHostActionEntryTerminal<TAction, TResult> terminal,
+            CancellationToken ct) =>
+            throw new NotSupportedException("The test host supports only cross-sidecar Permission calls.");
+
+        public ValueTask<IActionOutcome<TResult>> InvokeCrossSidecarAsync<TAction, TResult>(
+            ModuleCrossSidecarActionEntryRequest<TAction, TResult> request,
+            CancellationToken ct)
+        {
+            if (request.Action is PermissionContextAccessAction)
+                ContextAccessCalls++;
+            else if (request.Action is PermissionAgentAccessAction)
+                AgentAccessCalls++;
+            else
+                throw new InvalidOperationException(
+                    $"The test host does not support '{request.Descriptor.Key.Value}'.");
+
+            var decision = PermissionDecision.Deny("test_denied", "The test denies access.", 1);
+            return ValueTask.FromResult<IActionOutcome<TResult>>(
+                new HostActionOutcome<TResult>(
+                    ActionOutcomeKind.Completed,
+                    (TResult)(object)decision));
         }
     }
 

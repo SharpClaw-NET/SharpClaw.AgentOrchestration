@@ -887,17 +887,25 @@ public sealed class ContextStore : IConversationStore
 
     public ValueTask<IReadOnlyList<ChatCompletionMessage>> LoadHistoryAsync(
         Guid conversationId,
+        ChatOperationContext context,
         CancellationToken ct)
     {
-        throw new UnauthorizedAccessException(
-            "A caller is required to load conversation history through the Context policy.");
+        ArgumentNullException.ThrowIfNull(context);
+        using var authorization = PushAuthorization(
+            new ChatOperationAuthorization(context, _permission));
+        return LoadHistoryAsync(context.Caller, conversationId, ct);
     }
 
-    public async ValueTask CommitExchangeAsync(ChatExchange exchange, CancellationToken ct)
+    public async ValueTask CommitExchangeAsync(
+        ChatExchange exchange,
+        ChatOperationContext context,
+        CancellationToken ct)
     {
-        var caller = exchange.Turn.Input.Caller
-            ?? throw new UnauthorizedAccessException("Authentication is required to commit a conversation exchange.");
+        ArgumentNullException.ThrowIfNull(context);
+        var caller = context.Caller;
         RequireAuthenticatedAgent(caller);
+        using var authorization = PushAuthorization(
+            new ChatOperationAuthorization(context, _permission));
         var thread = await GetThreadAsync(exchange.Turn.Conversation.ConversationId, ct)
             ?? throw new InvalidOperationException("The conversation thread was not found.");
         await RequireThreadAccessAsync(
