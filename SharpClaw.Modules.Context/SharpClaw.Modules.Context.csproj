@@ -4,8 +4,8 @@
     <IsSharpClawModulePackage>true</IsSharpClawModulePackage>
     <IsPackable>true</IsPackable>
     <PackageId>SharpClaw.Modules.Context</PackageId>
-    <Version>0.5.0-beta.18</Version>
-    <InformationalVersion>0.5.0-beta.18</InformationalVersion>
+    <Version>0.5.0-beta.19</Version>
+    <InformationalVersion>0.5.0-beta.19</InformationalVersion>
     <Title>SharpClaw Context Module</Title>
     <Authors>SharpClaw-NET</Authors>
     <Description>Runtime-loadable SharpClaw module for threads, channels, contexts, conversation history, and context assembly.</Description>
