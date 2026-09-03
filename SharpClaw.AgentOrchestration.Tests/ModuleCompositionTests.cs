@@ -200,9 +200,9 @@ public sealed class ModuleCompositionTests
     {
         (string Manifest, string Id, string ModuleType, string Assembly, string Version)[] expected =
         {
-        ("Context.module.json", "sharpclaw_context", "SharpClaw.Modules.Context.ContextModule", "SharpClaw.Modules.Context.dll", "0.5.0-beta.22"),
-        ("TwoTierPermission.module.json", "sharpclaw_two_tier_permission", "SharpClaw.Modules.TwoTierPermission.TwoTierPermissionModule", "SharpClaw.Modules.TwoTierPermission.dll", "0.5.0-beta.23"),
-        ("Agents.module.json", "sharpclaw_agents", "SharpClaw.Modules.Agents.AgentsModule", "SharpClaw.Modules.Agents.dll", "0.5.0-beta.23"),
+        ("Context.module.json", "sharpclaw_context", "SharpClaw.Modules.Context.ContextModule", "SharpClaw.Modules.Context.dll", "0.5.0-beta.23"),
+        ("TwoTierPermission.module.json", "sharpclaw_two_tier_permission", "SharpClaw.Modules.TwoTierPermission.TwoTierPermissionModule", "SharpClaw.Modules.TwoTierPermission.dll", "0.5.0-beta.24"),
+        ("Agents.module.json", "sharpclaw_agents", "SharpClaw.Modules.Agents.AgentsModule", "SharpClaw.Modules.Agents.dll", "0.5.0-beta.24"),
         };
 
         foreach (var item in expected)
@@ -224,9 +224,27 @@ public sealed class ModuleCompositionTests
                     .Select(hook => hook.GetProperty("target").GetString())
                     .ToArray();
                 if (item.Item2 == "sharpclaw_context")
+                {
                     Assert.That(hookTargets, Does.Contain("permission.context-access"));
+                    Assert.That(root.GetProperty("requestedHooks")
+                        .EnumerateArray()
+                        .Single(hook => hook.GetProperty("target").GetString() == "permission.context-access")
+                        .GetProperty("effects")
+                        .EnumerateArray()
+                        .Select(effect => effect.GetString()),
+                        Is.EquivalentTo(new[] { "Inspect", "Wrap", "Observe" }));
+                }
                 if (item.Item2 == "sharpclaw_agents")
+                {
                     Assert.That(hookTargets, Does.Contain("permission.agent-access"));
+                    Assert.That(root.GetProperty("requestedHooks")
+                        .EnumerateArray()
+                        .Single(hook => hook.GetProperty("target").GetString() == "permission.agent-access")
+                        .GetProperty("effects")
+                        .EnumerateArray()
+                        .Select(effect => effect.GetString()),
+                        Is.EquivalentTo(new[] { "Inspect", "Wrap", "Observe" }));
+                }
             });
         }
     }

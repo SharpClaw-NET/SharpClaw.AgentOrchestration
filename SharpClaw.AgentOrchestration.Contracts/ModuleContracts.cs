@@ -59,7 +59,9 @@ public static class PermissionActionDescriptors
 
     public static readonly ActionDescriptor<PermissionContextAccessAction, AccessDecision> ContextAccess =
         new(new("permission.context-access"), 1, "permission.authorization",
-            ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
+            ActionInterceptionCapabilities.Inspect |
+            ActionInterceptionCapabilities.Wrap |
+            ActionInterceptionCapabilities.Observe,
             true, false, RepeatPolicy, null, TimeSpan.FromSeconds(10))
         {
             InputSchema = ModuleSchemaIdentity.ActionInput(
@@ -75,7 +77,9 @@ public static class PermissionActionDescriptors
 
     public static readonly ActionDescriptor<PermissionAgentAccessAction, AccessDecision> AgentAccess =
         new(new("permission.agent-access"), 1, "permission.authorization",
-            ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
+            ActionInterceptionCapabilities.Inspect |
+            ActionInterceptionCapabilities.Wrap |
+            ActionInterceptionCapabilities.Observe,
             true, false, RepeatPolicy, null, TimeSpan.FromSeconds(10))
         {
             InputSchema = ModuleSchemaIdentity.ActionInput(
@@ -308,8 +312,16 @@ public sealed class HostPermissionActionEntry(IHostActionEntry host) : IPermissi
     private static AccessDecision RequireResult(
         string actionKey,
         IActionOutcome<AccessDecision> outcome,
-        CancellationToken ct) =>
-        outcome.Kind switch
+        CancellationToken ct)
+    {
+        if (outcome.Kind == ActionOutcomeKind.Failed &&
+            PermissionRestriction.TryMapFailure(outcome.Error, out var denial))
+        {
+            ct.ThrowIfCancellationRequested();
+            return denial;
+        }
+
+        return outcome.Kind switch
         {
             ActionOutcomeKind.Completed => outcome.Result
                 ?? throw new InvalidOperationException(
@@ -325,6 +337,7 @@ public sealed class HostPermissionActionEntry(IHostActionEntry host) : IPermissi
             _ => throw new InvalidOperationException(
                 $"The {actionKey} permission action returned an unknown outcome."),
         };
+    }
 
     private static string FormatFailure(string actionKey, ExecutionError? error) =>
         error is null

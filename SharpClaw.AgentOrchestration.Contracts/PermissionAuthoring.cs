@@ -10,6 +10,8 @@ public static class AgentOrchestrationPermission
 {
     public const string ContractName = "sharpclaw.permission";
 
+    public const string RestrictionFailureCodePrefix = "permission_restricted:";
+
     public static readonly Guid ContextTerminalId =
         Guid.Parse("8f7be0a6-2f4d-5b72-9dc8-3ca4e9c2f102");
 
@@ -83,6 +85,7 @@ public static class AgentOrchestrationPermissionBuilderExtensions
             module.Hooks.For(PermissionActionDescriptors.ContextAccess)
                 .Use<PermissionContextRelayHook>(
                     ActionInterceptionCapabilities.Inspect |
+                    ActionInterceptionCapabilities.Wrap |
                     ActionInterceptionCapabilities.Observe,
                     new HookOrdering("permission.context-access.host-entry"));
         }
@@ -93,6 +96,7 @@ public static class AgentOrchestrationPermissionBuilderExtensions
             module.Hooks.For(PermissionActionDescriptors.AgentAccess)
                 .Use<PermissionAgentRelayHook>(
                     ActionInterceptionCapabilities.Inspect |
+                    ActionInterceptionCapabilities.Wrap |
                     ActionInterceptionCapabilities.Observe,
                     new HookOrdering("permission.agent-access.host-entry"));
         }

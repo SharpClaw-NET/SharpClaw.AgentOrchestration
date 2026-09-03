@@ -144,6 +144,7 @@ public sealed class PermissionAuthoringTests
             Assert.That(PermissionActionDescriptors.AgentAccess.Capabilities,
                 Is.EqualTo(
                     ActionInterceptionCapabilities.Inspect |
+                    ActionInterceptionCapabilities.Wrap |
                     ActionInterceptionCapabilities.Observe));
         });
     }

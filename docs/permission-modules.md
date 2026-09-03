@@ -73,6 +73,61 @@ module.UseAgentOrchestrationPermission(AgentOrchestrationPermissionUse.Context);
 
 Use `AgentOrchestrationPermissionUse.Agents` for agent operations. Use `AgentOrchestrationPermissionUse.All` when one module performs both check types.
 
+## Complement a Policy
+
+Implement `IAgentOrchestrationPermissionRestriction` when a module must narrow decisions from the active permission provider. Default methods preserve decisions for checks that the module does not restrict.
+
+```csharp
+public sealed class TenantRestriction : IAgentOrchestrationPermissionRestriction
+{
+    public ValueTask<PermissionRestriction> RestrictContextAsync(
+        ActionContext<PermissionContextAccessAction> context,
+        CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        var tenantMatches = context.Features.Contains("tenant.scope");
+        return ValueTask.FromResult(tenantMatches
+            ? PermissionRestriction.Preserve()
+            : PermissionRestriction.Deny(
+                "tenant_denied",
+                "The caller cannot access this tenant."));
+    }
+}
+```
+
+Register the restriction with one stable identifier. Select only the permission families that the module must restrict.
+
+```csharp
+module.AddAgentOrchestrationPermissionRestriction<TenantRestriction>(
+    "tenant-boundary",
+    AgentOrchestrationPermissionUse.Context,
+    HookPriority.High);
+```
+
+The helper adds one contract requirement and exact typed hooks. Each preserving restriction continues to the next restriction or the provider.
+
+One denial stops the action before the provider terminal. A later restriction cannot change that denial to an allowance.
+
+The manifest must request `Inspect` and `Wrap` for each selected permission action. These effects let the restriction inspect authority and continue the same action.
+
+```json
+{
+  "requires": [
+    {
+      "contractName": "sharpclaw.permission",
+      "serviceType": "SharpClaw.Modules.AgentOrchestration.Contracts.PermissionModuleContract",
+      "optional": false
+    }
+  ],
+  "requestedHooks": [
+    {
+      "target": "permission.context-access",
+      "effects": ["Inspect", "Wrap"]
+    }
+  ]
+}
+```
+
 ## Preserve Authority
 
 Use `context.Caller` as the caller identity. Use `context.Features` for issued feature authority. Never accept either value from an action payload or request body.
@@ -85,11 +140,15 @@ Remove the Two Tier Permission package from the selected module payload. Add one
 
 Only one module can own the permission contract. This rule prevents two providers from producing conflicting authority. A replacement can compose multiple internal evaluators behind its one policy.
 
+Independent restriction modules can remain installed with either provider. Their intersection preserves the provider decision or reduces it to a denial.
+
 ## Keep Low-Level Control
 
-`PermissionActionDescriptors` remains public for action inspection and observation. Advanced modules can register an exact typed hook instead of the standard relay helper.
+`PermissionActionDescriptors` remains public for exact typed hooks. Advanced modules can register a raw hook instead of the standard helper.
 
-The permission descriptors permit only `Inspect` and `Observe`. Another module cannot replace the request or result. This rule prevents a hook from granting authority.
+The descriptors permit `Inspect`, `Wrap`, and `Observe`. They do not permit input replacement, result replacement, repeat, deferment, or cancellation.
+
+The restriction API does not expose `IActionControl`. A restriction receives authenticated context and returns only preserve or deny.
 
 A permission module can define additional typed actions without separate schema and terminal registration. The descriptor still controls all action capabilities and policies.
 
@@ -104,4 +163,6 @@ Use `module.Actions.Add` and `module.AddActionEntry` when separate registration 
 
 Compile the real module through `SharpClawModuleCompiler`. Verify one contract export, two action definitions, and two stable action entries. Invoke the terminals with authenticated `ActionContext` instances.
 
-Test allowed, denied, failed, and cancelled checks. Verify that denial and cancellation occur before protected storage writes. Compile Context and Agents against the replacement contract.
+Test allowed, denied, failed, and cancelled checks. Verify that denial and cancellation occur before protected storage writes.
+
+Compile Context and Agents against the replacement contract. Compile each restriction manifest with exact `Inspect` and `Wrap` effects.

@@ -10,7 +10,9 @@ SharpClaw Agent Orchestration provides optional Context, Two Tier Permission, an
 
 ## Permissions
 
-`SharpClaw.Modules.TwoTierPermission` supplies the default Agent Orchestration permission policy. A replacement module can provide the same neutral permission contract with one policy implementation.
+`SharpClaw.Modules.TwoTierPermission` supplies the default permission provider. Another module can replace it through the neutral provider contract.
+
+Independent permission modules can complement either provider through restriction-only hooks. Each hook can preserve or deny access, but it cannot grant access.
 
 ## Agents
 
@@ -18,7 +20,9 @@ SharpClaw Agent Orchestration provides optional Context, Two Tier Permission, an
 
 ## Permission Development
 
-The permission authoring API keeps caller authority in `ActionContext`. It hides descriptor, schema, terminal, contract, and relay registration from normal module code. The [permission module guide](docs/permission-modules.md) shows replacement, consumption, storage, testing, and low-level interception.
+The permission authoring API keeps caller authority in `ActionContext`. It supplies simple helpers for providers, consumers, and independent restrictions.
+
+The [permission module guide](docs/permission-modules.md) shows replacement, restriction composition, storage, testing, and low-level action control.
 
 ## Job Import
 

@@ -1,7 +1,7 @@
 {
   "id": "sharpclaw_agents",
   "displayName": "SharpClaw Agents",
-  "version": "0.5.0-beta.23",
+  "version": "0.5.0-beta.24",
   "toolPrefix": "agents",
   "runtime": "dotnet",
   "hostMode": "sidecar",
@@ -39,7 +39,7 @@
     },
     {
       "target": "permission.agent-access",
-      "effects": ["Inspect", "Observe"]
+      "effects": ["Inspect", "Wrap", "Observe"]
     }
   ]
 }
