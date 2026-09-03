@@ -91,6 +91,15 @@ Only one module can own the permission contract. This rule prevents two provider
 
 The permission descriptors permit only `Inspect` and `Observe`. Another module cannot replace the request or result. This rule prevents a hook from granting authority.
 
+A permission module can define additional typed actions without separate schema and terminal registration. The descriptor still controls all action capabilities and policies.
+
+```csharp
+module.DefineAction(MyPermissionActions.Review)
+    .UseTerminal<MyPermissionReviewTerminal>(MyPermissionTerminals.Review);
+```
+
+Use `module.Actions.Add` and `module.AddActionEntry` when separate registration is necessary. Both forms compile through the same action graph.
+
 ## Test the Module
 
 Compile the real module through `SharpClawModuleCompiler`. Verify one contract export, two action definitions, and two stable action entries. Invoke the terminals with authenticated `ActionContext` instances.

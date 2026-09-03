@@ -60,7 +60,6 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
         module.Services.AddScoped<HostModuleActionEntry>();
         module.Services.AddScoped<AgentsToolHandler>();
         module.Services.AddScoped<AgentsApiActionExecutor>();
-        module.Services.AddScoped<AgentsApiActionTerminal>();
         module.Services.AddScoped<AgentsEndpointContribution>();
         module.Services.AddScoped<IAgentsActionGateway, AgentsActionGateway>();
         module.Services.AddScoped<IModuleActionPipeline, ModuleActionPipeline>();
@@ -77,75 +76,73 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
         foreach (var storage in StorageContracts)
             module.Storage.Add(storage);
 
-        module.Actions.Add(ApiDescriptor);
-        module.AddActionEntry<AgentsApiAction, JsonElement, AgentsApiActionTerminal>(
-            ApiDescriptor,
-            ApiTerminalId);
+        module.DefineAction(ApiDescriptor)
+            .UseTerminal<AgentsApiActionTerminal>(ApiTerminalId);
 
-        module.Actions.Add(new ActionDescriptor<AgentsCreateAction, AgentRecord>(
+        module.DefineAction(new ActionDescriptor<AgentsCreateAction, AgentRecord>(
             new("agents.create"), 1, "agents",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
             true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
             SafePoints = SafePoints,
         });
-        module.Actions.Add(new ActionDescriptor<AgentsUpdateAction, AgentRecord?>(
+        module.DefineAction(new ActionDescriptor<AgentsUpdateAction, AgentRecord?>(
             new("agents.update"), 1, "agents",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
             true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
             SafePoints = SafePoints,
         });
-        module.Actions.Add(new ActionDescriptor<AgentsWriteMemoryAction, MemoryRecord>(
+        module.DefineAction(new ActionDescriptor<AgentsWriteMemoryAction, MemoryRecord>(
             new("agents.memory.write"), 1, "agents.memory",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
             true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
             SafePoints = SafePoints,
         });
-        module.Actions.Add(new ActionDescriptor<AgentsSaveSkillAction, SkillRecord>(
+        module.DefineAction(new ActionDescriptor<AgentsSaveSkillAction, SkillRecord>(
             new("agents.skill.save"), 1, "agents.skills",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
             true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
             SafePoints = SafePoints,
         });
-        module.Actions.Add(new ActionDescriptor<AgentsAccessSkillAction, string>(
+        module.DefineAction(new ActionDescriptor<AgentsAccessSkillAction, string>(
             new("agents.skill.access"), 1, "agents.skills",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
             false, false, RepeatPolicy, null, TimeSpan.FromSeconds(10))
         {
             SafePoints = SafePoints,
         });
-        module.Actions.Add(new ActionDescriptor<AgentsSearchMemoryAction, IReadOnlyList<MemoryRecord>>(
+        module.DefineAction(new ActionDescriptor<AgentsSearchMemoryAction, IReadOnlyList<MemoryRecord>>(
             new("agents.memory.search"), 1, "agents.memory",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
             true, false, RepeatPolicy, null, TimeSpan.FromSeconds(10))
         {
             SafePoints = SafePoints,
         });
-        module.Actions.Add(new ActionDescriptor<AgentsRecordJobAction, AgentJob>(
+        module.DefineAction(new ActionDescriptor<AgentsRecordJobAction, AgentJob>(
             new(RecordAgentJobAction), 1, "agents.jobs",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
             true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
             SafePoints = SafePoints,
         });
-        module.Actions.Add(new ActionDescriptor<AgentsAttachCanonicalJobAction, AgentJob>(
+        module.DefineAction(new ActionDescriptor<AgentsAttachCanonicalJobAction, AgentJob>(
             new(AttachCanonicalJobAction), 1, "agents.jobs",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
             true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
             SafePoints = SafePoints,
         });
-        module.Actions.Add(new ActionDescriptor<AgentsCompleteJobAction, AgentJob>(
+        module.DefineAction(new ActionDescriptor<AgentsCompleteJobAction, AgentJob>(
             new(CompleteAgentJobAction), 1, "agents.jobs",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
             true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
             SafePoints = SafePoints,
         });
-        module.Actions.Add(new ActionDescriptor<AgentsImportJobsAction, IReadOnlyList<AgentJob>>(
+        module.DefineAction(new ActionDescriptor<AgentsImportJobsAction, IReadOnlyList<AgentJob>>(
             new(ImportAgentJobsAction), 1, "agents.jobs",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
             true, true, RepeatPolicy, null, TimeSpan.FromMinutes(2))

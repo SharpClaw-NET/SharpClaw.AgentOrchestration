@@ -53,20 +53,12 @@ public static class AgentOrchestrationPermissionBuilderExtensions
             services.GetRequiredService<TPolicy>());
         module.Contracts.Export<PermissionModuleContract>(
             AgentOrchestrationPermission.ContractName);
-        module.Actions.Add(PermissionActionDescriptors.ContextAccess);
-        module.Actions.Add(PermissionActionDescriptors.AgentAccess);
-        module.AddActionEntry<
-            PermissionContextAccessAction,
-            AccessDecision,
-            PermissionContextPolicyTerminal>(
-            PermissionActionDescriptors.ContextAccess,
-            AgentOrchestrationPermission.ContextTerminalId);
-        module.AddActionEntry<
-            PermissionAgentAccessAction,
-            AccessDecision,
-            PermissionAgentPolicyTerminal>(
-            PermissionActionDescriptors.AgentAccess,
-            AgentOrchestrationPermission.AgentTerminalId);
+        module.DefineAction(PermissionActionDescriptors.ContextAccess)
+            .UseTerminal<PermissionContextPolicyTerminal>(
+                AgentOrchestrationPermission.ContextTerminalId);
+        module.DefineAction(PermissionActionDescriptors.AgentAccess)
+            .UseTerminal<PermissionAgentPolicyTerminal>(
+                AgentOrchestrationPermission.AgentTerminalId);
     }
 
     /// <summary>Adds access to the active permission policy.</summary>

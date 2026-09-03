@@ -62,11 +62,8 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
         module.Services.AddScoped<ContextToolHandler>();
         module.Services.AddScoped<IContextActionExecutor, ContextActionExecutor>();
         module.Services.AddScoped<IContextSteeringActionExecutor, ContextSteeringActionExecutor>();
-        module.Services.AddScoped<ContextSteeringRecordActionTerminal>();
-        module.Services.AddScoped<ContextSteeringListActionTerminal>();
         module.Services.AddScoped<IContextSteeringActionGateway, ContextSteeringActionGateway>();
         module.Services.AddScoped<ContextApiActionExecutor>();
-        module.Services.AddScoped<ContextApiActionTerminal>();
         module.Services.AddScoped<ContextEndpointContribution>();
         module.Services.AddScoped<IContextActionGateway, ContextActionGateway>();
         module.Services.AddScoped<HostModuleActionEntry>();
@@ -80,34 +77,28 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
         foreach (var storage in StorageContracts)
             module.Storage.Add(storage);
 
-        module.Actions.Add(ApiDescriptor);
-        module.AddActionEntry<ContextApiAction, JsonElement, ContextApiActionTerminal>(
-            ApiDescriptor,
-            ApiTerminalId);
-        module.Actions.Add(ContextSteeringActionDescriptors.Record);
-        module.Actions.Add(ContextSteeringActionDescriptors.List);
-        module.AddActionEntry<ContextRecordSteeringAction, ContextSteeringRecord, ContextSteeringRecordActionTerminal>(
-            ContextSteeringActionDescriptors.Record,
-            SteeringRecordTerminalId);
-        module.AddActionEntry<ContextListSteeringAction, IReadOnlyList<ContextSteeringRecord>, ContextSteeringListActionTerminal>(
-            ContextSteeringActionDescriptors.List,
-            SteeringListTerminalId);
+        module.DefineAction(ApiDescriptor)
+            .UseTerminal<ContextApiActionTerminal>(ApiTerminalId);
+        module.DefineAction(ContextSteeringActionDescriptors.Record)
+            .UseTerminal<ContextSteeringRecordActionTerminal>(SteeringRecordTerminalId);
+        module.DefineAction(ContextSteeringActionDescriptors.List)
+            .UseTerminal<ContextSteeringListActionTerminal>(SteeringListTerminalId);
 
-        module.Actions.Add(new ActionDescriptor<ContextCreateThreadAction, ContextThreadRecord>(
+        module.DefineAction(new ActionDescriptor<ContextCreateThreadAction, ContextThreadRecord>(
             new("context.thread.create"), 1, "context.thread",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
             false, false, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
             SafePoints = SafePoints,
         });
-        module.Actions.Add(new ActionDescriptor<ContextReadHistoryAction, IReadOnlyList<ContextMessageRecord>>(
+        module.DefineAction(new ActionDescriptor<ContextReadHistoryAction, IReadOnlyList<ContextMessageRecord>>(
             new("context.thread.read-history"), 1, "context.thread",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
             false, false, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
             SafePoints = SafePoints,
         });
-        module.Actions.Add(new ActionDescriptor<ContextCommitExchangeAction, bool>(
+        module.DefineAction(new ActionDescriptor<ContextCommitExchangeAction, bool>(
             new("context.conversation.commit"), 1, "context.conversation",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel,
             true, false, RepeatPolicy, null, TimeSpan.FromSeconds(30))

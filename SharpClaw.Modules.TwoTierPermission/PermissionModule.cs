@@ -56,7 +56,6 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
         module.Services.AddScoped<TwoTierPermissionPolicy>();
         module.Services.AddScoped<PermissionToolHandler>();
         module.Services.AddScoped<PermissionApiActionExecutor>();
-        module.Services.AddScoped<PermissionApiActionTerminal>();
         module.Services.AddScoped<PermissionEndpointContribution>();
         module.Services.AddScoped<IPermissionActionGateway, PermissionActionGateway>();
         module.Services.AddScoped<HostModuleActionEntry>();
@@ -69,33 +68,31 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
         foreach (var storage in StorageContracts)
             module.Storage.Add(storage);
 
-        module.Actions.Add(ApiDescriptor);
-        module.AddActionEntry<PermissionApiAction, JsonElement, PermissionApiActionTerminal>(
-            ApiDescriptor,
-            ApiTerminalId);
+        module.DefineAction(ApiDescriptor)
+            .UseTerminal<PermissionApiActionTerminal>(ApiTerminalId);
 
-        module.Actions.Add(new ActionDescriptor<PermissionEvaluateAction, TwoTierPermissionDecision>(
+        module.DefineAction(new ActionDescriptor<PermissionEvaluateAction, TwoTierPermissionDecision>(
             new("permission.evaluate"), 1, "permission",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
             true, false, RepeatPolicy, null, TimeSpan.FromSeconds(10))
         {
             SafePoints = SafePoints,
         });
-        module.Actions.Add(new ActionDescriptor<PermissionGrantAction, bool>(
+        module.DefineAction(new ActionDescriptor<PermissionGrantAction, bool>(
             new("permission.grant"), 1, "permission.administration",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
             true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
             SafePoints = SafePoints,
         });
-        module.Actions.Add(new ActionDescriptor<PermissionRevokeAction, bool>(
+        module.DefineAction(new ActionDescriptor<PermissionRevokeAction, bool>(
             new("permission.revoke"), 1, "permission.administration",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
             true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
             SafePoints = SafePoints,
         });
-        module.Actions.Add(new ActionDescriptor<PermissionApproveAction, bool>(
+        module.DefineAction(new ActionDescriptor<PermissionApproveAction, bool>(
             new("permission.approve"), 1, "permission.approval",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
             true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
