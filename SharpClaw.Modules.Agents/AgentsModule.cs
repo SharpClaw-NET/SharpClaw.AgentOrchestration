@@ -58,7 +58,6 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
     {
         module.Services.AddScoped<AgentsCatalog>();
         module.Services.AddScoped<HostModuleActionEntry>();
-        module.Services.AddScoped<HostPermissionActionEntry>();
         module.Services.AddScoped<AgentsToolHandler>();
         module.Services.AddScoped<AgentsApiActionExecutor>();
         module.Services.AddScoped<AgentsApiActionTerminal>();
@@ -68,13 +67,12 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
         module.Services.AddScoped<IAgentsActionExecutor, AgentsActionExecutor>();
         module.Services.AddScoped<IAgentsJobActionExecutor, AgentsJobActionExecutor>();
         module.Services.AddScoped<AgentsCreateAuthorizationHook>();
-        module.Services.AddScoped<AgentsPermissionActionHook>();
         module.Services.AddSingleton<AgentsCliHandler>();
         module.Services.AddScoped<AgentChatProfileResolver>();
 
         module.Contracts.Export<AgentsModuleContract>("sharpclaw.agents");
         module.Contracts.Require<ContextModuleContract>("sharpclaw.context");
-        module.Contracts.Require<PermissionModuleContract>("sharpclaw.permission");
+        module.UseAgentOrchestrationPermission(AgentOrchestrationPermissionUse.Agents);
 
         foreach (var storage in StorageContracts)
             module.Storage.Add(storage);
@@ -156,11 +154,6 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
         });
         module.Hooks.For(new SharpClawActionKey("agents.create"))
             .Use<AgentsCreateAuthorizationHook>(new HookOrdering("agents.create.authorization"));
-        module.Hooks.For(PermissionActionDescriptors.AgentAccess)
-            .Use<AgentsPermissionActionHook>(
-                ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
-                new HookOrdering("permission.agent-access.host-entry"));
-
         module.Events.Add(new EventDescriptor<AgentChangedEvent>(
             new(AgentChangedEvent), 1, "agents",
             EventInterceptionCapabilities.Inspect | EventInterceptionCapabilities.Observe,

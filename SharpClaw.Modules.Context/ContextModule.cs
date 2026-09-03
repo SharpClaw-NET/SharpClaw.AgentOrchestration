@@ -70,14 +70,12 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
         module.Services.AddScoped<ContextEndpointContribution>();
         module.Services.AddScoped<IContextActionGateway, ContextActionGateway>();
         module.Services.AddScoped<HostModuleActionEntry>();
-        module.Services.AddScoped<HostPermissionActionEntry>();
         module.Services.AddScoped<IModuleActionPipeline, ModuleActionPipeline>();
         module.Services.AddScoped<ContextCommitAuthorizationHook>();
-        module.Services.AddScoped<ContextPermissionActionHook>();
         module.Services.AddSingleton<ContextCliHandler>();
 
         module.Contracts.Export<ContextModuleContract>("sharpclaw.context");
-        module.Contracts.Require<PermissionModuleContract>("sharpclaw.permission");
+        module.UseAgentOrchestrationPermission(AgentOrchestrationPermissionUse.Context);
 
         foreach (var storage in StorageContracts)
             module.Storage.Add(storage);
@@ -118,11 +116,6 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
         });
         module.Hooks.For(new SharpClawActionKey("context.conversation.commit"))
             .Use<ContextCommitAuthorizationHook>(new HookOrdering("context.conversation.commit.authorization"));
-        module.Hooks.For(PermissionActionDescriptors.ContextAccess)
-            .Use<ContextPermissionActionHook>(
-                ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
-                new HookOrdering("permission.context-access.host-entry"));
-
         module.Events.Add(new EventDescriptor<ContextThreadChangedEvent>(
             new(ThreadChangedEvent), 1, "context.thread",
             EventInterceptionCapabilities.Inspect | EventInterceptionCapabilities.Observe,

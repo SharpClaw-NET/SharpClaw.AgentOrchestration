@@ -257,7 +257,6 @@ public sealed class ContextStore : IConversationStore
                 ? await GetContextAsync(contextId, ct)
                 : null;
             var decision = await EvaluateAsync(
-                caller,
                 channel,
                 context,
                 ContextAccessCapabilities.ReadHistory,
@@ -730,7 +729,6 @@ public sealed class ContextStore : IConversationStore
             {
                 var context = await ResolveContextAsync(channel, thread, ct);
                 var decision = await EvaluateAsync(
-                    principal,
                     channel,
                     context,
                     ContextAccessCapabilities.ReadCrossThreadHistory,
@@ -767,7 +765,6 @@ public sealed class ContextStore : IConversationStore
             return null;
         var context = await ResolveContextAsync(channel, thread, ct);
         var decision = await EvaluateAsync(
-            principal,
             channel,
             context,
             ContextAccessCapabilities.ReadCrossThreadHistory,
@@ -937,14 +934,14 @@ public sealed class ContextStore : IConversationStore
         return true;
     }
 
-    internal async ValueTask<ContextAccessDecision> AuthorizeCommitAsync(
+    internal async ValueTask<AccessDecision> AuthorizeCommitAsync(
         RequestPrincipal caller,
         ContextCommitExchangeAction action,
         CancellationToken ct = default,
         HostActionEntryRequestContext? hostContext = null)
     {
         if (!caller.IsAuthenticated)
-            return ContextAccessDecision.Deny("unauthenticated", "Authentication is required.");
+            return AccessDecision.Deny("unauthenticated", "Authentication is required.");
         return await AuthorizeThreadAsync(
             caller,
             action.ThreadId,
@@ -953,7 +950,7 @@ public sealed class ContextStore : IConversationStore
             hostContext);
     }
 
-    internal Task<ContextAccessDecision> AuthorizeConversationAsync(
+    internal Task<AccessDecision> AuthorizeConversationAsync(
         RequestPrincipal caller,
         Guid conversationId,
         string capability,
@@ -1010,7 +1007,7 @@ public sealed class ContextStore : IConversationStore
             throw new UnauthorizedAccessException($"{decision.Code}: {decision.Message}");
     }
 
-    private async Task<ContextAccessDecision> AuthorizeThreadAsync(
+    private async Task<AccessDecision> AuthorizeThreadAsync(
         RequestPrincipal caller,
         Guid threadId,
         string capability,
@@ -1018,15 +1015,15 @@ public sealed class ContextStore : IConversationStore
         HostActionEntryRequestContext? hostContext = null)
     {
         if (!caller.IsAuthenticated)
-            return ContextAccessDecision.Deny("unauthenticated", "Authentication is required.");
+            return AccessDecision.Deny("unauthenticated", "Authentication is required.");
         var thread = await GetThreadAsync(threadId, ct);
         if (thread is null)
-            return ContextAccessDecision.Deny("thread_not_found", "The conversation thread was not found.");
+            return AccessDecision.Deny("thread_not_found", "The conversation thread was not found.");
         var channel = await GetChannelAsync(thread.ChannelId, ct);
         if (channel is null)
-            return ContextAccessDecision.Deny("channel_not_found", "The conversation channel was not found.");
+            return AccessDecision.Deny("channel_not_found", "The conversation channel was not found.");
         var context = await ResolveContextAsync(channel, thread, ct);
-        return await EvaluateAsync(caller, channel, context, capability, ct, hostContext);
+        return await EvaluateAsync(channel, context, capability, ct, hostContext);
     }
 
     private async Task<ContextChannelRecord> ChangeChannelAssignmentAsync(
@@ -1090,7 +1087,6 @@ public sealed class ContextStore : IConversationStore
         if (!context.Enabled)
             throw new UnauthorizedAccessException("The context is disabled.");
         var decision = await EvaluatePermissionAsync(new ContextAccessRequest(
-            caller,
             Guid.Empty,
             null,
             [],
@@ -1114,20 +1110,18 @@ public sealed class ContextStore : IConversationStore
         var context = contextId is { } id
             ? await GetContextAsync(id, ct)
             : null;
-        var decision = await EvaluateAsync(principal, channel, context, capability, ct, hostContext);
+        var decision = await EvaluateAsync(channel, context, capability, ct, hostContext);
         if (!decision.Allowed)
             throw new UnauthorizedAccessException($"{decision.Code}: {decision.Message}");
     }
 
-    private ValueTask<ContextAccessDecision> EvaluateAsync(
-        RequestPrincipal principal,
+    private ValueTask<AccessDecision> EvaluateAsync(
         ContextChannelRecord channel,
         ContextRecord? context,
         string capability,
         CancellationToken ct,
         HostActionEntryRequestContext? hostContext = null) =>
         EvaluatePermissionAsync(new ContextAccessRequest(
-            principal,
             channel.Id,
             channel.OwnerAgentId,
             channel.AllowedAgentIds,
@@ -1140,7 +1134,7 @@ public sealed class ContextStore : IConversationStore
             context?.Id ?? channel.ContextId,
             capability), hostContext, ct);
 
-    private ValueTask<ContextAccessDecision> EvaluatePermissionAsync(
+    private ValueTask<AccessDecision> EvaluatePermissionAsync(
         ContextAccessRequest request,
         HostActionEntryRequestContext? hostContext,
         CancellationToken ct)

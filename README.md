@@ -1,21 +1,29 @@
 # SharpClaw Agent Orchestration
 
-This repository provides the package-owned Context, Two Tier Permission, and Agents modules for SharpClaw.
+## Purpose
 
-`SharpClaw.Modules.Context` owns Threads, Channels, Contexts, conversation history, and context assembly. `SharpClaw.Modules.TwoTierPermission` owns clearance, scope, denials, delegation, grants, and approvals. `SharpClaw.Modules.Agents` owns Agents, Skills, Memory, profiles, management tools, and module-owned `AgentJob` definitions. The module stores the canonical Jobs identity after kernel scheduling and projects canonical completion through typed module actions.
+SharpClaw Agent Orchestration provides optional Context, Two Tier Permission, and Agents modules. Each module uses neutral SharpClaw contracts and its own storage.
 
-Agents also accepts a neutral `CanonicalJobsImportSnapshot`. Each source action must have an exact package handler and payload-codec mapping. The converter preserves stable source identities, maps queued and paused records to the canonical handler mode, maps active records to canonical recovery, and rejects unknown actions, codecs, identities, status values, or result authority.
+## Context
 
-Each import binds its snapshot id, capture time, expected count, ordered source identities, per-source SHA-256 hashes, ordered aggregate hash, and ordered action-mapping hash. The Agents module creates the manifest at revision zero and completes it against the observed revision. Exact replay is accepted. Changed, missing, extra, reordered, or conflicting records and mappings fail closed. An interrupted import resumes the same incomplete manifest.
+`SharpClaw.Modules.Context` owns threads, channels, contexts, conversation history, and prompt context assembly. It requests access decisions from the active permission module.
 
-The modules use current `SharpClaw.Contracts` module builders, declared storage contracts, `ModuleDocumentStore<T>`, and `IModuleStorageGateway`. Jobs and Events remain kernel-owned. The packages use declared module boundaries and contain no host project references.
+## Permissions
 
-The application contributions expose package-owned HTTP routes for context thread and history actions, permission evaluation and administration, and agent, skill, and memory actions. Each route creates a caller principal and invokes the owning action executor, so authorization and persistence use the same module path as tools and CLI commands.
+`SharpClaw.Modules.TwoTierPermission` supplies the default Agent Orchestration permission policy. A replacement module can provide the same neutral permission contract with one policy implementation.
 
-The Contracts package uses version `0.5.0-beta.18`. The Context package uses version `0.5.0-beta.19`.
+## Agents
 
-The Two Tier Permission and Agents packages use version `0.5.0-beta.20`.
+`SharpClaw.Modules.Agents` owns agents, skills, memory, profiles, management tools, and Agent Job definitions. Canonical Jobs remains the kernel scheduler and execution authority.
 
-Each module package puts its manifest, assembly, dependency graph, and local dependencies under `sharpclaw\`. Package metadata uses this repository and `AGPL-3.0-only`.
+## Permission Development
 
-Run `dotnet restore`, `dotnet build`, `dotnet test`, and `dotnet pack -c Release` from the repository root. Publication is an owner-controlled step and is outside this repository change.
+The permission authoring API keeps caller authority in `ActionContext`. It hides descriptor, schema, terminal, contract, and relay registration from normal module code. The [permission module guide](docs/permission-modules.md) shows replacement, consumption, storage, testing, and low-level interception.
+
+## Job Import
+
+The Agents module accepts a neutral `CanonicalJobsImportSnapshot`. It verifies source identities, payload hashes, action mappings, status, recovery data, and replay state before writes.
+
+## Build
+
+Run `dotnet restore`, `dotnet build -c Release`, and `dotnet test -c Release` from the repository root. Package publication requires separate owner approval.

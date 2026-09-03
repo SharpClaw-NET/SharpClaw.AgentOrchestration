@@ -4,6 +4,43 @@ using SharpClaw.Modules.AgentOrchestration.Contracts;
 
 namespace SharpClaw.Modules.TwoTierPermission;
 
+public enum PermissionClearance
+{
+    Unset = 0,
+    ApprovedBySameLevelUser = 1,
+    ApprovedByWhitelistedUser = 2,
+    ApprovedByPermittedAgent = 3,
+    ApprovedByWhitelistedAgent = 4,
+    Independent = 5,
+    Restricted = 6,
+}
+
+public sealed record TwoTierPermissionDecision(
+    bool Allowed,
+    string Code,
+    string Message,
+    int Tier,
+    PermissionClearance Clearance)
+{
+    public static TwoTierPermissionDecision Deny(
+        string code,
+        string message,
+        int tier,
+        PermissionClearance clearance = PermissionClearance.Restricted) =>
+        new(false, code, message, tier, clearance);
+
+    public static TwoTierPermissionDecision Allow(
+        string code,
+        int tier,
+        PermissionClearance clearance) =>
+        new(true, code, "Permission granted.", tier, clearance);
+
+    public AccessDecision ToAccessDecision() =>
+        Allowed
+            ? AccessDecision.Allow(Code)
+            : AccessDecision.Deny(Code, Message);
+}
+
 public sealed record PermissionPolicyRecord(
     string SubjectId,
     IReadOnlyList<string> Roles,

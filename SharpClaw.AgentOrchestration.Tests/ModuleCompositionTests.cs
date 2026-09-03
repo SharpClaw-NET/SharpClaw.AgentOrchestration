@@ -90,7 +90,7 @@ public sealed class ModuleCompositionTests
             Assert.That(contextGraph.Services.Any(item => item.ServiceType == typeof(HostPermissionActionEntry)), Is.True);
             Assert.That(contextGraph.Services.Any(item => item.ServiceType == typeof(ContextConversationResolver)), Is.True);
             Assert.That(contextGraph.Services.Any(item => item.ServiceType == typeof(ContextHistoryContributor)), Is.True);
-            Assert.That(permissionGraph.Services.Any(item => item.ServiceType == typeof(IPermissionActionExecutor)), Is.True);
+            Assert.That(permissionGraph.Services.Any(item => item.ServiceType == typeof(IAgentOrchestrationPermissionPolicy)), Is.True);
             Assert.That(agentsGraph.Services.Any(item => item.ServiceType == typeof(IAgentsActionExecutor)), Is.True);
             Assert.That(agentsGraph.Services.Any(item => item.ServiceType == typeof(HostPermissionActionEntry)), Is.True);
             Assert.That(agentsGraph.Services.Any(item => item.ServiceType == typeof(IAgentsJobActionExecutor)), Is.True);
@@ -132,12 +132,12 @@ public sealed class ModuleCompositionTests
             Assert.That(agentsGraph.Events.Count(item => item.Descriptor.Key.Value == AgentsModule.MemoryChangedEvent), Is.EqualTo(1));
             Assert.That(contextGraph.ActionHooks.Any(item => item.ActionKey?.Value == "context.conversation.commit"), Is.True);
             Assert.That(contextGraph.ActionHooks.Any(item => item.ActionKey?.Value == "permission.context-access"
-                && item.HandlerType == typeof(ContextPermissionActionHook)
+                && item.HandlerType == typeof(PermissionContextRelayHook)
                 && item.HookId == "permission.context-access.host-entry"), Is.True);
             Assert.That(permissionGraph.ActionHooks.Any(item => item.ActionKey?.Value == "permission.grant"), Is.True);
             Assert.That(agentsGraph.ActionHooks.Any(item => item.ActionKey?.Value == "agents.create"), Is.True);
             Assert.That(agentsGraph.ActionHooks.Any(item => item.ActionKey?.Value == "permission.agent-access"
-                && item.HandlerType == typeof(AgentsPermissionActionHook)
+                && item.HandlerType == typeof(PermissionAgentRelayHook)
                 && item.HookId == "permission.agent-access.host-entry"), Is.True);
             Assert.That(contextGraph.ActionEntries.Select(item => item.Descriptor.Key.Value), Is.EqualTo([
                 ContextModule.ApiDescriptor.Key.Value,
@@ -155,7 +155,7 @@ public sealed class ModuleCompositionTests
             Assert.That(contextGraph.ActionEntries.Single(item => item.Descriptor.Key.Value == ContextSteeringActionKeys.List).TerminalType,
                 Is.EqualTo(typeof(ContextSteeringListActionTerminal)));
             Assert.That(permissionGraph.ActionEntries.Single(item => item.Descriptor.Key.Value == PermissionActionDescriptors.ContextAccess.Key.Value).TerminalType,
-                Is.EqualTo(typeof(PermissionContextAccessActionTerminal)));
+                Is.EqualTo(typeof(PermissionContextPolicyTerminal)));
             Assert.That(agentsGraph.ActionEntries.Single().TerminalType, Is.EqualTo(typeof(AgentsApiActionTerminal)));
         });
     }
@@ -200,9 +200,9 @@ public sealed class ModuleCompositionTests
     {
         (string Manifest, string Id, string ModuleType, string Assembly, string Version)[] expected =
         {
-        ("Context.module.json", "sharpclaw_context", "SharpClaw.Modules.Context.ContextModule", "SharpClaw.Modules.Context.dll", "0.5.0-beta.20"),
-        ("TwoTierPermission.module.json", "sharpclaw_two_tier_permission", "SharpClaw.Modules.TwoTierPermission.TwoTierPermissionModule", "SharpClaw.Modules.TwoTierPermission.dll", "0.5.0-beta.21"),
-        ("Agents.module.json", "sharpclaw_agents", "SharpClaw.Modules.Agents.AgentsModule", "SharpClaw.Modules.Agents.dll", "0.5.0-beta.21"),
+        ("Context.module.json", "sharpclaw_context", "SharpClaw.Modules.Context.ContextModule", "SharpClaw.Modules.Context.dll", "0.5.0-beta.21"),
+        ("TwoTierPermission.module.json", "sharpclaw_two_tier_permission", "SharpClaw.Modules.TwoTierPermission.TwoTierPermissionModule", "SharpClaw.Modules.TwoTierPermission.dll", "0.5.0-beta.22"),
+        ("Agents.module.json", "sharpclaw_agents", "SharpClaw.Modules.Agents.AgentsModule", "SharpClaw.Modules.Agents.dll", "0.5.0-beta.22"),
         };
 
         foreach (var item in expected)
@@ -379,14 +379,16 @@ public sealed class ModuleCompositionTests
                 "sharpclaw.kernel.action.result.agents.api.dispatch",
                 1,
                 "EBF621A68F0061626C140836F73212CB5D24ABF6D6FE9FAE994E6C3BA794FB65")));
-            Assert.That(PermissionActionDescriptors.ContextAccess.InputSchema, Is.EqualTo(new JsonSchemaReference(
-                "sharpclaw.kernel.action.input.permission.context-access",
-                1,
-                "EF52C526C7B77C146B2D16A61B3BB1728BC4F8500763C8EF1A21FC65B981283B")));
-            Assert.That(PermissionActionDescriptors.AgentAccess.ResultSchema, Is.EqualTo(new JsonSchemaReference(
-                "sharpclaw.kernel.action.result.permission.agent-access",
-                1,
-                "E2C4F31D2F6A8637E1AF2BA13B276A313BCC451E78E87EEE6B06F468D01C4287")));
+            Assert.That(PermissionActionDescriptors.ContextAccess.InputSchema, Is.EqualTo(
+                ModuleSchemaIdentity.ActionInput(
+                    PermissionActionDescriptors.ContextAccess.Key,
+                    1,
+                    typeof(PermissionContextAccessAction))));
+            Assert.That(PermissionActionDescriptors.AgentAccess.ResultSchema, Is.EqualTo(
+                ModuleSchemaIdentity.ActionResult(
+                    PermissionActionDescriptors.AgentAccess.Key,
+                    1,
+                    typeof(AccessDecision))));
         });
     }
 
@@ -605,8 +607,6 @@ public sealed class ModuleCompositionTests
             Assert.That(host.LastAction?.Capability, Is.EqualTo("manage_agent_jobs"));
             Assert.That(host.LastDecision?.Allowed, Is.True);
             Assert.That(host.LastDecision?.Code, Is.EqualTo("administrator"));
-            Assert.That(host.LastDecision?.Tier, Is.EqualTo(2));
-            Assert.That(host.LastDecision?.Clearance, Is.EqualTo(PermissionClearance.Independent));
             Assert.That(imported, Has.Count.EqualTo(1));
             Assert.That(state?.Completed, Is.True);
         });
@@ -651,9 +651,7 @@ public sealed class ModuleCompositionTests
             Assert.That(host.LastAction?.Capability, Is.EqualTo("manage_agent_jobs"));
             Assert.That(host.LastDecision?.Allowed, Is.False);
             Assert.That(host.LastDecision?.Code, Is.EqualTo("clearance_denied"));
-            Assert.That(host.LastDecision?.Tier, Is.EqualTo(1));
             Assert.That(host.LastDecision?.Message, Is.EqualTo("The caller has no usable clearance."));
-            Assert.That(host.LastDecision?.Clearance, Is.EqualTo(PermissionClearance.Unset));
             Assert.That(jobs, Is.Empty);
             Assert.That(state, Is.Null);
         });
@@ -966,8 +964,7 @@ public sealed class ModuleCompositionTests
 
         var channel = Guid.NewGuid();
         var context = Guid.NewGuid();
-        var channelDecision = await policy.EvaluateDetailedAsync(new ContextAccessRequest(
-            caller,
+        var channelDecision = await policy.EvaluateDetailedAsync(caller, new ContextAccessRequest(
             channel,
             agentId,
             [],
@@ -975,8 +972,7 @@ public sealed class ModuleCompositionTests
             [],
             false,
             context));
-        var contextDecision = await policy.EvaluateDetailedAsync(new ContextAccessRequest(
-            caller,
+        var contextDecision = await policy.EvaluateDetailedAsync(caller, new ContextAccessRequest(
             channel,
             Guid.NewGuid(),
             [],
@@ -984,8 +980,7 @@ public sealed class ModuleCompositionTests
             [],
             false,
             context));
-        var roleDecision = await policy.EvaluateDetailedAsync(new ContextAccessRequest(
-            caller,
+        var roleDecision = await policy.EvaluateDetailedAsync(caller, new ContextAccessRequest(
             channel,
             Guid.NewGuid(),
             [],
@@ -1059,7 +1054,7 @@ public sealed class ModuleCompositionTests
             Assert.That((int)roundTrip!.Clearance, Is.EqualTo(item.Value));
         }
 
-        Assert.That(PermissionDecision.Deny("denied", "denied", 1).Clearance,
+        Assert.That(TwoTierPermissionDecision.Deny("denied", "denied", 1).Clearance,
             Is.EqualTo(PermissionClearance.Restricted));
     }
 
@@ -1079,7 +1074,7 @@ public sealed class ModuleCompositionTests
             RequireSourceOptIn: true,
             [], null, DateTimeOffset.UtcNow));
 
-        var store = new ContextStore(gateway, PolicyEntry(permission));
+        var store = new ContextStore(gateway, PolicyEntry(permission, caller));
         var current = new ContextChannelRecord(
             Guid.NewGuid(), "Current", agentId, null, [], [], false,
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
@@ -1097,7 +1092,7 @@ public sealed class ModuleCompositionTests
             Guid.NewGuid(), thread.Id, source.Id, "user", "retained history", "tester",
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
 
-        var policyHost = new PolicyHostActionEntry(permission);
+        var policyHost = new PolicyHostActionEntry(permission, caller);
         var contextGateway = new DelegatingContextActionGateway(
             new ContextApiActionExecutor(store, new HostPermissionActionEntry(policyHost)),
             policyHost);
@@ -1129,19 +1124,19 @@ public sealed class ModuleCompositionTests
             caller.SubjectId, [], ["read_cross_thread_history", ContextAccessCapabilities.CreateThread], [],
             PermissionClearance.ApprovedBySameLevelUser, true, [], null, DateTimeOffset.UtcNow));
         var request = new ContextAccessRequest(
-            caller, Guid.NewGuid(), agentId, [], null, [], SourceChannelOptedIn: false);
+            Guid.NewGuid(), agentId, [], null, [], SourceChannelOptedIn: false);
 
-        var denied = await policy.EvaluateDetailedAsync(request);
+        var denied = await policy.EvaluateDetailedAsync(caller, request);
         Assert.That(denied, Has.Property("Allowed").EqualTo(false));
         Assert.That(denied.Code, Is.EqualTo("source_opt_in_required"));
 
-        var allowed = await policy.EvaluateDetailedAsync(request with { SourceChannelOptedIn = true });
+        var allowed = await policy.EvaluateDetailedAsync(caller, request with { SourceChannelOptedIn = true });
         Assert.That(allowed.Allowed, Is.True);
 
         await store.SaveAsync(new PermissionPolicyRecord(
             caller.SubjectId, [], ["read_cross_thread_history"], ["read_cross_thread_history"],
             PermissionClearance.Independent, false, [], null, DateTimeOffset.UtcNow));
-        var hardDenied = await policy.EvaluateDetailedAsync(request with { SourceChannelOptedIn = true });
+        var hardDenied = await policy.EvaluateDetailedAsync(caller, request with { SourceChannelOptedIn = true });
         Assert.That(hardDenied.Code, Is.EqualTo("hard_denial"));
     }
 
@@ -1158,7 +1153,7 @@ public sealed class ModuleCompositionTests
             caller.SubjectId, [], ["read_cross_thread_history", ContextAccessCapabilities.CreateThread], [],
             PermissionClearance.Independent, true, [], null, DateTimeOffset.UtcNow));
 
-        var store = new ContextStore(gateway, PolicyEntry(permission));
+        var store = new ContextStore(gateway, PolicyEntry(permission, caller));
         var current = new ContextChannelRecord(
             Guid.NewGuid(), "Current", agentId, null, [], [], false,
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
@@ -1197,14 +1192,13 @@ public sealed class ModuleCompositionTests
         var permission = new TwoTierPermissionPolicy(permissionStore);
         var admin = new RequestPrincipal(Guid.NewGuid().ToString("D"), Roles: new HashSet<string>(["admin"]));
         var hostContext = TestHostActionContext.Create(admin, HostActionEntryIngress.CrossModule);
-        var permissionExecutor = new PermissionActionExecutor(permission);
-        Assert.That(await permissionExecutor.GrantAsync(admin,
-            new PermissionGrantAction("subject", "read_memory", "global", PermissionClearance.Independent)), Is.True);
-        Assert.That((await permissionExecutor.EvaluateAsync(
+        await permission.GrantAsync(admin,
+            new PermissionGrantAction("subject", "read_memory", "global", PermissionClearance.Independent));
+        Assert.That((await permission.EvaluateCapabilityAsync(
             new RequestPrincipal("subject"),
             new PermissionEvaluateAction("subject", "read_memory", "global", false))).Allowed, Is.True);
 
-        var agents = new AgentsActionExecutor(new AgentsCatalog(gateway, PolicyEntry(permission)));
+        var agents = new AgentsActionExecutor(new AgentsCatalog(gateway, PolicyEntry(permission, admin)));
         var agent = await agents.CreateAsync(admin,
             new AgentsCreateAction("Executor Agent", Guid.NewGuid(), "provider", "model", null),
             hostContext: hostContext);
@@ -1219,7 +1213,7 @@ public sealed class ModuleCompositionTests
                 hostContext: hostContext),
             Does.Contain("use the skill"));
 
-        var contextStore = new ContextStore(gateway, PolicyEntry(permission));
+        var contextStore = new ContextStore(gateway, PolicyEntry(permission, admin));
         var channel = new ContextChannelRecord(
             Guid.NewGuid(), "Executor Channel", agent.Id, null, [], [], false,
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
@@ -1391,8 +1385,7 @@ public sealed class ModuleCompositionTests
             "CanReadCrossThreadHistory",
             secondScope));
 
-        var first = await policy.EvaluateDetailedAsync(new ContextAccessRequest(
-            subject,
+        var first = await policy.EvaluateDetailedAsync(subject, new ContextAccessRequest(
             firstChannel,
             subjectAgentId,
             [],
@@ -1400,8 +1393,7 @@ public sealed class ModuleCompositionTests
             [],
             SourceChannelOptedIn: false,
             Capability: ContextAccessCapabilities.ReadCrossThreadHistory));
-        var second = await policy.EvaluateDetailedAsync(new ContextAccessRequest(
-            subject,
+        var second = await policy.EvaluateDetailedAsync(subject, new ContextAccessRequest(
             secondChannel,
             subjectAgentId,
             [],
@@ -1433,8 +1425,7 @@ public sealed class ModuleCompositionTests
             ContextAccessCapabilities.ReadCrossThreadHistory,
             firstScope));
 
-        var afterRevoke = await policy.EvaluateDetailedAsync(new ContextAccessRequest(
-            subject,
+        var afterRevoke = await policy.EvaluateDetailedAsync(subject, new ContextAccessRequest(
             firstChannel,
             subjectAgentId,
             [],
@@ -1442,8 +1433,7 @@ public sealed class ModuleCompositionTests
             [],
             SourceChannelOptedIn: false,
             Capability: ContextAccessCapabilities.ReadCrossThreadHistory));
-        var secondAfterRevoke = await policy.EvaluateDetailedAsync(new ContextAccessRequest(
-            subject,
+        var secondAfterRevoke = await policy.EvaluateDetailedAsync(subject, new ContextAccessRequest(
             secondChannel,
             subjectAgentId,
             [],
@@ -1467,8 +1457,8 @@ public sealed class ModuleCompositionTests
         var gateway = new InMemoryStorageGateway();
         var permissionStore = new PermissionPolicyStore(gateway);
         var permission = new TwoTierPermissionPolicy(permissionStore);
-        var catalog = new AgentsCatalog(gateway, PolicyEntry(permission));
         var admin = new RequestPrincipal("admin", Roles: new HashSet<string>(["admin"]));
+        var catalog = new AgentsCatalog(gateway, PolicyEntry(permission, admin));
         var adminContext = TestHostActionContext.Create(admin, HostActionEntryIngress.CrossModule);
         var agent = await catalog.CreateAgentAsync(admin, new(
             "Test Agent", Guid.NewGuid(), "provider", "model", "prompt"),
@@ -1482,18 +1472,19 @@ public sealed class ModuleCompositionTests
         await permissionStore.SaveAsync(new PermissionPolicyRecord(
             owner.SubjectId, [], ["write_memory", "read_memory"], [],
             PermissionClearance.Independent, false, [], null, DateTimeOffset.UtcNow));
-        var memory = await catalog.WriteMemoryAsync(owner, new(
+        var ownerCatalog = new AgentsCatalog(gateway, PolicyEntry(permission, owner));
+        var memory = await ownerCatalog.WriteMemoryAsync(owner, new(
             agent.Id, "preference", "Use concise answers", ["profile"]),
             hostContext: ownerContext);
 
         Assert.That((await catalog.ListAgentsAsync()).Single().Name, Is.EqualTo("Test Agent"));
         Assert.That((await catalog.ListSkillsAsync()).Single().SkillText, Is.EqualTo("Instruction"));
-        Assert.That((await catalog.SearchMemoryAsync(
+        Assert.That((await ownerCatalog.SearchMemoryAsync(
             owner,
             agent.Id,
             "concise",
             hostContext: ownerContext)).Single().Id, Is.EqualTo(memory.Id));
-        var host = new PolicyHostActionEntry(permission);
+        var host = new PolicyHostActionEntry(permission, owner);
         Assert.That((await new AgentChatProfileResolver(
             catalog,
             new HostPermissionActionEntry(host)).ResolveAsync(
@@ -2220,7 +2211,7 @@ public sealed class ModuleCompositionTests
             null,
             DateTimeOffset.UtcNow));
 
-        var permissionEntry = PolicyEntry(permission);
+        var permissionEntry = PolicyEntry(permission, caller);
         var store = new ContextStore(gateway, permissionEntry);
         var resolver = new ContextConversationResolver(store, permissionEntry);
         Assert.ThrowsAsync<InvalidOperationException>(async () =>
@@ -2522,7 +2513,7 @@ public sealed class ModuleCompositionTests
                     TestHostActionContext.Create(unauthorized, HostActionEntryIngress.CrossModule),
                     ContextSteeringActionDescriptors.Record.Key,
                     unauthorizedAction,
-                    fixture.Host)));
+                    new DenyingPermissionHostActionEntry())));
 
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
@@ -2968,7 +2959,7 @@ public sealed class ModuleCompositionTests
             [],
             null,
             now));
-        var host = new PolicyHostActionEntry(policy);
+        var host = new PolicyHostActionEntry(policy, caller);
         var permission = new HostPermissionActionEntry(host);
         var store = new ContextStore(gateway, permission);
         var channel = new ContextChannelRecord(
@@ -3430,7 +3421,7 @@ public sealed class ModuleCompositionTests
         public List<HostActionEntryRequestContext> Contexts { get; } = [];
         public List<object> Actions { get; } = [];
         public List<Type> TerminalTypes { get; } = [];
-        public PermissionDecision? PermissionResult { get; set; }
+        public AccessDecision? PermissionResult { get; set; }
         public Exception? ExceptionToThrow { get; init; }
 
         public ValueTask<IActionOutcome<TResult>> InvokeAsync<TAction, TResult>(
@@ -3448,11 +3439,9 @@ public sealed class ModuleCompositionTests
 
             var result = typeof(TResult) == typeof(JsonElement)
                 ? (TResult)(object)JsonSerializer.SerializeToElement(new { accepted = true })
-                : typeof(TResult) == typeof(PermissionDecision)
-                    ? (TResult)(object)(PermissionResult ?? PermissionDecision.Allow(
-                        "test_allowed",
-                        1,
-                        PermissionClearance.Independent))
+                : typeof(TResult) == typeof(AccessDecision)
+                    ? (TResult)(object)(PermissionResult ?? AccessDecision.Allow(
+                        "test_allowed"))
                     : default!;
             return ValueTask.FromResult<IActionOutcome<TResult>>(
                 new HostActionOutcome<TResult>(ActionOutcomeKind.Completed, result));
@@ -3466,11 +3455,9 @@ public sealed class ModuleCompositionTests
             TerminalTypes.Add(terminal.GetType());
             var result = typeof(TResult) == typeof(JsonElement)
                 ? (TResult)(object)JsonSerializer.SerializeToElement(new { accepted = true })
-                : typeof(TResult) == typeof(PermissionDecision)
-                    ? (TResult)(object)(PermissionResult ?? PermissionDecision.Allow(
-                        "test_allowed",
-                        1,
-                        PermissionClearance.Independent))
+                : typeof(TResult) == typeof(AccessDecision)
+                    ? (TResult)(object)(PermissionResult ?? AccessDecision.Allow(
+                        "test_allowed"))
                     : default!;
             return ValueTask.FromResult<IActionOutcome<TResult>>(
                 new HostActionOutcome<TResult>(ActionOutcomeKind.Completed, result));
@@ -3482,11 +3469,9 @@ public sealed class ModuleCompositionTests
         {
             var result = typeof(TResult) == typeof(JsonElement)
                 ? (TResult)(object)JsonSerializer.SerializeToElement(new { accepted = true })
-                : typeof(TResult) == typeof(PermissionDecision)
-                    ? (TResult)(object)(PermissionResult ?? PermissionDecision.Allow(
-                        "test_allowed",
-                        1,
-                        PermissionClearance.Independent))
+                : typeof(TResult) == typeof(AccessDecision)
+                    ? (TResult)(object)(PermissionResult ?? AccessDecision.Allow(
+                        "test_allowed"))
                     : default!;
             return ValueTask.FromResult<IActionOutcome<TResult>>(
                 new HostActionOutcome<TResult>(ActionOutcomeKind.Completed, result));
@@ -3507,8 +3492,10 @@ public sealed class ModuleCompositionTests
     private static HostPermissionActionEntry AllowAllEntry() =>
         new(new RecordingHostActionEntry());
 
-    private static HostPermissionActionEntry PolicyEntry(TwoTierPermissionPolicy policy) =>
-        new(new PolicyHostActionEntry(policy));
+    private static HostPermissionActionEntry PolicyEntry(
+        TwoTierPermissionPolicy policy,
+        RequestPrincipal caller) =>
+        new(new PolicyHostActionEntry(policy, caller));
 
     private static ChatOperationContext CreateChatOperationContext(
         RequestPrincipal caller,
@@ -3529,8 +3516,8 @@ public sealed class ModuleCompositionTests
         TwoTierPermissionPolicy policy,
         RequestPrincipal caller) : IHostActionEntry, IModuleCrossSidecarActionEntry
     {
-        private readonly PermissionAgentAccessActionTerminal _terminal =
-            new(new PermissionActionExecutor(policy));
+        private readonly PermissionAgentPolicyTerminal _terminal =
+            new(new TwoTierPermissionAccessPolicy(policy));
 
         public int AgentAccessCalls { get; private set; }
 
@@ -3542,7 +3529,7 @@ public sealed class ModuleCompositionTests
 
         public PermissionAgentAccessAction? LastAction { get; private set; }
 
-        public PermissionDecision? LastDecision { get; private set; }
+        public AccessDecision? LastDecision { get; private set; }
 
         public ValueTask<IActionOutcome<TResult>> InvokeAsync<TAction, TResult>(
             HostActionEntryRequest<TAction, TResult> request,
@@ -3561,7 +3548,7 @@ public sealed class ModuleCompositionTests
             CancellationToken ct)
         {
             if (request.Action is not PermissionAgentAccessAction action
-                || typeof(TResult) != typeof(PermissionDecision)
+                || typeof(TResult) != typeof(AccessDecision)
                 || !ReferenceEquals(request.Descriptor, PermissionActionDescriptors.AgentAccess))
             {
                 throw new InvalidOperationException(
@@ -3627,7 +3614,7 @@ public sealed class ModuleCompositionTests
                 throw new InvalidOperationException(
                     $"The test host does not support '{request.Descriptor.Key.Value}'.");
 
-            var decision = PermissionDecision.Deny("test_denied", "The test denies access.", 1);
+            var decision = AccessDecision.Deny("test_denied", "The test denies access.");
             return ValueTask.FromResult<IActionOutcome<TResult>>(
                 new HostActionOutcome<TResult>(
                     ActionOutcomeKind.Completed,
@@ -3635,7 +3622,9 @@ public sealed class ModuleCompositionTests
         }
     }
 
-    private sealed class PolicyHostActionEntry(TwoTierPermissionPolicy policy) : IHostActionEntry, IModuleCrossSidecarActionEntry
+    private sealed class PolicyHostActionEntry(
+        TwoTierPermissionPolicy policy,
+        RequestPrincipal caller) : IHostActionEntry, IModuleCrossSidecarActionEntry
     {
         public async ValueTask<IActionOutcome<TResult>> InvokeAsync<TAction, TResult>(
             HostActionEntryRequest<TAction, TResult> request,
@@ -3645,11 +3634,12 @@ public sealed class ModuleCompositionTests
             var result = request.Action switch
             {
                 PermissionContextAccessAction action =>
-                    await policy.EvaluateDetailedAsync(
-                        action.Request with { Principal = request.Context.Caller },
+                    await policy.EvaluateAsync(
+                        request.Context.Caller,
+                        action.Request,
                         ct),
                 PermissionAgentAccessAction action =>
-                    await policy.EvaluateAgentDetailedAsync(
+                    await policy.EvaluateAgentAsync(
                         request.Context.Caller,
                         action.Capability,
                         action.TargetAgentId,
@@ -3671,11 +3661,12 @@ public sealed class ModuleCompositionTests
             var result = request.Action switch
             {
                 PermissionContextAccessAction action =>
-                    await policy.EvaluateDetailedAsync(
-                        action.Request with { Principal = request.ParentContext.Caller },
+                    await policy.EvaluateAsync(
+                        request.ParentContext.Caller,
+                        action.Request,
                         ct),
                 PermissionAgentAccessAction action =>
-                    await policy.EvaluateAgentDetailedAsync(
+                    await policy.EvaluateAgentAsync(
                         request.ParentContext.Caller,
                         action.Capability,
                         action.TargetAgentId,
@@ -3696,12 +3687,9 @@ public sealed class ModuleCompositionTests
             var result = request.Action switch
             {
                 PermissionContextAccessAction action =>
-                    await policy.EvaluateDetailedAsync(action.Request, ct),
+                    await policy.EvaluateAsync(caller, action.Request, ct),
                 PermissionAgentAccessAction action =>
-                    PermissionDecision.Allow(
-                        "test_allowed",
-                        1,
-                        PermissionClearance.Independent),
+                    AccessDecision.Allow("test_allowed"),
                 _ => throw new InvalidOperationException(
                     $"The test host does not support '{request.Descriptor.Key.Value}'."),
             };

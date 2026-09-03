@@ -14,25 +14,3 @@ public sealed class PermissionApiActionTerminal(
         CancellationToken ct) =>
         executor.ExecuteAsync(context, ct);
 }
-
-public sealed class PermissionContextAccessActionTerminal(
-    IPermissionActionExecutor executor) : IHostActionEntryTerminal<PermissionContextAccessAction, PermissionDecision>
-{
-    public Guid TerminalId => TwoTierPermissionModule.ContextAccessTerminalId;
-
-    public ValueTask<PermissionDecision> InvokeAsync(
-        ActionContext<PermissionContextAccessAction> context,
-        CancellationToken ct) =>
-        executor.EvaluateAsync(context.Caller, context.Action, ct);
-}
-
-public sealed class PermissionAgentAccessActionTerminal(
-    IPermissionActionExecutor executor) : IHostActionEntryTerminal<PermissionAgentAccessAction, PermissionDecision>
-{
-    public Guid TerminalId => TwoTierPermissionModule.AgentAccessTerminalId;
-
-    public ValueTask<PermissionDecision> InvokeAsync(
-        ActionContext<PermissionAgentAccessAction> context,
-        CancellationToken ct) =>
-        executor.EvaluateAsync(context.Caller, context.Action, ct);
-}

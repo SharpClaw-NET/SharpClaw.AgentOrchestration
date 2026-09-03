@@ -9,17 +9,16 @@ namespace SharpClaw.AgentOrchestration.Tests;
 public sealed class PermissionActionEntryTests
 {
     [Test]
-    public async Task ContextAccessUsesTheHostEntryAndBindsTheCaller()
+    public async Task ContextAccessUsesTheHostEntryWithANeutralRequest()
     {
         var host = new RecordingHostActionEntry
         {
-            Result = PermissionDecision.Allow("context_allowed", 2, PermissionClearance.Independent),
+            Result = AccessDecision.Allow("context_allowed"),
         };
         var entry = new HostPermissionActionEntry(host);
         var caller = new RequestPrincipal("agent-1", IsAuthenticated: true);
         var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
         var request = new ContextAccessRequest(
-            RequestPrincipal.Anonymous,
             Guid.NewGuid(),
             Guid.NewGuid(),
             [Guid.NewGuid()],
@@ -37,8 +36,8 @@ public sealed class PermissionActionEntryTests
             Assert.That(decision.Code, Is.EqualTo("context_allowed"));
             Assert.That(host.ContextCrossSidecarRequest, Is.Not.Null);
             Assert.That(host.ContextCrossSidecarRequest!.Descriptor, Is.SameAs(PermissionActionDescriptors.ContextAccess));
-            Assert.That(host.ContextCrossSidecarRequest.Action.Request.Principal, Is.EqualTo(caller));
             Assert.That(host.ContextCrossSidecarRequest.Action.Request.ChannelId, Is.EqualTo(request.ChannelId));
+            Assert.That(typeof(ContextAccessRequest).GetProperty("Principal"), Is.Null);
             Assert.That(host.CrossSidecarKeys, Is.EqualTo(["permission.context-access"]));
         });
     }
@@ -48,10 +47,9 @@ public sealed class PermissionActionEntryTests
     {
         var host = new RecordingHostActionEntry
         {
-            Result = PermissionDecision.Deny(
+            Result = AccessDecision.Deny(
                 "capability_denied",
-                "The capability is not assigned.",
-                1),
+                "The capability is not assigned."),
         };
         var entry = new HostPermissionActionEntry(host);
         var caller = new RequestPrincipal("agent-2", IsAuthenticated: true);
@@ -121,7 +119,7 @@ public sealed class PermissionActionEntryTests
     {
         var host = new RecordingHostActionEntry
         {
-            Result = PermissionDecision.Allow("context_allowed", 2, PermissionClearance.Independent),
+            Result = AccessDecision.Allow("context_allowed"),
         };
         var entry = new HostPermissionActionEntry(host);
         var caller = new RequestPrincipal(
@@ -147,7 +145,7 @@ public sealed class PermissionActionEntryTests
     {
         var host = new RecordingHostActionEntry
         {
-            Result = PermissionDecision.Allow("cross_sidecar_allowed", 2, PermissionClearance.Independent),
+            Result = AccessDecision.Allow("cross_sidecar_allowed"),
         };
         var entry = new HostPermissionActionEntry(host);
         var caller = new RequestPrincipal("cross-sidecar-agent", IsAuthenticated: true);
@@ -172,7 +170,6 @@ public sealed class PermissionActionEntryTests
         var contextDecision = await entry.EvaluateContextAsync(
             parent,
             new ContextAccessRequest(
-                RequestPrincipal.Anonymous,
                 Guid.NewGuid(),
                 null,
                 [],
@@ -197,15 +194,15 @@ public sealed class PermissionActionEntryTests
     {
         public ActionOutcomeKind OutcomeKind { get; set; } = ActionOutcomeKind.Completed;
 
-        public PermissionDecision? Result { get; set; }
+        public AccessDecision? Result { get; set; }
 
         public ExecutionError? Error { get; set; }
 
         public ActionUncertainty? Uncertainty { get; set; }
 
-        public ModuleCrossSidecarActionEntryRequest<PermissionContextAccessAction, PermissionDecision>? ContextCrossSidecarRequest { get; private set; }
+        public ModuleCrossSidecarActionEntryRequest<PermissionContextAccessAction, AccessDecision>? ContextCrossSidecarRequest { get; private set; }
 
-        public ModuleCrossSidecarActionEntryRequest<PermissionAgentAccessAction, PermissionDecision>? AgentCrossSidecarRequest { get; private set; }
+        public ModuleCrossSidecarActionEntryRequest<PermissionAgentAccessAction, AccessDecision>? AgentCrossSidecarRequest { get; private set; }
 
         public List<string> CrossSidecarKeys { get; } = [];
 
@@ -239,11 +236,11 @@ public sealed class PermissionActionEntryTests
         {
             CrossSidecarKeys.Add(request.Descriptor.Key.Value);
             if (request.Action is PermissionContextAccessAction contextAction)
-                ContextCrossSidecarRequest = new ModuleCrossSidecarActionEntryRequest<PermissionContextAccessAction, PermissionDecision>(
+                ContextCrossSidecarRequest = new ModuleCrossSidecarActionEntryRequest<PermissionContextAccessAction, AccessDecision>(
                     PermissionActionDescriptors.ContextAccess,
                     contextAction);
             else if (request.Action is PermissionAgentAccessAction agentAction)
-                AgentCrossSidecarRequest = new ModuleCrossSidecarActionEntryRequest<PermissionAgentAccessAction, PermissionDecision>(
+                AgentCrossSidecarRequest = new ModuleCrossSidecarActionEntryRequest<PermissionAgentAccessAction, AccessDecision>(
                     PermissionActionDescriptors.AgentAccess,
                     agentAction);
             return ValueTask.FromResult<IActionOutcome<TResult>>(

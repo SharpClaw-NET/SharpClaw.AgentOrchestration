@@ -9,47 +9,47 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
     private const string ManagePermissionsCapability = "manage_permissions";
     private const string ApprovePermissionsCapability = "approve_permissions";
 
-    public async ValueTask<ContextAccessDecision> EvaluateAsync(
+    public async ValueTask<AccessDecision> EvaluateAsync(
+        RequestPrincipal principal,
         ContextAccessRequest request,
         CancellationToken ct = default)
     {
-        var decision = await EvaluateDetailedAsync(request, ct);
-        return decision.Allowed
-            ? ContextAccessDecision.Allow(decision.Code)
-            : ContextAccessDecision.Deny(decision.Code, decision.Message);
+        var decision = await EvaluateDetailedAsync(principal, request, ct);
+        return decision.ToAccessDecision();
     }
 
-    public async ValueTask<PermissionDecision> EvaluateDetailedAsync(
+    public async ValueTask<TwoTierPermissionDecision> EvaluateDetailedAsync(
+        RequestPrincipal principal,
         ContextAccessRequest request,
         CancellationToken ct = default)
     {
-        if (!request.Principal.IsAuthenticated)
-            return PermissionDecision.Deny("unauthenticated", "Authentication is required.", 1);
+        if (!principal.IsAuthenticated)
+            return TwoTierPermissionDecision.Deny("unauthenticated", "Authentication is required.", 1);
 
         var capability = NormalizeCapability(request.Capability);
-        var policy = await store.GetAsync(request.Principal.SubjectId, ct);
-        var isAdministrator = IsAdministrator(request.Principal, policy);
-        var grant = await FindUsableGrantForRequestAsync(request, capability, ct);
+        var policy = await store.GetAsync(principal.SubjectId, ct);
+        var isAdministrator = IsAdministrator(principal, policy);
+        var grant = await FindUsableGrantForRequestAsync(principal, request, capability, ct);
         var clearance = EffectiveClearance(
             policy?.Clearance ?? PermissionClearance.Unset,
             grant?.Clearance);
 
         if (policy?.ExpiresAt is { } expiry && expiry <= DateTimeOffset.UtcNow)
-            return PermissionDecision.Deny("policy_expired", "The permission policy has expired.", 1, clearance);
+            return TwoTierPermissionDecision.Deny("policy_expired", "The permission policy has expired.", 1, clearance);
 
         if (policy?.HardDeniedCapabilities.Any(item => IsSameCapability(item, capability)) == true)
-            return PermissionDecision.Deny("hard_denial", "A hard denial blocks this capability.", 1, clearance);
+            return TwoTierPermissionDecision.Deny("hard_denial", "A hard denial blocks this capability.", 1, clearance);
 
         if (!isAdministrator && !HasCapability(policy, capability) && grant is null)
-            return PermissionDecision.Deny("capability_denied", "The caller lacks the required capability.", 1, clearance);
+            return TwoTierPermissionDecision.Deny("capability_denied", "The caller lacks the required capability.", 1, clearance);
 
         if (!isAdministrator && !IsUsableClearance(clearance))
-            return PermissionDecision.Deny("clearance_denied", "The caller has no usable clearance.", 1, clearance);
+            return TwoTierPermissionDecision.Deny("clearance_denied", "The caller has no usable clearance.", 1, clearance);
 
-        var callerAgentId = ParseAgentId(request.Principal.SubjectId);
-        var assignment = ResolveAssignment(request, policy, callerAgentId);
+        var callerAgentId = ParseAgentId(principal.SubjectId);
+        var assignment = ResolveAssignment(principal, request, policy, callerAgentId);
         if (!isAdministrator && assignment is null)
-            return PermissionDecision.Deny("scope_denied", "The caller is not assigned to the source channel, context, or agent role.", 2, clearance);
+            return TwoTierPermissionDecision.Deny("scope_denied", "The caller is not assigned to the source channel, context, or agent role.", 2, clearance);
 
         var requiresOptIn = grant?.RequireSourceOptIn
             ?? policy?.RequireSourceOptIn
@@ -60,14 +60,14 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
             && requiresOptIn
             && !request.SourceChannelOptedIn)
         {
-            return PermissionDecision.Deny(
+            return TwoTierPermissionDecision.Deny(
                 "source_opt_in_required",
                 "The source channel has not enabled cross-thread access.",
                 2,
                 clearance);
         }
 
-        return PermissionDecision.Allow(
+        return TwoTierPermissionDecision.Allow(
             isAdministrator ? "administrator" : $"{assignment}_assigned_and_authorized",
             2,
             isAdministrator
@@ -75,13 +75,13 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
                 : EffectiveClearance(clearance, grant?.Clearance));
     }
 
-    public async ValueTask<PermissionDecision> EvaluateCapabilityAsync(
+    public async ValueTask<TwoTierPermissionDecision> EvaluateCapabilityAsync(
         RequestPrincipal caller,
         PermissionEvaluateAction action,
         CancellationToken ct = default)
     {
         if (!caller.IsAuthenticated)
-            return PermissionDecision.Deny("unauthenticated", "Authentication is required.", 1);
+            return TwoTierPermissionDecision.Deny("unauthenticated", "Authentication is required.", 1);
 
         var subject = caller with { SubjectId = action.SubjectId };
         var policy = await store.GetAsync(subject.SubjectId, ct);
@@ -99,48 +99,46 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
             policy?.Clearance ?? PermissionClearance.Unset,
             scopedGrant?.Clearance);
         if (policy?.ExpiresAt is { } expiry && expiry <= DateTimeOffset.UtcNow)
-            return PermissionDecision.Deny("policy_expired", "The permission policy has expired.", 1, clearance);
+            return TwoTierPermissionDecision.Deny("policy_expired", "The permission policy has expired.", 1, clearance);
         if (policy?.HardDeniedCapabilities.Any(item => IsSameCapability(item, capability)) == true)
-            return PermissionDecision.Deny("hard_denial", "A hard denial blocks this capability.", 1, clearance);
+            return TwoTierPermissionDecision.Deny("hard_denial", "A hard denial blocks this capability.", 1, clearance);
         if (!isAdministrator && !HasCapability(policy, capability) && scopedGrant is null)
-            return PermissionDecision.Deny("capability_denied", "The caller lacks the required capability.", 1, clearance);
+            return TwoTierPermissionDecision.Deny("capability_denied", "The caller lacks the required capability.", 1, clearance);
         if (!isAdministrator && !IsUsableClearance(clearance))
-            return PermissionDecision.Deny("clearance_denied", "The caller has no usable clearance.", 1, clearance);
+            return TwoTierPermissionDecision.Deny("clearance_denied", "The caller has no usable clearance.", 1, clearance);
 
-        return PermissionDecision.Allow(
+        return TwoTierPermissionDecision.Allow(
             isAdministrator ? "administrator" : "capability_granted",
             clearance == PermissionClearance.Independent ? 2 : 1,
             isAdministrator ? PermissionClearance.Independent : EffectiveClearance(clearance, scopedGrant?.Clearance));
     }
 
-    public async ValueTask<ContextAccessDecision> EvaluateAgentAsync(
+    public async ValueTask<AccessDecision> EvaluateAgentAsync(
         RequestPrincipal principal,
         string capability,
         Guid? targetAgentId,
         CancellationToken ct = default)
     {
         var decision = await EvaluateAgentDetailedAsync(principal, capability, targetAgentId, ct);
-        return decision.Allowed
-            ? ContextAccessDecision.Allow(decision.Code)
-            : ContextAccessDecision.Deny(decision.Code, decision.Message);
+        return decision.ToAccessDecision();
     }
 
-    public async ValueTask<PermissionDecision> EvaluateAgentDetailedAsync(
+    public async ValueTask<TwoTierPermissionDecision> EvaluateAgentDetailedAsync(
         RequestPrincipal principal,
         string capability,
         Guid? targetAgentId,
         CancellationToken ct = default)
     {
         if (!principal.IsAuthenticated)
-            return PermissionDecision.Deny("unauthenticated", "Authentication is required.", 1);
+            return TwoTierPermissionDecision.Deny("unauthenticated", "Authentication is required.", 1);
 
         var policy = await store.GetAsync(principal.SubjectId, ct);
         if (IsAdministrator(principal, policy))
-            return PermissionDecision.Allow("administrator", 2, PermissionClearance.Independent);
+            return TwoTierPermissionDecision.Allow("administrator", 2, PermissionClearance.Independent);
         if (policy?.ExpiresAt is { } expiry && expiry <= DateTimeOffset.UtcNow)
-            return PermissionDecision.Deny("policy_expired", "The permission policy has expired.", 1);
+            return TwoTierPermissionDecision.Deny("policy_expired", "The permission policy has expired.", 1);
         if (policy?.HardDeniedCapabilities.Any(item => IsSameCapability(item, capability)) == true)
-            return PermissionDecision.Deny("hard_denial", "A hard denial blocks this capability.", 1);
+            return TwoTierPermissionDecision.Deny("hard_denial", "A hard denial blocks this capability.", 1);
         var normalizedCapability = NormalizeCapability(capability);
         var targetScope = targetAgentId is { } scopeAgentId
             ? $"agent:{scopeAgentId:N}"
@@ -155,17 +153,17 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
             policy?.Clearance ?? PermissionClearance.Unset,
             grant?.Clearance);
         if (!IsUsableClearance(clearance))
-            return PermissionDecision.Deny("clearance_denied", "The caller has no usable clearance.", 1, clearance);
+            return TwoTierPermissionDecision.Deny("clearance_denied", "The caller has no usable clearance.", 1, clearance);
         if (!HasCapability(policy, normalizedCapability) && grant is null)
-            return PermissionDecision.Deny("capability_denied", "The caller lacks the required agent capability.", 1, clearance);
+            return TwoTierPermissionDecision.Deny("capability_denied", "The caller lacks the required agent capability.", 1, clearance);
         if (targetAgentId is { } changedAgentId
             && Guid.TryParse(principal.SubjectId, out var callerId)
             && changedAgentId != callerId
             && !HasCapability(policy, "manage_agents"))
         {
-            return PermissionDecision.Deny("scope_denied", "The caller cannot change another agent.", 2, clearance);
+            return TwoTierPermissionDecision.Deny("scope_denied", "The caller cannot change another agent.", 2, clearance);
         }
-        return PermissionDecision.Allow("agent_capability", 2, clearance);
+        return TwoTierPermissionDecision.Allow("agent_capability", 2, clearance);
     }
 
     public async Task GrantAsync(
@@ -536,17 +534,18 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
     }
 
     private async Task<PermissionGrantRecord?> FindUsableGrantForRequestAsync(
+        RequestPrincipal principal,
         ContextAccessRequest request,
         string capability,
         CancellationToken ct)
     {
-        foreach (var scope in RequestedScopes(request))
+        foreach (var scope in RequestedScopes(principal, request))
         {
             var grant = await FindUsableGrantAsync(
-                request.Principal.SubjectId,
+                principal.SubjectId,
                 capability,
                 scope,
-                ParseAgentId(request.Principal.SubjectId),
+                ParseAgentId(principal.SubjectId),
                 ct);
             if (grant is not null)
                 return grant;
@@ -555,19 +554,22 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
         return null;
     }
 
-    private static IEnumerable<string> RequestedScopes(ContextAccessRequest request)
+    private static IEnumerable<string> RequestedScopes(
+        RequestPrincipal principal,
+        ContextAccessRequest request)
     {
         if (request.ChannelId != Guid.Empty)
             yield return $"channel:{request.ChannelId:N}";
         if (request.ContextId is { } contextId)
             yield return $"context:{contextId:N}";
-        var agentId = ParseAgentId(request.Principal.SubjectId);
+        var agentId = ParseAgentId(principal.SubjectId);
         if (agentId != Guid.Empty)
             yield return $"agent:{agentId:N}";
         yield return "global";
     }
 
     private static string? ResolveAssignment(
+        RequestPrincipal principal,
         ContextAccessRequest request,
         PermissionPolicyRecord? policy,
         Guid callerAgentId)
@@ -579,8 +581,8 @@ public sealed class TwoTierPermissionPolicy(PermissionPolicyStore store)
             || request.ContextAllowedAgentIds.Contains(callerAgentId))
             return "context";
         if (policy?.Roles is { Count: > 0 }
-            && request.Principal.Roles is { Count: > 0 }
-            && policy.Roles.Any(role => request.Principal.Roles.Contains(role)))
+            && principal.Roles is { Count: > 0 }
+            && policy.Roles.Any(role => principal.Roles.Contains(role)))
             return "agent-role";
         return null;
     }

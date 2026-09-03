@@ -18,7 +18,6 @@ public static class ContextAccessCapabilities
 }
 
 public sealed record ContextAccessRequest(
-    RequestPrincipal Principal,
     Guid ChannelId,
     Guid? OwnerAgentId,
     IReadOnlyList<Guid> AllowedAgentIds,
@@ -28,48 +27,16 @@ public sealed record ContextAccessRequest(
     Guid? ContextId = null,
     string Capability = ContextAccessCapabilities.ReadCrossThreadHistory);
 
-public sealed record ContextAccessDecision(
+public sealed record AccessDecision(
     bool Allowed,
     string Code,
     string Message)
 {
-    public static ContextAccessDecision Allow(string code = "allowed") =>
+    public static AccessDecision Allow(string code = "allowed") =>
         new(true, code, "Access allowed.");
 
-    public static ContextAccessDecision Deny(string code, string message) =>
+    public static AccessDecision Deny(string code, string message) =>
         new(false, code, message);
-}
-
-public enum PermissionClearance
-{
-    Unset = 0,
-    ApprovedBySameLevelUser = 1,
-    ApprovedByWhitelistedUser = 2,
-    ApprovedByPermittedAgent = 3,
-    ApprovedByWhitelistedAgent = 4,
-    Independent = 5,
-    Restricted = 6,
-}
-
-public sealed record PermissionDecision(
-    bool Allowed,
-    string Code,
-    string Message,
-    int Tier,
-    PermissionClearance Clearance)
-{
-    public static PermissionDecision Deny(
-        string code,
-        string message,
-        int tier,
-        PermissionClearance clearance = PermissionClearance.Restricted) =>
-        new(false, code, message, tier, clearance);
-
-    public static PermissionDecision Allow(
-        string code,
-        int tier,
-        PermissionClearance clearance) =>
-        new(true, code, "Permission granted.", tier, clearance);
 }
 
 public sealed record PermissionContextAccessAction(
@@ -90,58 +57,58 @@ public static class PermissionActionDescriptors
         ActionSafePoint.AfterTerminal,
     ];
 
-    public static readonly ActionDescriptor<PermissionContextAccessAction, PermissionDecision> ContextAccess =
+    public static readonly ActionDescriptor<PermissionContextAccessAction, AccessDecision> ContextAccess =
         new(new("permission.context-access"), 1, "permission.authorization",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
             true, false, RepeatPolicy, null, TimeSpan.FromSeconds(10))
         {
-            InputSchema = new JsonSchemaReference(
-                "sharpclaw.kernel.action.input.permission.context-access",
+            InputSchema = ModuleSchemaIdentity.ActionInput(
+                new("permission.context-access"),
                 1,
-                "EF52C526C7B77C146B2D16A61B3BB1728BC4F8500763C8EF1A21FC65B981283B"),
-            ResultSchema = new JsonSchemaReference(
-                "sharpclaw.kernel.action.result.permission.context-access",
+                typeof(PermissionContextAccessAction)),
+            ResultSchema = ModuleSchemaIdentity.ActionResult(
+                new("permission.context-access"),
                 1,
-                "D929C5308B9236D3BA1B1423189D989070FFCFC31428FD3E03327E2E518DDC1B"),
+                typeof(AccessDecision)),
             SafePoints = SafePoints,
         };
 
-    public static readonly ActionDescriptor<PermissionAgentAccessAction, PermissionDecision> AgentAccess =
+    public static readonly ActionDescriptor<PermissionAgentAccessAction, AccessDecision> AgentAccess =
         new(new("permission.agent-access"), 1, "permission.authorization",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
             true, false, RepeatPolicy, null, TimeSpan.FromSeconds(10))
         {
-            InputSchema = new JsonSchemaReference(
-                "sharpclaw.kernel.action.input.permission.agent-access",
+            InputSchema = ModuleSchemaIdentity.ActionInput(
+                new("permission.agent-access"),
                 1,
-                "DE19359B0A13BDF1384C226E960AF700899FC7A08A6065CCB9C91AB7AD48D9F4"),
-            ResultSchema = new JsonSchemaReference(
-                "sharpclaw.kernel.action.result.permission.agent-access",
+                typeof(PermissionAgentAccessAction)),
+            ResultSchema = ModuleSchemaIdentity.ActionResult(
+                new("permission.agent-access"),
                 1,
-                "E2C4F31D2F6A8637E1AF2BA13B276A313BCC451E78E87EEE6B06F468D01C4287"),
+                typeof(AccessDecision)),
             SafePoints = SafePoints,
         };
 }
 
 public interface IPermissionActionEntry
 {
-    ValueTask<ContextAccessDecision> EvaluateContextAsync(
+    ValueTask<AccessDecision> EvaluateContextAsync(
         HostActionEntryRequestContext hostContext,
         ContextAccessRequest request,
         CancellationToken ct = default);
 
-    ValueTask<ContextAccessDecision> EvaluateAgentAsync(
+    ValueTask<AccessDecision> EvaluateAgentAsync(
         HostActionEntryRequestContext hostContext,
         string capability,
         Guid? targetAgentId,
         CancellationToken ct = default);
 
-    ValueTask<ContextAccessDecision> EvaluateContextAsync<TParentAction>(
+    ValueTask<AccessDecision> EvaluateContextAsync<TParentAction>(
         ActionContext<TParentAction> parentContext,
         ContextAccessRequest request,
         CancellationToken ct = default);
 
-    ValueTask<ContextAccessDecision> EvaluateAgentAsync<TParentAction>(
+    ValueTask<AccessDecision> EvaluateAgentAsync<TParentAction>(
         ActionContext<TParentAction> parentContext,
         string capability,
         Guid? targetAgentId,
@@ -152,11 +119,11 @@ public interface IModuleActionAuthorization
 {
     RequestPrincipal Caller { get; }
 
-    ValueTask<ContextAccessDecision> EvaluateContextAsync(
+    ValueTask<AccessDecision> EvaluateContextAsync(
         ContextAccessRequest request,
         CancellationToken ct = default);
 
-    ValueTask<ContextAccessDecision> EvaluateAgentAsync(
+    ValueTask<AccessDecision> EvaluateAgentAsync(
         string capability,
         Guid? targetAgentId,
         CancellationToken ct = default);
@@ -168,12 +135,12 @@ public sealed class ModuleActionAuthorization<TAction>(
 {
     public RequestPrincipal Caller => context.Caller;
 
-    public ValueTask<ContextAccessDecision> EvaluateContextAsync(
+    public ValueTask<AccessDecision> EvaluateContextAsync(
         ContextAccessRequest request,
         CancellationToken ct = default) =>
         permission.EvaluateContextAsync(context, request, ct);
 
-    public ValueTask<ContextAccessDecision> EvaluateAgentAsync(
+    public ValueTask<AccessDecision> EvaluateAgentAsync(
         string capability,
         Guid? targetAgentId,
         CancellationToken ct = default) =>
@@ -186,12 +153,12 @@ public sealed class ChatOperationAuthorization(
 {
     public RequestPrincipal Caller => context.Caller;
 
-    public ValueTask<ContextAccessDecision> EvaluateContextAsync(
+    public ValueTask<AccessDecision> EvaluateContextAsync(
         ContextAccessRequest request,
         CancellationToken ct = default) =>
         permission.EvaluateContextAsync(context, request, ct);
 
-    public ValueTask<ContextAccessDecision> EvaluateAgentAsync(
+    public ValueTask<AccessDecision> EvaluateAgentAsync(
         string capability,
         Guid? targetAgentId,
         CancellationToken ct = default) =>
@@ -200,7 +167,7 @@ public sealed class ChatOperationAuthorization(
 
 public sealed class HostPermissionActionEntry(IHostActionEntry host) : IPermissionActionEntry
 {
-    public async ValueTask<ContextAccessDecision> EvaluateContextAsync(
+    public async ValueTask<AccessDecision> EvaluateContextAsync(
         ChatOperationContext context,
         ContextAccessRequest request,
         CancellationToken ct = default)
@@ -209,22 +176,21 @@ public sealed class HostPermissionActionEntry(IHostActionEntry host) : IPermissi
         var hostEntry = context.HostActionEntry
             ?? throw new InvalidOperationException(
                 "The chat operation has no host action entry.");
-        var action = new PermissionContextAccessAction(
-            request with { Principal = context.Caller });
+        var action = new PermissionContextAccessAction(request);
         var decision = await hostEntry.InvokeCrossSidecarAsync(
             new ModuleCrossSidecarActionEntryRequest<
                 PermissionContextAccessAction,
-                PermissionDecision>(
+                AccessDecision>(
                 PermissionActionDescriptors.ContextAccess,
                 action),
             ct);
-        return ToContextDecision(RequireResult(
+        return RequireResult(
             PermissionActionDescriptors.ContextAccess.Key.Value,
             decision,
-            ct));
+            ct);
     }
 
-    public async ValueTask<ContextAccessDecision> EvaluateAgentAsync(
+    public async ValueTask<AccessDecision> EvaluateAgentAsync(
         ChatOperationContext context,
         string capability,
         Guid? targetAgentId,
@@ -237,32 +203,31 @@ public sealed class HostPermissionActionEntry(IHostActionEntry host) : IPermissi
         var decision = await hostEntry.InvokeCrossSidecarAsync(
             new ModuleCrossSidecarActionEntryRequest<
                 PermissionAgentAccessAction,
-                PermissionDecision>(
+                AccessDecision>(
                 PermissionActionDescriptors.AgentAccess,
                 new PermissionAgentAccessAction(capability, targetAgentId)),
             ct);
-        return ToContextDecision(RequireResult(
+        return RequireResult(
             PermissionActionDescriptors.AgentAccess.Key.Value,
             decision,
-            ct));
+            ct);
     }
 
-    public async ValueTask<ContextAccessDecision> EvaluateContextAsync(
+    public async ValueTask<AccessDecision> EvaluateContextAsync(
         HostActionEntryRequestContext hostContext,
         ContextAccessRequest request,
         CancellationToken ct = default)
     {
-        var action = new PermissionContextAccessAction(
-            request with { Principal = hostContext.Caller });
+        var action = new PermissionContextAccessAction(request);
         var decision = await InvokeAsync(
             PermissionActionDescriptors.ContextAccess,
             action,
             hostContext,
             ct);
-        return ToContextDecision(decision);
+        return decision;
     }
 
-    public async ValueTask<ContextAccessDecision> EvaluateAgentAsync(
+    public async ValueTask<AccessDecision> EvaluateAgentAsync(
         HostActionEntryRequestContext hostContext,
         string capability,
         Guid? targetAgentId,
@@ -276,33 +241,32 @@ public sealed class HostPermissionActionEntry(IHostActionEntry host) : IPermissi
             action,
             hostContext,
             ct);
-        return ToContextDecision(decision);
+        return decision;
     }
 
-    public async ValueTask<ContextAccessDecision> EvaluateContextAsync<TParentAction>(
+    public async ValueTask<AccessDecision> EvaluateContextAsync<TParentAction>(
         ActionContext<TParentAction> parentContext,
         ContextAccessRequest request,
         CancellationToken ct = default)
     {
-        var action = new PermissionContextAccessAction(
-            request with { Principal = parentContext.Caller });
+        var action = new PermissionContextAccessAction(request);
         var hostEntry = parentContext.HostActionEntry
             ?? throw new InvalidOperationException(
                 "The parent action context has no host action entry.");
         var decision = await hostEntry.InvokeCrossSidecarAsync(
             new ModuleCrossSidecarActionEntryRequest<
                 PermissionContextAccessAction,
-                PermissionDecision>(
+                AccessDecision>(
                 PermissionActionDescriptors.ContextAccess,
                 action),
             ct);
-        return ToContextDecision(RequireResult(
+        return RequireResult(
             PermissionActionDescriptors.ContextAccess.Key.Value,
             decision,
-            ct));
+            ct);
     }
 
-    public async ValueTask<ContextAccessDecision> EvaluateAgentAsync<TParentAction>(
+    public async ValueTask<AccessDecision> EvaluateAgentAsync<TParentAction>(
         ActionContext<TParentAction> parentContext,
         string capability,
         Guid? targetAgentId,
@@ -317,33 +281,33 @@ public sealed class HostPermissionActionEntry(IHostActionEntry host) : IPermissi
         var decision = await hostEntry.InvokeCrossSidecarAsync(
             new ModuleCrossSidecarActionEntryRequest<
                 PermissionAgentAccessAction,
-                PermissionDecision>(
+                AccessDecision>(
                 PermissionActionDescriptors.AgentAccess,
                 action),
             ct);
-        return ToContextDecision(RequireResult(
+        return RequireResult(
             PermissionActionDescriptors.AgentAccess.Key.Value,
             decision,
-            ct));
+            ct);
     }
 
-    private async ValueTask<PermissionDecision> InvokeAsync<TAction>(
-        ActionDescriptor<TAction, PermissionDecision> descriptor,
+    private async ValueTask<AccessDecision> InvokeAsync<TAction>(
+        ActionDescriptor<TAction, AccessDecision> descriptor,
         TAction action,
         HostActionEntryRequestContext hostContext,
         CancellationToken ct)
     {
         var outcome = await host.InvokeCrossSidecarAsync(
-            new ModuleCrossSidecarActionEntryRequest<TAction, PermissionDecision>(
+            new ModuleCrossSidecarActionEntryRequest<TAction, AccessDecision>(
                 descriptor,
                 action),
             ct);
         return RequireResult(descriptor.Key.Value, outcome, ct);
     }
 
-    private static PermissionDecision RequireResult(
+    private static AccessDecision RequireResult(
         string actionKey,
-        IActionOutcome<PermissionDecision> outcome,
+        IActionOutcome<AccessDecision> outcome,
         CancellationToken ct) =>
         outcome.Kind switch
         {
@@ -361,11 +325,6 @@ public sealed class HostPermissionActionEntry(IHostActionEntry host) : IPermissi
             _ => throw new InvalidOperationException(
                 $"The {actionKey} permission action returned an unknown outcome."),
         };
-
-    private static ContextAccessDecision ToContextDecision(PermissionDecision decision) =>
-        decision.Allowed
-            ? ContextAccessDecision.Allow(decision.Code)
-            : ContextAccessDecision.Deny(decision.Code, decision.Message);
 
     private static string FormatFailure(string actionKey, ExecutionError? error) =>
         error is null

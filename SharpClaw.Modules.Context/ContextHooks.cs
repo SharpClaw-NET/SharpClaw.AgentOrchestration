@@ -23,13 +23,3 @@ public sealed class ContextCommitAuthorizationHook
         return await control.ProceedAsync(ct);
     }
 }
-
-public sealed class ContextPermissionActionHook
-    : IActionInterceptor<PermissionContextAccessAction, PermissionDecision>
-{
-    public ValueTask<IActionOutcome<PermissionDecision>> InvokeAsync(
-        ActionContext<PermissionContextAccessAction> context,
-        IActionControl<PermissionContextAccessAction, PermissionDecision> control,
-        CancellationToken ct) =>
-        control.ProceedAsync(ct);
-}

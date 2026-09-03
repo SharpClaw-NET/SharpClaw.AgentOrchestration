@@ -19,13 +19,3 @@ public sealed class AgentsCreateAuthorizationHook
         return control.ProceedAsync(ct);
     }
 }
-
-public sealed class AgentsPermissionActionHook
-    : IActionInterceptor<PermissionAgentAccessAction, PermissionDecision>
-{
-    public ValueTask<IActionOutcome<PermissionDecision>> InvokeAsync(
-        ActionContext<PermissionAgentAccessAction> context,
-        IActionControl<PermissionAgentAccessAction, PermissionDecision> control,
-        CancellationToken ct) =>
-        control.ProceedAsync(ct);
-}
