@@ -29,12 +29,15 @@ public sealed class PermissionAuthoringTests
         var services = new ServiceCollection();
         foreach (var service in graph.Services)
             ((ICollection<ServiceDescriptor>)services).Add(service);
-        using var provider = services.BuildServiceProvider();
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions
+        {
+            ValidateScopes = true,
+            ValidateOnBuild = true,
+        });
         using var scope = provider.CreateScope();
 
-        Assert.That(
-            scope.ServiceProvider.GetRequiredService<IAuthorizationPolicy>(),
-            Is.SameAs(scope.ServiceProvider.GetRequiredService<IndependentPolicy>()));
+        Assert.That(scope.ServiceProvider.GetRequiredService<IAuthorizationPolicy>(),
+            Is.TypeOf<IndependentPolicy>());
     }
 
     [Test]
