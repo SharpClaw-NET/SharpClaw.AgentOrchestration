@@ -1,12 +1,12 @@
 {
   "id": "sharpclaw_agents",
   "displayName": "SharpClaw Agents",
-  "version": "0.5.0-beta.24",
+  "version": "0.5.0-beta.25",
   "toolPrefix": "agents",
   "runtime": "dotnet",
   "hostMode": "sidecar",
   "entryAssembly": "SharpClaw.Modules.Agents.dll",
-  "moduleType": "SharpClaw.Modules.Agents.AgentsModule",
+  "entryType": "SharpClaw.Modules.Agents.AgentsModule",
   "minHostVersion": "0.5.0-beta.3",
   "author": "SharpClaw-NET",
   "description": "Agents, skills, memory, AgentJob definitions, canonical Jobs import, and management tools.",
@@ -16,19 +16,19 @@
   "exports": [
     {
       "contractName": "sharpclaw.agents",
-      "serviceType": "SharpClaw.Modules.AgentOrchestration.Contracts.AgentsModuleContract",
+      "serviceType": "SharpClaw.Modules.AgentOrchestration.Contracts.AgentCapabilityContract",
       "optional": false
     }
   ],
   "requires": [
     {
       "contractName": "sharpclaw.context",
-      "serviceType": "SharpClaw.Modules.AgentOrchestration.Contracts.ContextModuleContract",
+      "serviceType": "SharpClaw.Modules.AgentOrchestration.Contracts.ContextCapabilityContract",
       "optional": false
     },
     {
-      "contractName": "sharpclaw.permission",
-      "serviceType": "SharpClaw.Modules.AgentOrchestration.Contracts.PermissionModuleContract",
+      "contractName": "sharpclaw.authorization",
+      "serviceType": "SharpClaw.Contracts.Kernel.AuthorizationContract",
       "optional": false
     }
   ],
@@ -36,10 +36,6 @@
     {
       "target": "agents.create",
       "effects": ["Inspect", "Cancel"]
-    },
-    {
-      "target": "permission.agent-access",
-      "effects": ["Inspect", "Wrap", "Observe"]
     }
   ]
 }

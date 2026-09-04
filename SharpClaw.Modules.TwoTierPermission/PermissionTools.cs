@@ -1,6 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 using SharpClaw.Modules.AgentOrchestration.Contracts;
 
 namespace SharpClaw.Modules.TwoTierPermission;

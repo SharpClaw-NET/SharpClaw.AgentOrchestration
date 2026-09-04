@@ -21,8 +21,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="..\SharpClaw.Modules.Context\module.json" Link="manifests\Context.module.json" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="..\SharpClaw.Modules.TwoTierPermission\module.json" Link="manifests\TwoTierPermission.module.json" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="..\SharpClaw.Modules.Agents\module.json" Link="manifests\Agents.module.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\SharpClaw.Modules.Context\package.json" Link="manifests\Context.package.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\SharpClaw.Modules.TwoTierPermission\package.json" Link="manifests\TwoTierPermission.package.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\SharpClaw.Modules.Agents\package.json" Link="manifests\Agents.package.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

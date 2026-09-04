@@ -1,25 +1,41 @@
 using System.Text.Json;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
+using SharpClaw.ModuleSDK;
 using SharpClaw.Modules.AgentOrchestration.Contracts;
 
 namespace SharpClaw.Modules.TwoTierPermission;
 
-public sealed class TwoTierPermissionAccessPolicy(
-    TwoTierPermissionPolicy policy) : IAgentOrchestrationPermissionPolicy
+public sealed class TwoTierAuthorizationPolicy(
+    TwoTierPermissionPolicy policy) : IAuthorizationPolicy
 {
-    public ValueTask<AccessDecision> EvaluateContextAsync(
-        ActionContext<PermissionContextAccessAction> context,
-        CancellationToken ct = default) =>
-        policy.EvaluateAsync(context.Caller, context.Action.Request, ct);
+    public async ValueTask<AuthorizationDecision> EvaluateAsync(
+        ActionContext<AuthorizationRequest> context,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        if (AuthorizationRequestFactory.TryReadContext(context.Action, out var contextRequest))
+        {
+            return ToAuthorizationDecision(
+                await policy.EvaluateAsync(context.Caller, contextRequest, ct));
+        }
 
-    public ValueTask<AccessDecision> EvaluateAgentAsync(
-        ActionContext<PermissionAgentAccessAction> context,
-        CancellationToken ct = default) =>
-        policy.EvaluateAgentAsync(
-            context.Caller,
-            context.Action.Capability,
-            context.Action.TargetAgentId,
-            ct);
+        if (AuthorizationRequestFactory.TryReadAgent(context.Action, out var agentId))
+        {
+            return ToAuthorizationDecision(
+                await policy.EvaluateAgentAsync(
+                    context.Caller,
+                    context.Action.Operation,
+                    agentId,
+                    ct));
+        }
+
+        return AuthorizationDecision.Deny(
+            "unsupported_resource",
+            "The authorization resource is not supported.");
+    }
+
+    private static AuthorizationDecision ToAuthorizationDecision(AccessDecision decision) =>
+        new(decision.Allowed, decision.Code, decision.Message);
 }
 
 public sealed class PermissionApiActionExecutor(
@@ -132,7 +148,7 @@ public interface IPermissionActionGateway
 }
 
 public sealed class PermissionActionGateway(
-    HostModuleActionEntry entry,
+    HostActionInvoker entry,
     PermissionApiActionTerminal terminal) : IPermissionActionGateway
 {
     public ValueTask<JsonElement> ExecuteAsync(

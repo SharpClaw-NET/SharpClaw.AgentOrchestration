@@ -1,12 +1,13 @@
 using System.Text.Json;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
+using SharpClaw.ModuleSDK;
 using SharpClaw.Modules.AgentOrchestration.Contracts;
 
 namespace SharpClaw.Modules.Agents;
 
 public sealed class AgentsCatalog
 {
-    public const string ModuleId = AgentsModule.ModuleIdValue;
+    public const string SourceId = AgentsModule.ModuleIdValue;
     public const string AgentsStorage = "agents";
     public const string SkillsStorage = "skills";
     public const string MemoryStorage = "memory";
@@ -18,29 +19,29 @@ public sealed class AgentsCatalog
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web) { PropertyNameCaseInsensitive = true };
 
-    private readonly ModuleDocumentStore<AgentRecord> _agents;
-    private readonly ModuleDocumentStore<SkillRecord> _skills;
-    private readonly ModuleDocumentStore<MemoryRecord> _memory;
-    private readonly ModuleDocumentStore<AgentCostRecord> _costs;
-    private readonly ModuleDocumentStore<AgentSynchronizationRecord> _synchronization;
-    private readonly ModuleDocumentStore<AgentJob> _agentJobs;
-    private readonly ModuleDocumentStore<AgentJobImportState> _agentJobImports;
-    private readonly HostPermissionActionEntry _permission;
-    private readonly AsyncLocal<IModuleActionAuthorization?> _authorization = new();
+    private readonly ScopedDocumentStore<AgentRecord> _agents;
+    private readonly ScopedDocumentStore<SkillRecord> _skills;
+    private readonly ScopedDocumentStore<MemoryRecord> _memory;
+    private readonly ScopedDocumentStore<AgentCostRecord> _costs;
+    private readonly ScopedDocumentStore<AgentSynchronizationRecord> _synchronization;
+    private readonly ScopedDocumentStore<AgentJob> _agentJobs;
+    private readonly ScopedDocumentStore<AgentJobImportState> _agentJobImports;
+    private readonly HostAuthorizationEntry _authorizationEntry;
+    private readonly AsyncLocal<IAuthorizationClient?> _authorization = new();
 
-    public AgentsCatalog(IModuleStorageGateway gateway, HostPermissionActionEntry permission)
+    public AgentsCatalog(IScopedStorageGateway gateway, HostAuthorizationEntry authorizationEntry)
     {
-        _permission = permission;
-        _agents = new(gateway, ModuleId, AgentsStorage, $"{ModuleId}:{AgentsStorage}", JsonOptions);
-        _skills = new(gateway, ModuleId, SkillsStorage, $"{ModuleId}:{SkillsStorage}", JsonOptions);
-        _memory = new(gateway, ModuleId, MemoryStorage, $"{ModuleId}:{MemoryStorage}", JsonOptions);
-        _costs = new(gateway, ModuleId, CostsStorage, $"{ModuleId}:{CostsStorage}", JsonOptions);
-        _synchronization = new(gateway, ModuleId, SynchronizationStorage, $"{ModuleId}:{SynchronizationStorage}", JsonOptions);
-        _agentJobs = new(gateway, ModuleId, AgentJobsStorage, $"{ModuleId}:{AgentJobsStorage}", JsonOptions);
-        _agentJobImports = new(gateway, ModuleId, AgentJobImportsStorage, $"{ModuleId}:{AgentJobImportsStorage}", JsonOptions);
+        _authorizationEntry = authorizationEntry;
+        _agents = new(gateway, SourceId, AgentsStorage, $"{SourceId}:{AgentsStorage}", JsonOptions);
+        _skills = new(gateway, SourceId, SkillsStorage, $"{SourceId}:{SkillsStorage}", JsonOptions);
+        _memory = new(gateway, SourceId, MemoryStorage, $"{SourceId}:{MemoryStorage}", JsonOptions);
+        _costs = new(gateway, SourceId, CostsStorage, $"{SourceId}:{CostsStorage}", JsonOptions);
+        _synchronization = new(gateway, SourceId, SynchronizationStorage, $"{SourceId}:{SynchronizationStorage}", JsonOptions);
+        _agentJobs = new(gateway, SourceId, AgentJobsStorage, $"{SourceId}:{AgentJobsStorage}", JsonOptions);
+        _agentJobImports = new(gateway, SourceId, AgentJobImportsStorage, $"{SourceId}:{AgentJobImportsStorage}", JsonOptions);
     }
 
-    internal IDisposable PushAuthorization(IModuleActionAuthorization authorization)
+    internal IDisposable PushAuthorization(IAuthorizationClient authorization)
     {
         ArgumentNullException.ThrowIfNull(authorization);
         var previous = _authorization.Value;
@@ -258,10 +259,9 @@ public sealed class AgentsCatalog
     {
         var agent = await GetAgentAsync(agentId, ct)
             ?? throw new InvalidOperationException("The agent was not found.");
-        var access = await _permission.EvaluateAgentAsync(
+        var access = await _authorizationEntry.EvaluateAsync(
             RequireHostContext(hostContext),
-            "read_agent_cost",
-            agentId,
+            AuthorizationRequestFactory.ForAgent("read_agent_cost", agentId),
             ct);
         if (!access.Allowed && !IsAdministrator(caller))
             throw new UnauthorizedAccessException("The caller cannot read agent cost data.");
@@ -385,10 +385,9 @@ public sealed class AgentsCatalog
         CancellationToken ct,
         HostActionEntryRequestContext? hostContext = null)
     {
-        var accessDecision = await _permission.EvaluateAgentAsync(
+        var accessDecision = await _authorizationEntry.EvaluateAsync(
             RequireHostContext(hostContext),
-            "access_skills",
-            null,
+            AuthorizationRequestFactory.ForAgent("access_skills", null),
             ct);
         if (!accessDecision.Allowed && !IsAdministrator(caller))
             throw new UnauthorizedAccessException("The caller cannot access this skill.");
@@ -452,11 +451,12 @@ public sealed class AgentsCatalog
         HostActionEntryRequestContext? hostContext = null)
     {
         var decision = _authorization.Value is { } authorization
-            ? await authorization.EvaluateAgentAsync(capability, targetAgentId, ct)
-            : await _permission.EvaluateAgentAsync(
+            ? await authorization.EvaluateAsync(
+                AuthorizationRequestFactory.ForAgent(capability, targetAgentId),
+                ct)
+            : await _authorizationEntry.EvaluateAsync(
                 RequireHostContext(hostContext),
-                capability,
-                targetAgentId,
+                AuthorizationRequestFactory.ForAgent(capability, targetAgentId),
                 ct);
         if (!decision.Allowed)
             throw new UnauthorizedAccessException(decision.Message);
@@ -473,8 +473,8 @@ public sealed class AgentsCatalog
             "A host action entry context is required for Agents permission evaluation.");
 
     private sealed class AuthorizationScope(
-        AsyncLocal<IModuleActionAuthorization?> slot,
-        IModuleActionAuthorization? previous) : IDisposable
+        AsyncLocal<IAuthorizationClient?> slot,
+        IAuthorizationClient? previous) : IDisposable
     {
         public void Dispose() => slot.Value = previous;
     }

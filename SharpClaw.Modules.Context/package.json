@@ -1,12 +1,12 @@
 {
   "id": "sharpclaw_context",
   "displayName": "SharpClaw Context",
-  "version": "0.5.0-beta.23",
+  "version": "0.5.0-beta.24",
   "toolPrefix": "ctx",
   "runtime": "dotnet",
   "hostMode": "sidecar",
   "entryAssembly": "SharpClaw.Modules.Context.dll",
-  "moduleType": "SharpClaw.Modules.Context.ContextModule",
+  "entryType": "SharpClaw.Modules.Context.ContextModule",
   "minHostVersion": "0.5.0-beta.3",
   "author": "SharpClaw-NET",
   "description": "Threads, channels, contexts, conversation history, and context assembly.",
@@ -16,14 +16,14 @@
   "exports": [
     {
       "contractName": "sharpclaw.context",
-      "serviceType": "SharpClaw.Modules.AgentOrchestration.Contracts.ContextModuleContract",
+      "serviceType": "SharpClaw.Modules.AgentOrchestration.Contracts.ContextCapabilityContract",
       "optional": false
     }
   ],
   "requires": [
     {
-      "contractName": "sharpclaw.permission",
-      "serviceType": "SharpClaw.Modules.AgentOrchestration.Contracts.PermissionModuleContract",
+      "contractName": "sharpclaw.authorization",
+      "serviceType": "SharpClaw.Contracts.Kernel.AuthorizationContract",
       "optional": false
     }
   ],
@@ -31,10 +31,6 @@
     {
       "target": "context.conversation.commit",
       "effects": ["Inspect", "Cancel"]
-    },
-    {
-      "target": "permission.context-access",
-      "effects": ["Inspect", "Wrap", "Observe"]
     }
   ]
 }

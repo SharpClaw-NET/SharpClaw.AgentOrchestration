@@ -1,7 +1,6 @@
 using NUnit.Framework;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 using SharpClaw.ModuleSDK;
-using SharpClaw.Modules.AgentOrchestration.Contracts;
 
 namespace SharpClaw.AgentOrchestration.Tests;
 
@@ -9,147 +8,52 @@ namespace SharpClaw.AgentOrchestration.Tests;
 public sealed class PermissionActionEntryTests
 {
     [Test]
-    public async Task ContextAccessUsesTheHostEntryWithANeutralRequest()
+    public async Task HostContextUsesOneGenericAuthorizationEntry()
     {
-        var host = new RecordingHostActionEntry
-        {
-            Result = AccessDecision.Allow("context_allowed"),
-        };
-        var entry = new HostPermissionActionEntry(host);
-        var caller = new RequestPrincipal("agent-1", IsAuthenticated: true);
-        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
-        var request = new ContextAccessRequest(
-            Guid.NewGuid(),
-            Guid.NewGuid(),
-            [Guid.NewGuid()],
-            Guid.NewGuid(),
-            [Guid.NewGuid()],
-            true,
-            Guid.NewGuid(),
-            ContextAccessCapabilities.ReadHistory);
+        var host = new RecordingHostActionEntry(AuthorizationDecision.Allow("allowed"));
+        var entry = new HostAuthorizationEntry(host);
+        var request = CreateRequest();
 
-        var decision = await entry.EvaluateContextAsync(hostContext, request);
+        var decision = await entry.EvaluateAsync(
+            TestHostActionContext.Create(new RequestPrincipal("caller", IsAuthenticated: true)),
+            request);
 
         Assert.Multiple(() =>
         {
-            Assert.That(decision.Allowed, Is.True);
-            Assert.That(decision.Code, Is.EqualTo("context_allowed"));
-            Assert.That(host.ContextCrossSidecarRequest, Is.Not.Null);
-            Assert.That(host.ContextCrossSidecarRequest!.Descriptor, Is.SameAs(PermissionActionDescriptors.ContextAccess));
-            Assert.That(host.ContextCrossSidecarRequest.Action.Request.ChannelId, Is.EqualTo(request.ChannelId));
-            Assert.That(typeof(ContextAccessRequest).GetProperty("Principal"), Is.Null);
-            Assert.That(host.CrossSidecarKeys, Is.EqualTo(["permission.context-access"]));
+            Assert.That(decision, Is.EqualTo(AuthorizationDecision.Allow("allowed")));
+            Assert.That(host.Calls, Is.EqualTo(1));
+            Assert.That(host.LastDescriptor, Is.EqualTo(AuthorizationProtocol.Evaluate));
+            Assert.That(host.LastRequest, Is.SameAs(request));
         });
     }
 
     [Test]
-    public async Task AgentAccessMapsACompletedDenial()
+    public async Task ActionContextUsesTheSameGenericEntry()
     {
-        var host = new RecordingHostActionEntry
-        {
-            Result = AccessDecision.Deny(
-                "capability_denied",
-                "The capability is not assigned."),
-        };
-        var entry = new HostPermissionActionEntry(host);
-        var caller = new RequestPrincipal("agent-2", IsAuthenticated: true);
-        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
-        var targetAgentId = Guid.NewGuid();
+        var host = new RecordingHostActionEntry(AuthorizationDecision.Deny(
+            "denied",
+            "The policy denies access."));
+        var entry = new HostAuthorizationEntry(host);
+        var request = CreateRequest();
+        var parent = CreateParentContext(host);
 
-        var decision = await entry.EvaluateAgentAsync(
-            hostContext,
-            "manage_agents",
-            targetAgentId);
+        var decision = await entry.EvaluateAsync(parent, request);
 
         Assert.Multiple(() =>
         {
             Assert.That(decision.Allowed, Is.False);
-            Assert.That(decision.Code, Is.EqualTo("capability_denied"));
-            Assert.That(host.AgentCrossSidecarRequest, Is.Not.Null);
-            Assert.That(host.AgentCrossSidecarRequest!.Descriptor, Is.SameAs(PermissionActionDescriptors.AgentAccess));
-            Assert.That(host.AgentCrossSidecarRequest.Action.Capability, Is.EqualTo("manage_agents"));
-            Assert.That(host.AgentCrossSidecarRequest.Action.TargetAgentId, Is.EqualTo(targetAgentId));
-            Assert.That(host.CrossSidecarKeys, Is.EqualTo(["permission.agent-access"]));
-        });
-    }
-
-    [TestCase(ActionOutcomeKind.Deferred)]
-    [TestCase(ActionOutcomeKind.Failed)]
-    [TestCase(ActionOutcomeKind.Uncertain)]
-    public void NonTerminalPermissionOutcomesFailClosed(ActionOutcomeKind outcomeKind)
-    {
-        var host = new RecordingHostActionEntry
-        {
-            OutcomeKind = outcomeKind,
-            Error = new ExecutionError("permission_failed", "The permission action failed.", false, new Dictionary<string, string>()),
-            Uncertainty = new ActionUncertainty(
-                "permission_uncertain",
-                "The permission action has uncertain execution.",
-                ActionExecutionStage.TerminalReturned,
-                string.Empty,
-                null!,
-                DateTimeOffset.UtcNow),
-        };
-        var entry = new HostPermissionActionEntry(host);
-        var hostContext = TestHostActionContext.Create(new RequestPrincipal("agent-3", IsAuthenticated: true));
-
-        Assert.ThrowsAsync<InvalidOperationException>(async () =>
-            await entry.EvaluateAgentAsync(
-                hostContext,
-                "read_agents",
-                null));
-    }
-
-    [Test]
-    public void CancelledPermissionOutcomeFailsClosedAsCancellation()
-    {
-        var host = new RecordingHostActionEntry { OutcomeKind = ActionOutcomeKind.Cancelled };
-        var entry = new HostPermissionActionEntry(host);
-        var hostContext = TestHostActionContext.Create(new RequestPrincipal("agent-4", IsAuthenticated: true));
-
-        Assert.ThrowsAsync<OperationCanceledException>(async () =>
-            await entry.EvaluateAgentAsync(
-                hostContext,
-                "read_agents",
-                null));
-    }
-
-    [Test]
-    public async Task HostEntryUsesTheRegisteredCrossSidecarPermissionRoute()
-    {
-        var host = new RecordingHostActionEntry
-        {
-            Result = AccessDecision.Allow("context_allowed"),
-        };
-        var entry = new HostPermissionActionEntry(host);
-        var caller = new RequestPrincipal(
-            "agent-authority",
-            "Authority Agent",
-            new HashSet<string>(["admin", "operator"]),
-            true);
-        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.Cli);
-
-        await entry.EvaluateAgentAsync(hostContext, "manage_agents", Guid.NewGuid());
-
-        Assert.Multiple(() =>
-        {
-            Assert.That(host.AgentCrossSidecarRequest, Is.Not.Null);
-            Assert.That(host.AgentCrossSidecarRequest!.Descriptor, Is.SameAs(PermissionActionDescriptors.AgentAccess));
-            Assert.That(host.AgentCrossSidecarRequest.Action.Capability, Is.EqualTo("manage_agents"));
-            Assert.That(host.CrossSidecarKeys, Is.EqualTo(["permission.agent-access"]));
+            Assert.That(host.Calls, Is.EqualTo(1));
+            Assert.That(host.LastRequest, Is.SameAs(request));
         });
     }
 
     [Test]
-    public async Task ParentContextPermissionUsesTheCrossSidecarEntry()
+    public async Task ChatContextUsesTheSameGenericEntry()
     {
-        var host = new RecordingHostActionEntry
-        {
-            Result = AccessDecision.Allow("cross_sidecar_allowed"),
-        };
-        var entry = new HostPermissionActionEntry(host);
-        var caller = new RequestPrincipal("cross-sidecar-agent", IsAuthenticated: true);
-        var parent = new ActionContext<string>(
+        var host = new RecordingHostActionEntry(AuthorizationDecision.Allow());
+        var entry = new HostAuthorizationEntry(host);
+        var caller = new RequestPrincipal("chat-caller", IsAuthenticated: true);
+        var chat = new ChatOperationContext(
             Guid.NewGuid(),
             null,
             Guid.NewGuid(),
@@ -157,115 +61,115 @@ public sealed class PermissionActionEntryTests
             0,
             1,
             DateTimeOffset.UtcNow.AddMinutes(1),
-            new SharpClawActionKey("test.parent"),
-            "test.module",
             caller,
+            ExtensionFeatureSet.Empty,
+            host);
+
+        var decision = await entry.EvaluateAsync(chat, CreateRequest());
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(decision.Allowed, Is.True);
+            Assert.That(host.Calls, Is.EqualTo(1));
+        });
+    }
+
+    [Test]
+    public void CancellationRemainsVisible()
+    {
+        var host = new RecordingHostActionEntry(null, ActionOutcomeKind.Cancelled);
+        var entry = new HostAuthorizationEntry(host);
+        using var cancellation = new CancellationTokenSource();
+
+        Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await entry.EvaluateAsync(
+                TestHostActionContext.Create(new RequestPrincipal("caller", IsAuthenticated: true)),
+                CreateRequest(),
+                cancellation.Token));
+    }
+
+    [Test]
+    public void FailureRemainsVisible()
+    {
+        var host = new RecordingHostActionEntry(
+            null,
+            ActionOutcomeKind.Failed,
+            new ExecutionError("policy_failed", "The policy failed."));
+        var entry = new HostAuthorizationEntry(host);
+
+        var exception = Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await entry.EvaluateAsync(
+                TestHostActionContext.Create(new RequestPrincipal("caller", IsAuthenticated: true)),
+                CreateRequest()));
+
+        Assert.That(exception!.Message, Does.Contain("policy_failed"));
+    }
+
+    private static AuthorizationRequest CreateRequest() =>
+        new("agents.read", new AuthorizationResource("agent", Guid.NewGuid().ToString("D")));
+
+    private static ActionContext<string> CreateParentContext(IHostActionEntry host) =>
+        new(
+            Guid.NewGuid(),
+            null,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            0,
+            1,
+            DateTimeOffset.UtcNow.AddMinutes(1),
+            new SharpClawActionKey("agents.parent"),
+            "agents",
+            new RequestPrincipal("caller", IsAuthenticated: true),
             "parent",
             ExtensionFeatureSet.Empty,
-            new ActionPipelineSnapshot("test", [], [], 16))
+            new ActionPipelineSnapshot("authorization-entry-test", [], [], 16))
         {
             HostActionEntry = host,
         };
 
-        var contextDecision = await entry.EvaluateContextAsync(
-            parent,
-            new ContextAccessRequest(
-                Guid.NewGuid(),
-                null,
-                [],
-                null,
-                [],
-                true));
-        var agentDecision = await entry.EvaluateAgentAsync(parent, "read_agents", Guid.NewGuid());
-
-        Assert.Multiple(() =>
-        {
-            Assert.That(contextDecision.Code, Is.EqualTo("cross_sidecar_allowed"));
-            Assert.That(agentDecision.Code, Is.EqualTo("cross_sidecar_allowed"));
-            Assert.That(host.CrossSidecarKeys, Is.EqualTo([
-                "permission.context-access",
-                "permission.agent-access"]));
-            Assert.That(host.ContextCrossSidecarRequest, Is.Not.Null);
-            Assert.That(host.AgentCrossSidecarRequest, Is.Not.Null);
-        });
-    }
-
-    private sealed class RecordingHostActionEntry : IHostActionEntry, IModuleCrossSidecarActionEntry
+    private sealed class RecordingHostActionEntry(
+        AuthorizationDecision? result,
+        ActionOutcomeKind kind = ActionOutcomeKind.Completed,
+        ExecutionError? error = null) : IHostActionEntry, IModuleCrossSidecarActionEntry
     {
-        public ActionOutcomeKind OutcomeKind { get; set; } = ActionOutcomeKind.Completed;
+        public int Calls { get; private set; }
 
-        public AccessDecision? Result { get; set; }
+        public object? LastDescriptor { get; private set; }
 
-        public ExecutionError? Error { get; set; }
-
-        public ActionUncertainty? Uncertainty { get; set; }
-
-        public ModuleCrossSidecarActionEntryRequest<PermissionContextAccessAction, AccessDecision>? ContextCrossSidecarRequest { get; private set; }
-
-        public ModuleCrossSidecarActionEntryRequest<PermissionAgentAccessAction, AccessDecision>? AgentCrossSidecarRequest { get; private set; }
-
-        public List<string> CrossSidecarKeys { get; } = [];
+        public AuthorizationRequest? LastRequest { get; private set; }
 
         public ValueTask<IActionOutcome<TResult>> InvokeAsync<TAction, TResult>(
             HostActionEntryRequest<TAction, TResult> request,
             IHostActionEntryTerminal<TAction, TResult> terminal,
-            CancellationToken ct)
-        {
-            return ValueTask.FromResult<IActionOutcome<TResult>>(
-                new TestActionOutcome<TResult>(
-                    OutcomeKind,
-                    Result is null ? default! : (TResult)(object)Result,
-                    Error,
-                    Uncertainty));
-        }
+            CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public ValueTask<IActionOutcome<TResult>> InvokeNestedAsync<TParentAction, TAction, TResult>(
             HostActionEntryNestedRequest<TParentAction, TAction, TResult> request,
             IHostActionEntryTerminal<TAction, TResult> terminal,
-            CancellationToken ct) =>
-            ValueTask.FromResult<IActionOutcome<TResult>>(
-                new TestActionOutcome<TResult>(
-                    OutcomeKind,
-                    Result is null ? default! : (TResult)(object)Result,
-                    Error,
-                    Uncertainty));
+            CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public ValueTask<IActionOutcome<TResult>> InvokeCrossSidecarAsync<TAction, TResult>(
             ModuleCrossSidecarActionEntryRequest<TAction, TResult> request,
-            CancellationToken ct)
+            CancellationToken cancellationToken)
         {
-            CrossSidecarKeys.Add(request.Descriptor.Key.Value);
-            if (request.Action is PermissionContextAccessAction contextAction)
-                ContextCrossSidecarRequest = new ModuleCrossSidecarActionEntryRequest<PermissionContextAccessAction, AccessDecision>(
-                    PermissionActionDescriptors.ContextAccess,
-                    contextAction);
-            else if (request.Action is PermissionAgentAccessAction agentAction)
-                AgentCrossSidecarRequest = new ModuleCrossSidecarActionEntryRequest<PermissionAgentAccessAction, AccessDecision>(
-                    PermissionActionDescriptors.AgentAccess,
-                    agentAction);
+            cancellationToken.ThrowIfCancellationRequested();
+            Calls++;
+            LastDescriptor = request.Descriptor;
+            LastRequest = request.Action as AuthorizationRequest;
             return ValueTask.FromResult<IActionOutcome<TResult>>(
-                new TestActionOutcome<TResult>(
-                    OutcomeKind,
-                    Result is null ? default! : (TResult)(object)Result,
-                    Error,
-                    Uncertainty));
+                new Outcome<TResult>(kind, (TResult?)(object?)result, error));
         }
     }
 
-    private sealed class TestActionOutcome<TResult>(
+    private sealed class Outcome<TResult>(
         ActionOutcomeKind kind,
-        TResult result,
-        ExecutionError? error,
-        ActionUncertainty? uncertainty) : IActionOutcome<TResult>
+        TResult? result,
+        ExecutionError? error) : IActionOutcome<TResult>
     {
         public ActionOutcomeKind Kind { get; } = kind;
-
-        public TResult Result { get; } = result;
-
+        public TResult? Result { get; } = result;
         public ContinuationToken? Continuation => null;
-
         public ExecutionError? Error { get; } = error;
-
-        public ActionUncertainty? Uncertainty { get; } = uncertainty;
+        public ActionUncertainty? Uncertainty => null;
     }
 }

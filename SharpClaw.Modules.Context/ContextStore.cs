@@ -1,14 +1,15 @@
 using System.Text;
 using System.Text.Json;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 using SharpClaw.Contracts.Providers;
+using SharpClaw.ModuleSDK;
 using SharpClaw.Modules.AgentOrchestration.Contracts;
 
 namespace SharpClaw.Modules.Context;
 
 public sealed class ContextStore : IConversationStore
 {
-    public const string ModuleId = ContextModule.ModuleIdValue;
+    public const string SourceId = ContextModule.ModuleIdValue;
     public const string ChannelsStorage = "channels";
     public const string ContextsStorage = "contexts";
     public const string ThreadsStorage = "threads";
@@ -18,27 +19,27 @@ public sealed class ContextStore : IConversationStore
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web) { PropertyNameCaseInsensitive = true };
 
-    private readonly ModuleDocumentStore<ContextChannelRecord> _channels;
-    private readonly ModuleDocumentStore<ContextRecord> _contexts;
-    private readonly ModuleDocumentStore<ContextThreadRecord> _threads;
-    private readonly ModuleDocumentStore<ContextMessageRecord> _messages;
-    private readonly ModuleDocumentStore<ContextSteeringRecord> _steering;
-    private readonly HostPermissionActionEntry _permission;
-    private readonly AsyncLocal<IModuleActionAuthorization?> _authorization = new();
+    private readonly ScopedDocumentStore<ContextChannelRecord> _channels;
+    private readonly ScopedDocumentStore<ContextRecord> _contexts;
+    private readonly ScopedDocumentStore<ContextThreadRecord> _threads;
+    private readonly ScopedDocumentStore<ContextMessageRecord> _messages;
+    private readonly ScopedDocumentStore<ContextSteeringRecord> _steering;
+    private readonly HostAuthorizationEntry _authorizationEntry;
+    private readonly AsyncLocal<IAuthorizationClient?> _authorization = new();
 
     public ContextStore(
-        IModuleStorageGateway gateway,
-        HostPermissionActionEntry permission)
+        IScopedStorageGateway gateway,
+        HostAuthorizationEntry authorizationEntry)
     {
-        _channels = new(gateway, ModuleId, ChannelsStorage, $"{ModuleId}:{ChannelsStorage}", JsonOptions);
-        _contexts = new(gateway, ModuleId, ContextsStorage, $"{ModuleId}:{ContextsStorage}", JsonOptions);
-        _threads = new(gateway, ModuleId, ThreadsStorage, $"{ModuleId}:{ThreadsStorage}", JsonOptions);
-        _messages = new(gateway, ModuleId, MessagesStorage, $"{ModuleId}:{MessagesStorage}", JsonOptions);
-        _steering = new(gateway, ModuleId, SteeringStorage, $"{ModuleId}:{SteeringStorage}", JsonOptions);
-        _permission = permission;
+        _channels = new(gateway, SourceId, ChannelsStorage, $"{SourceId}:{ChannelsStorage}", JsonOptions);
+        _contexts = new(gateway, SourceId, ContextsStorage, $"{SourceId}:{ContextsStorage}", JsonOptions);
+        _threads = new(gateway, SourceId, ThreadsStorage, $"{SourceId}:{ThreadsStorage}", JsonOptions);
+        _messages = new(gateway, SourceId, MessagesStorage, $"{SourceId}:{MessagesStorage}", JsonOptions);
+        _steering = new(gateway, SourceId, SteeringStorage, $"{SourceId}:{SteeringStorage}", JsonOptions);
+        _authorizationEntry = authorizationEntry;
     }
 
-    internal IDisposable PushAuthorization(IModuleActionAuthorization authorization)
+    internal IDisposable PushAuthorization(IAuthorizationClient authorization)
     {
         ArgumentNullException.ThrowIfNull(authorization);
         var previous = _authorization.Value;
@@ -889,7 +890,7 @@ public sealed class ContextStore : IConversationStore
     {
         ArgumentNullException.ThrowIfNull(context);
         using var authorization = PushAuthorization(
-            new ChatOperationAuthorization(context, _permission));
+            new ChatAuthorizationClient(context, _authorizationEntry));
         return LoadHistoryAsync(context.Caller, conversationId, ct);
     }
 
@@ -902,7 +903,7 @@ public sealed class ContextStore : IConversationStore
         var caller = context.Caller;
         RequireAuthenticatedAgent(caller);
         using var authorization = PushAuthorization(
-            new ChatOperationAuthorization(context, _permission));
+            new ChatAuthorizationClient(context, _authorizationEntry));
         var thread = await GetThreadAsync(exchange.Turn.Conversation.ConversationId, ct)
             ?? throw new InvalidOperationException("The conversation thread was not found.");
         await RequireThreadAccessAsync(
@@ -1115,13 +1116,14 @@ public sealed class ContextStore : IConversationStore
             throw new UnauthorizedAccessException($"{decision.Code}: {decision.Message}");
     }
 
-    private ValueTask<AccessDecision> EvaluateAsync(
+    private async ValueTask<AccessDecision> EvaluateAsync(
         ContextChannelRecord channel,
         ContextRecord? context,
         string capability,
         CancellationToken ct,
-        HostActionEntryRequestContext? hostContext = null) =>
-        EvaluatePermissionAsync(new ContextAccessRequest(
+        HostActionEntryRequestContext? hostContext = null)
+    {
+        var decision = await EvaluatePermissionAsync(new ContextAccessRequest(
             channel.Id,
             channel.OwnerAgentId,
             channel.AllowedAgentIds,
@@ -1133,15 +1135,22 @@ public sealed class ContextStore : IConversationStore
             channel.CrossThreadOptedIn,
             context?.Id ?? channel.ContextId,
             capability), hostContext, ct);
+        return decision.Allowed
+            ? AccessDecision.Allow(decision.Code)
+            : AccessDecision.Deny(decision.Code, decision.Message);
+    }
 
-    private ValueTask<AccessDecision> EvaluatePermissionAsync(
+    private ValueTask<AuthorizationDecision> EvaluatePermissionAsync(
         ContextAccessRequest request,
         HostActionEntryRequestContext? hostContext,
         CancellationToken ct)
     {
         if (_authorization.Value is { } authorization)
-            return authorization.EvaluateContextAsync(request, ct);
-        return _permission.EvaluateContextAsync(RequireHostContext(hostContext), request, ct);
+            return authorization.EvaluateAsync(AuthorizationRequestFactory.ForContext(request), ct);
+        return _authorizationEntry.EvaluateAsync(
+            RequireHostContext(hostContext),
+            AuthorizationRequestFactory.ForContext(request),
+            ct);
     }
 
     private static HostActionEntryRequestContext RequireHostContext(
@@ -1151,8 +1160,8 @@ public sealed class ContextStore : IConversationStore
             "A host action entry context is required for Context permission evaluation.");
 
     private sealed class AuthorizationScope(
-        AsyncLocal<IModuleActionAuthorization?> slot,
-        IModuleActionAuthorization? previous) : IDisposable
+        AsyncLocal<IAuthorizationClient?> slot,
+        IAuthorizationClient? previous) : IDisposable
     {
         public void Dispose() => slot.Value = previous;
     }

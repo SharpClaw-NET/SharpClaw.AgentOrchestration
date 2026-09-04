@@ -1,13 +1,13 @@
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 using SharpClaw.Contracts.Persistence;
 using SharpClaw.ModuleSDK;
 using SharpClaw.Modules.AgentOrchestration.Contracts;
 
 namespace SharpClaw.Modules.Agents;
 
-public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
+public sealed class AgentsModule : ISharpClawModule
 {
     public const string ModuleIdValue = "sharpclaw_agents";
     public const string CreateTool = "agents_create";
@@ -54,118 +54,117 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
 
     public ModuleIdentity Identity { get; } = new(ModuleIdValue, "SharpClaw Agents", "agents");
 
-    public void Configure(ISharpClawModuleBuilder module)
+    public void ConfigureServices(IServiceCollection services)
     {
-        module.Services.AddScoped<AgentsCatalog>();
-        module.Services.AddScoped<HostModuleActionEntry>();
-        module.Services.AddScoped<AgentsToolHandler>();
-        module.Services.AddScoped<AgentsApiActionExecutor>();
-        module.Services.AddScoped<AgentsEndpointContribution>();
-        module.Services.AddScoped<IAgentsActionGateway, AgentsActionGateway>();
-        module.Services.AddScoped<IModuleActionPipeline, ModuleActionPipeline>();
-        module.Services.AddScoped<IAgentsActionExecutor, AgentsActionExecutor>();
-        module.Services.AddScoped<IAgentsJobActionExecutor, AgentsJobActionExecutor>();
-        module.Services.AddScoped<AgentsCreateAuthorizationHook>();
-        module.Services.AddSingleton<AgentsCliHandler>();
-        module.Services.AddScoped<AgentChatProfileResolver>();
+        services.AddScoped<AgentsCatalog>();
+        services.AddScoped<HostActionInvoker>();
+        services.AddScoped<AgentsToolHandler>();
+        services.AddScoped<AgentsApiActionExecutor>();
+        services.AddScoped<AgentsEndpointContribution>();
+        services.AddScoped<IAgentsActionGateway, AgentsActionGateway>();
+        services.AddScoped<IAgentsActionExecutor, AgentsActionExecutor>();
+        services.AddScoped<IAgentsJobActionExecutor, AgentsJobActionExecutor>();
+        services.AddScoped<AgentsCreateAuthorizationHook>();
+        services.AddSingleton<AgentsCliHandler>();
+        services.AddScoped<AgentChatProfileResolver>();
 
-        module.Contracts.Export<AgentsModuleContract>("sharpclaw.agents");
-        module.Contracts.Require<ContextModuleContract>("sharpclaw.context");
-        module.UseAgentOrchestrationPermission(AgentOrchestrationPermissionUse.Agents);
+        services.ExportContract<AgentCapabilityContract>("sharpclaw.agents");
+        services.RequireContract<ContextCapabilityContract>("sharpclaw.context");
+        services.RequireAuthorization();
 
         foreach (var storage in StorageContracts)
-            module.Storage.Add(storage);
+            services.AddStorage(storage);
 
-        module.DefineAction(ApiDescriptor)
+        services.AddAction(ApiDescriptor)
             .UseTerminal<AgentsApiActionTerminal>(ApiTerminalId);
 
-        module.DefineAction(new ActionDescriptor<AgentsCreateAction, AgentRecord>(
+        services.AddAction(new ActionDescriptor<AgentsCreateAction, AgentRecord>(
             new("agents.create"), 1, "agents",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
             true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
             SafePoints = SafePoints,
         });
-        module.DefineAction(new ActionDescriptor<AgentsUpdateAction, AgentRecord?>(
+        services.AddAction(new ActionDescriptor<AgentsUpdateAction, AgentRecord?>(
             new("agents.update"), 1, "agents",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
             true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
             SafePoints = SafePoints,
         });
-        module.DefineAction(new ActionDescriptor<AgentsWriteMemoryAction, MemoryRecord>(
+        services.AddAction(new ActionDescriptor<AgentsWriteMemoryAction, MemoryRecord>(
             new("agents.memory.write"), 1, "agents.memory",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
             true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
             SafePoints = SafePoints,
         });
-        module.DefineAction(new ActionDescriptor<AgentsSaveSkillAction, SkillRecord>(
+        services.AddAction(new ActionDescriptor<AgentsSaveSkillAction, SkillRecord>(
             new("agents.skill.save"), 1, "agents.skills",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
             true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
             SafePoints = SafePoints,
         });
-        module.DefineAction(new ActionDescriptor<AgentsAccessSkillAction, string>(
+        services.AddAction(new ActionDescriptor<AgentsAccessSkillAction, string>(
             new("agents.skill.access"), 1, "agents.skills",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
             false, false, RepeatPolicy, null, TimeSpan.FromSeconds(10))
         {
             SafePoints = SafePoints,
         });
-        module.DefineAction(new ActionDescriptor<AgentsSearchMemoryAction, IReadOnlyList<MemoryRecord>>(
+        services.AddAction(new ActionDescriptor<AgentsSearchMemoryAction, IReadOnlyList<MemoryRecord>>(
             new("agents.memory.search"), 1, "agents.memory",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
             true, false, RepeatPolicy, null, TimeSpan.FromSeconds(10))
         {
             SafePoints = SafePoints,
         });
-        module.DefineAction(new ActionDescriptor<AgentsRecordJobAction, AgentJob>(
+        services.AddAction(new ActionDescriptor<AgentsRecordJobAction, AgentJob>(
             new(RecordAgentJobAction), 1, "agents.jobs",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
             true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
             SafePoints = SafePoints,
         });
-        module.DefineAction(new ActionDescriptor<AgentsAttachCanonicalJobAction, AgentJob>(
+        services.AddAction(new ActionDescriptor<AgentsAttachCanonicalJobAction, AgentJob>(
             new(AttachCanonicalJobAction), 1, "agents.jobs",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
             true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
             SafePoints = SafePoints,
         });
-        module.DefineAction(new ActionDescriptor<AgentsCompleteJobAction, AgentJob>(
+        services.AddAction(new ActionDescriptor<AgentsCompleteJobAction, AgentJob>(
             new(CompleteAgentJobAction), 1, "agents.jobs",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
             true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
             SafePoints = SafePoints,
         });
-        module.DefineAction(new ActionDescriptor<AgentsImportJobsAction, IReadOnlyList<AgentJob>>(
+        services.AddAction(new ActionDescriptor<AgentsImportJobsAction, IReadOnlyList<AgentJob>>(
             new(ImportAgentJobsAction), 1, "agents.jobs",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
             true, true, RepeatPolicy, null, TimeSpan.FromMinutes(2))
         {
             SafePoints = SafePoints,
         });
-        module.Hooks.For(new SharpClawActionKey("agents.create"))
+        services.OnAction(new SharpClawActionKey("agents.create"))
             .Use<AgentsCreateAuthorizationHook>(new HookOrdering("agents.create.authorization"));
-        module.Events.Add(new EventDescriptor<AgentChangedEvent>(
+        services.AddEvent(new EventDescriptor<AgentChangedEvent>(
             new(AgentChangedEvent), 1, "agents",
             EventInterceptionCapabilities.Inspect | EventInterceptionCapabilities.Observe,
             true, true)
         {
             DeliveryClasses = [EventDelivery.Durable],
         });
-        module.Events.Add(new EventDescriptor<SkillChangedEvent>(
+        services.AddEvent(new EventDescriptor<SkillChangedEvent>(
             new(SkillChangedEvent), 1, "agents.skills",
             EventInterceptionCapabilities.Inspect | EventInterceptionCapabilities.Observe,
             true, true)
         {
             DeliveryClasses = [EventDelivery.Durable],
         });
-        module.Events.Add(new EventDescriptor<MemoryChangedEvent>(
+        services.AddEvent(new EventDescriptor<MemoryChangedEvent>(
             new(MemoryChangedEvent), 1, "agents.memory",
             EventInterceptionCapabilities.Inspect | EventInterceptionCapabilities.Observe,
             true, true)
@@ -173,38 +172,35 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
             DeliveryClasses = [EventDelivery.Durable],
         });
 
-        module.Tools.Add<AgentsToolHandler>(new ToolDescriptor(
+        services.AddTool<AgentsToolHandler>(new ToolDescriptor(
             CreateTool,
             "Create an agent with a provider and model profile.",
             BuildCreateSchema(), ContainsSensitiveData: true));
-        module.Tools.Add<AgentsToolHandler>(new ToolDescriptor(
+        services.AddTool<AgentsToolHandler>(new ToolDescriptor(
             UpdateTool,
             "Update an agent profile.",
             BuildUpdateSchema(), ContainsSensitiveData: true));
-        module.Tools.Add<AgentsToolHandler>(new ToolDescriptor(
+        services.AddTool<AgentsToolHandler>(new ToolDescriptor(
             AccessSkillTool,
             "Read one permitted skill.",
             BuildIdSchema("skillId")));
-        module.Tools.Add<AgentsToolHandler>(new ToolDescriptor(
+        services.AddTool<AgentsToolHandler>(new ToolDescriptor(
             WriteMemoryTool,
             "Write one agent memory record.",
             BuildMemorySchema(), ContainsSensitiveData: true));
-        module.Tools.Add<AgentsToolHandler>(new ToolDescriptor(
+        services.AddTool<AgentsToolHandler>(new ToolDescriptor(
             SearchMemoryTool,
             "Search one agent memory store.",
             BuildSearchMemorySchema(), ContainsSensitiveData: true));
 
-        module.Chat.UseChatProfileResolver<AgentChatProfileResolver>(
-            new ExclusiveRegistration("sharpclaw.agents.chat-profile"));
-    }
+        services.UseChatProfileResolver<AgentChatProfileResolver>(
+            new ExclusiveClaim("sharpclaw.agents.chat-profile"));
 
-    public void ConfigureApplication(ISharpClawApplicationBuilder application)
-    {
-        foreach (ModuleEndpointRouteDescriptor route in AgentsEndpointContribution.EndpointRoutes)
-            application.Endpoints.AddHttp<AgentsEndpointContribution>(route);
+        foreach (EndpointRouteDescriptor route in AgentsEndpointContribution.EndpointRoutes)
+            services.AddHttpEndpoint<AgentsEndpointContribution>(route);
         foreach (var command in AgentsCliHandler.Commands)
         {
-            application.Cli.Add<AgentsCliHandler>(new ModuleCliCommandDescriptor(
+            services.AddCliCommand<AgentsCliHandler>(new CliCommandDescriptor(
                 command.Name,
                 command.Name switch
                 {
@@ -219,64 +215,64 @@ public sealed class AgentsModule : ISharpClawModule, ISharpClawApplicationModule
         }
     }
 
-    public ValueTask StartAsync(ModuleStartContext context, CancellationToken ct) => ValueTask.CompletedTask;
+    public ValueTask StartAsync(ServiceStartContext context, CancellationToken ct) => ValueTask.CompletedTask;
 
     public ValueTask StopAsync(CancellationToken ct) => ValueTask.CompletedTask;
 
-    public static IReadOnlyList<ModuleStorageContractDescriptor> StorageContracts =>
+    public static IReadOnlyList<ScopedStorageContractDescriptor> StorageContracts =>
     [
         Storage(AgentsCatalog.AgentsStorage, "Agent profiles and model selection.",
-            [new("name", ModuleStorageIndexValueKind.String), new("providerKey", ModuleStorageIndexValueKind.String), new("updatedAt", ModuleStorageIndexValueKind.DateTime)]),
+            [new("name", ScopedStorageIndexValueKind.String), new("providerKey", ScopedStorageIndexValueKind.String), new("updatedAt", ScopedStorageIndexValueKind.DateTime)]),
         Storage(AgentsCatalog.SkillsStorage, "Reusable agent skill instructions.",
-            [new("name", ModuleStorageIndexValueKind.String), new("updatedAt", ModuleStorageIndexValueKind.DateTime)]),
+            [new("name", ScopedStorageIndexValueKind.String), new("updatedAt", ScopedStorageIndexValueKind.DateTime)]),
         Storage(AgentsCatalog.MemoryStorage, "Agent-owned memory records and update order.",
-            [new("agentId", ModuleStorageIndexValueKind.String), new("memoryKey", ModuleStorageIndexValueKind.String), new("updatedAt", ModuleStorageIndexValueKind.DateTime)]),
+            [new("agentId", ScopedStorageIndexValueKind.String), new("memoryKey", ScopedStorageIndexValueKind.String), new("updatedAt", ScopedStorageIndexValueKind.DateTime)]),
         Storage(AgentsCatalog.CostsStorage, "Agent model usage and cost totals.",
-            [new("agentId", ModuleStorageIndexValueKind.String), new("updatedAt", ModuleStorageIndexValueKind.DateTime)]),
+            [new("agentId", ScopedStorageIndexValueKind.String), new("updatedAt", ScopedStorageIndexValueKind.DateTime)]),
         Storage(AgentsCatalog.SynchronizationStorage, "Agent provider synchronization state.",
-            [new("agentId", ModuleStorageIndexValueKind.String), new("updatedAt", ModuleStorageIndexValueKind.DateTime)]),
+            [new("agentId", ScopedStorageIndexValueKind.String), new("updatedAt", ScopedStorageIndexValueKind.DateTime)]),
         Storage(AgentsCatalog.AgentJobsStorage, "Agent-owned job definitions and canonical Jobs references.",
             [
-                new("agentId", ModuleStorageIndexValueKind.String),
-                new("callerIdentity", ModuleStorageIndexValueKind.String),
-                new("actionIdentity", ModuleStorageIndexValueKind.String),
-                new("resource", ModuleStorageIndexValueKind.String),
-                new("canonicalJobId", ModuleStorageIndexValueKind.String),
-                new("channelId", ModuleStorageIndexValueKind.String),
-                new("contextId", ModuleStorageIndexValueKind.String),
-                new("permissionIdentity", ModuleStorageIndexValueKind.String),
-                new("status", ModuleStorageIndexValueKind.String),
-                new("handlerKey", ModuleStorageIndexValueKind.String),
-                new("payloadCodec", ModuleStorageIndexValueKind.String),
-                new("recoveryMode", ModuleStorageIndexValueKind.String),
-                new("createdAt", ModuleStorageIndexValueKind.DateTime),
-                new("updatedAt", ModuleStorageIndexValueKind.DateTime),
+                new("agentId", ScopedStorageIndexValueKind.String),
+                new("callerIdentity", ScopedStorageIndexValueKind.String),
+                new("actionIdentity", ScopedStorageIndexValueKind.String),
+                new("resource", ScopedStorageIndexValueKind.String),
+                new("canonicalJobId", ScopedStorageIndexValueKind.String),
+                new("channelId", ScopedStorageIndexValueKind.String),
+                new("contextId", ScopedStorageIndexValueKind.String),
+                new("permissionIdentity", ScopedStorageIndexValueKind.String),
+                new("status", ScopedStorageIndexValueKind.String),
+                new("handlerKey", ScopedStorageIndexValueKind.String),
+                new("payloadCodec", ScopedStorageIndexValueKind.String),
+                new("recoveryMode", ScopedStorageIndexValueKind.String),
+                new("createdAt", ScopedStorageIndexValueKind.DateTime),
+                new("updatedAt", ScopedStorageIndexValueKind.DateTime),
             ]),
         Storage(AgentsCatalog.AgentJobImportsStorage, "Agent job import manifests and completion markers.",
             [
-                new("snapshotId", ModuleStorageIndexValueKind.String),
-                new("aggregateHash", ModuleStorageIndexValueKind.String),
-                new("mappingHash", ModuleStorageIndexValueKind.String),
-                new("expectedRecordCount", ModuleStorageIndexValueKind.Number),
-                new("importedRecordCount", ModuleStorageIndexValueKind.Number),
-                new("completed", ModuleStorageIndexValueKind.String),
-                new("capturedAt", ModuleStorageIndexValueKind.DateTime),
+                new("snapshotId", ScopedStorageIndexValueKind.String),
+                new("aggregateHash", ScopedStorageIndexValueKind.String),
+                new("mappingHash", ScopedStorageIndexValueKind.String),
+                new("expectedRecordCount", ScopedStorageIndexValueKind.Number),
+                new("importedRecordCount", ScopedStorageIndexValueKind.Number),
+                new("completed", ScopedStorageIndexValueKind.String),
+                new("capturedAt", ScopedStorageIndexValueKind.DateTime),
             ]),
     ];
 
-    private static ModuleStorageContractDescriptor Storage(
+    private static ScopedStorageContractDescriptor Storage(
         string name,
         string description,
-        IReadOnlyList<ModuleStorageIndexDescriptor> indexes) =>
+        IReadOnlyList<ScopedStorageIndexDescriptor> indexes) =>
         new(ModuleIdValue, name,
             [
-                new(ModuleStorageOperations.Get),
-                new(ModuleStorageOperations.Upsert),
-                new(ModuleStorageOperations.BatchUpsert),
-                new(ModuleStorageOperations.Delete),
-                new(ModuleStorageOperations.BatchDelete),
-                new(ModuleStorageOperations.List),
-                new(ModuleStorageOperations.Query),
+                new(ScopedStorageOperations.Get),
+                new(ScopedStorageOperations.Upsert),
+                new(ScopedStorageOperations.BatchUpsert),
+                new(ScopedStorageOperations.Delete),
+                new(ScopedStorageOperations.BatchDelete),
+                new(ScopedStorageOperations.List),
+                new(ScopedStorageOperations.Query),
             ], description, indexes, 524_288, 500);
 
     private static JsonElement BuildCreateSchema() => JsonDocument.Parse("""

@@ -1,12 +1,12 @@
 using System.Text.Json;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 using SharpClaw.Modules.AgentOrchestration.Contracts;
 
 namespace SharpClaw.Modules.TwoTierPermission;
 
 public sealed class PermissionPolicyStore
 {
-    public const string ModuleId = TwoTierPermissionModule.ModuleIdValue;
+    public const string SourceId = TwoTierPermissionModule.ModuleIdValue;
     public const string PoliciesStorage = "policies";
     public const string GrantsStorage = "grants";
     public const string ApprovalsStorage = "approvals";
@@ -16,19 +16,19 @@ public sealed class PermissionPolicyStore
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web) { PropertyNameCaseInsensitive = true };
 
-    private readonly ModuleDocumentStore<PermissionPolicyRecord> _policies;
-    private readonly ModuleDocumentStore<PermissionGrantRecord> _grants;
-    private readonly ModuleDocumentStore<PermissionApprovalRecord> _approvals;
-    private readonly ModuleDocumentStore<PermissionRoleRecord> _roles;
-    private readonly ModuleDocumentStore<PermissionSetRecord> _permissionSets;
+    private readonly ScopedDocumentStore<PermissionPolicyRecord> _policies;
+    private readonly ScopedDocumentStore<PermissionGrantRecord> _grants;
+    private readonly ScopedDocumentStore<PermissionApprovalRecord> _approvals;
+    private readonly ScopedDocumentStore<PermissionRoleRecord> _roles;
+    private readonly ScopedDocumentStore<PermissionSetRecord> _permissionSets;
 
-    public PermissionPolicyStore(IModuleStorageGateway gateway)
+    public PermissionPolicyStore(IScopedStorageGateway gateway)
     {
-        _policies = new(gateway, ModuleId, PoliciesStorage, $"{ModuleId}:{PoliciesStorage}", JsonOptions);
-        _grants = new(gateway, ModuleId, GrantsStorage, $"{ModuleId}:{GrantsStorage}", JsonOptions);
-        _approvals = new(gateway, ModuleId, ApprovalsStorage, $"{ModuleId}:{ApprovalsStorage}", JsonOptions);
-        _roles = new(gateway, ModuleId, RolesStorage, $"{ModuleId}:{RolesStorage}", JsonOptions);
-        _permissionSets = new(gateway, ModuleId, PermissionSetsStorage, $"{ModuleId}:{PermissionSetsStorage}", JsonOptions);
+        _policies = new(gateway, SourceId, PoliciesStorage, $"{SourceId}:{PoliciesStorage}", JsonOptions);
+        _grants = new(gateway, SourceId, GrantsStorage, $"{SourceId}:{GrantsStorage}", JsonOptions);
+        _approvals = new(gateway, SourceId, ApprovalsStorage, $"{SourceId}:{ApprovalsStorage}", JsonOptions);
+        _roles = new(gateway, SourceId, RolesStorage, $"{SourceId}:{RolesStorage}", JsonOptions);
+        _permissionSets = new(gateway, SourceId, PermissionSetsStorage, $"{SourceId}:{PermissionSetsStorage}", JsonOptions);
     }
 
     public async Task<PermissionPolicyRecord?> GetAsync(

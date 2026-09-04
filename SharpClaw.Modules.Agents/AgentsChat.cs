@@ -1,11 +1,12 @@
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
+using SharpClaw.ModuleSDK;
 using SharpClaw.Modules.AgentOrchestration.Contracts;
 
 namespace SharpClaw.Modules.Agents;
 
 public sealed class AgentChatProfileResolver(
     AgentsCatalog catalog,
-    HostPermissionActionEntry permission) : IChatProfileResolver
+    HostAuthorizationEntry authorization) : IChatProfileResolver
 {
     public async ValueTask<ChatProfile> ResolveAsync(
         ChatTurnContext turn,
@@ -15,12 +16,11 @@ public sealed class AgentChatProfileResolver(
         var subjectId = context.Caller.SubjectId;
         if (!Guid.TryParse(subjectId, out var agentId))
             throw new InvalidOperationException("An agent caller is required for profile resolution.");
-        using var authorization = catalog.PushAuthorization(
-            new ChatOperationAuthorization(context, permission));
-        var decision = await permission.EvaluateAgentAsync(
+        using var authorizationScope = catalog.PushAuthorization(
+            new ChatAuthorizationClient(context, authorization));
+        var decision = await authorization.EvaluateAsync(
             context,
-            "read_agent_profile",
-            agentId,
+            AuthorizationRequestFactory.ForAgent("read_agent_profile", agentId),
             ct);
         if (!decision.Allowed)
             throw new UnauthorizedAccessException($"{decision.Code}: {decision.Message}");

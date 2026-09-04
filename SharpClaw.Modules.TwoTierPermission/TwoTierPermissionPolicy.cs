@@ -1,4 +1,4 @@
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 using System.Text.Json;
 using SharpClaw.Modules.AgentOrchestration.Contracts;
 

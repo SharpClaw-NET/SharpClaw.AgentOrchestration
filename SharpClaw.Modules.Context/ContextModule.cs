@@ -1,13 +1,13 @@
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 using SharpClaw.Contracts.Persistence;
 using SharpClaw.ModuleSDK;
 using SharpClaw.Modules.AgentOrchestration.Contracts;
 
 namespace SharpClaw.Modules.Context;
 
-public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModule
+public sealed class ContextModule : ISharpClawModule
 {
     public const string ModuleIdValue = "sharpclaw_context";
     public const string ListThreadsTool = "ctx_list_accessible_threads";
@@ -49,72 +49,71 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
 
     public ModuleIdentity Identity { get; } = new(ModuleIdValue, "SharpClaw Context", "ctx");
 
-    public void Configure(ISharpClawModuleBuilder module)
+    public void ConfigureServices(IServiceCollection services)
     {
-        module.Services.AddScoped<ContextStore>();
-        module.Services.AddScoped<IConversationStore>(sp => sp.GetRequiredService<ContextStore>());
-        module.Services.AddScoped<ContextConversationResolver>();
-        module.Services.AddScoped<IConversationResolver>(sp =>
+        services.AddScoped<ContextStore>();
+        services.AddScoped<IConversationStore>(sp => sp.GetRequiredService<ContextStore>());
+        services.AddScoped<ContextConversationResolver>();
+        services.AddScoped<IConversationResolver>(sp =>
             sp.GetRequiredService<ContextConversationResolver>());
-        module.Services.AddScoped<ContextHistoryContributor>();
-        module.Services.AddScoped<IChatContextContributor>(sp =>
+        services.AddScoped<ContextHistoryContributor>();
+        services.AddScoped<IChatContextContributor>(sp =>
             sp.GetRequiredService<ContextHistoryContributor>());
-        module.Services.AddScoped<ContextToolHandler>();
-        module.Services.AddScoped<IContextActionExecutor, ContextActionExecutor>();
-        module.Services.AddScoped<IContextSteeringActionExecutor, ContextSteeringActionExecutor>();
-        module.Services.AddScoped<IContextSteeringActionGateway, ContextSteeringActionGateway>();
-        module.Services.AddScoped<ContextApiActionExecutor>();
-        module.Services.AddScoped<ContextEndpointContribution>();
-        module.Services.AddScoped<IContextActionGateway, ContextActionGateway>();
-        module.Services.AddScoped<HostModuleActionEntry>();
-        module.Services.AddScoped<IModuleActionPipeline, ModuleActionPipeline>();
-        module.Services.AddScoped<ContextCommitAuthorizationHook>();
-        module.Services.AddSingleton<ContextCliHandler>();
+        services.AddScoped<ContextToolHandler>();
+        services.AddScoped<IContextActionExecutor, ContextActionExecutor>();
+        services.AddScoped<IContextSteeringActionExecutor, ContextSteeringActionExecutor>();
+        services.AddScoped<IContextSteeringActionGateway, ContextSteeringActionGateway>();
+        services.AddScoped<ContextApiActionExecutor>();
+        services.AddScoped<ContextEndpointContribution>();
+        services.AddScoped<IContextActionGateway, ContextActionGateway>();
+        services.AddScoped<HostActionInvoker>();
+        services.AddScoped<ContextCommitAuthorizationHook>();
+        services.AddSingleton<ContextCliHandler>();
 
-        module.Contracts.Export<ContextModuleContract>("sharpclaw.context");
-        module.UseAgentOrchestrationPermission(AgentOrchestrationPermissionUse.Context);
+        services.ExportContract<ContextCapabilityContract>("sharpclaw.context");
+        services.RequireAuthorization();
 
         foreach (var storage in StorageContracts)
-            module.Storage.Add(storage);
+            services.AddStorage(storage);
 
-        module.DefineAction(ApiDescriptor)
+        services.AddAction(ApiDescriptor)
             .UseTerminal<ContextApiActionTerminal>(ApiTerminalId);
-        module.DefineAction(ContextSteeringActionDescriptors.Record)
+        services.AddAction(ContextSteeringActionDescriptors.Record)
             .UseTerminal<ContextSteeringRecordActionTerminal>(SteeringRecordTerminalId);
-        module.DefineAction(ContextSteeringActionDescriptors.List)
+        services.AddAction(ContextSteeringActionDescriptors.List)
             .UseTerminal<ContextSteeringListActionTerminal>(SteeringListTerminalId);
 
-        module.DefineAction(new ActionDescriptor<ContextCreateThreadAction, ContextThreadRecord>(
+        services.AddAction(new ActionDescriptor<ContextCreateThreadAction, ContextThreadRecord>(
             new("context.thread.create"), 1, "context.thread",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
             false, false, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
             SafePoints = SafePoints,
         });
-        module.DefineAction(new ActionDescriptor<ContextReadHistoryAction, IReadOnlyList<ContextMessageRecord>>(
+        services.AddAction(new ActionDescriptor<ContextReadHistoryAction, IReadOnlyList<ContextMessageRecord>>(
             new("context.thread.read-history"), 1, "context.thread",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
             false, false, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
             SafePoints = SafePoints,
         });
-        module.DefineAction(new ActionDescriptor<ContextCommitExchangeAction, bool>(
+        services.AddAction(new ActionDescriptor<ContextCommitExchangeAction, bool>(
             new("context.conversation.commit"), 1, "context.conversation",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel,
             true, false, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
             SafePoints = SafePoints,
         });
-        module.Hooks.For(new SharpClawActionKey("context.conversation.commit"))
+        services.OnAction(new SharpClawActionKey("context.conversation.commit"))
             .Use<ContextCommitAuthorizationHook>(new HookOrdering("context.conversation.commit.authorization"));
-        module.Events.Add(new EventDescriptor<ContextThreadChangedEvent>(
+        services.AddEvent(new EventDescriptor<ContextThreadChangedEvent>(
             new(ThreadChangedEvent), 1, "context.thread",
             EventInterceptionCapabilities.Inspect | EventInterceptionCapabilities.Observe,
             true, false)
         {
             DeliveryClasses = [EventDelivery.Durable],
         });
-        module.Events.Add(new EventDescriptor<ContextExchangeCommittedEvent>(
+        services.AddEvent(new EventDescriptor<ContextExchangeCommittedEvent>(
             new(ExchangeCommittedEvent), 1, "context.conversation",
             EventInterceptionCapabilities.Inspect | EventInterceptionCapabilities.Observe,
             true, true)
@@ -122,26 +121,23 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
             DeliveryClasses = [EventDelivery.Durable],
         });
 
-        module.Tools.Add<ContextToolHandler>(new ToolDescriptor(
+        services.AddTool<ContextToolHandler>(new ToolDescriptor(
             ListThreadsTool,
             "List threads that the caller can read outside the current channel.",
             BuildListSchema()));
-        module.Tools.Add<ContextToolHandler>(new ToolDescriptor(
+        services.AddTool<ContextToolHandler>(new ToolDescriptor(
             ReadHistoryTool,
             "Read bounded history from one accessible thread.",
             BuildReadSchema()));
-        module.Chat.UseConversationResolver<ContextConversationResolver>(
-            new ExclusiveRegistration("sharpclaw.context.conversation-resolver"));
-        module.Chat.AddContextContributor<ContextHistoryContributor>();
-    }
+        services.UseConversationResolver<ContextConversationResolver>(
+            new ExclusiveClaim("sharpclaw.context.conversation-resolver"));
+        services.AddChatContext<ContextHistoryContributor>();
 
-    public void ConfigureApplication(ISharpClawApplicationBuilder application)
-    {
-        foreach (ModuleEndpointRouteDescriptor route in ContextEndpointContribution.EndpointRoutes)
-            application.Endpoints.AddHttp<ContextEndpointContribution>(route);
+        foreach (EndpointRouteDescriptor route in ContextEndpointContribution.EndpointRoutes)
+            services.AddHttpEndpoint<ContextEndpointContribution>(route);
         foreach (var command in ContextCliHandler.Commands)
         {
-            application.Cli.Add<ContextCliHandler>(new ModuleCliCommandDescriptor(
+            services.AddCliCommand<ContextCliHandler>(new CliCommandDescriptor(
                 command.Name,
                 command.Name.Equals("ctx-thread-list", StringComparison.OrdinalIgnoreCase)
                     ? ["ctxthreads"]
@@ -152,38 +148,38 @@ public sealed class ContextModule : ISharpClawModule, ISharpClawApplicationModul
         }
     }
 
-    public ValueTask StartAsync(ModuleStartContext context, CancellationToken ct) =>
+    public ValueTask StartAsync(ServiceStartContext context, CancellationToken ct) =>
         ValueTask.CompletedTask;
 
     public ValueTask StopAsync(CancellationToken ct) => ValueTask.CompletedTask;
 
-    public static IReadOnlyList<ModuleStorageContractDescriptor> StorageContracts =>
+    public static IReadOnlyList<ScopedStorageContractDescriptor> StorageContracts =>
     [
         Storage(ContextStore.ChannelsStorage, "Context channel ownership and cross-thread opt-in.",
-            [new("ownerAgentId", ModuleStorageIndexValueKind.String), new("contextId", ModuleStorageIndexValueKind.String), new("optedIn", ModuleStorageIndexValueKind.Bool), new("updatedAt", ModuleStorageIndexValueKind.DateTime)]),
+            [new("ownerAgentId", ScopedStorageIndexValueKind.String), new("contextId", ScopedStorageIndexValueKind.String), new("optedIn", ScopedStorageIndexValueKind.Bool), new("updatedAt", ScopedStorageIndexValueKind.DateTime)]),
         Storage(ContextStore.ContextsStorage, "Context ownership and default-agent assignment.",
-            [new("defaultAgentId", ModuleStorageIndexValueKind.String), new("updatedAt", ModuleStorageIndexValueKind.DateTime)]),
+            [new("defaultAgentId", ScopedStorageIndexValueKind.String), new("updatedAt", ScopedStorageIndexValueKind.DateTime)]),
         Storage(ContextStore.ThreadsStorage, "Thread identity, channel identity, and update order.",
-            [new("channelId", ModuleStorageIndexValueKind.String), new("contextId", ModuleStorageIndexValueKind.String), new("updatedAt", ModuleStorageIndexValueKind.DateTime)]),
+            [new("channelId", ScopedStorageIndexValueKind.String), new("contextId", ScopedStorageIndexValueKind.String), new("updatedAt", ScopedStorageIndexValueKind.DateTime)]),
         Storage(ContextStore.MessagesStorage, "Ordered conversation history records.",
-            [new("threadId", ModuleStorageIndexValueKind.String), new("channelId", ModuleStorageIndexValueKind.String), new("createdAt", ModuleStorageIndexValueKind.DateTime)]),
+            [new("threadId", ScopedStorageIndexValueKind.String), new("channelId", ScopedStorageIndexValueKind.String), new("createdAt", ScopedStorageIndexValueKind.DateTime)]),
         Storage(ContextStore.SteeringStorage, "Explicit channel and thread steering records.",
-            [new("channelId", ModuleStorageIndexValueKind.String), new("threadId", ModuleStorageIndexValueKind.String), new("scope", ModuleStorageIndexValueKind.String), new("source", ModuleStorageIndexValueKind.String), new("category", ModuleStorageIndexValueKind.String), new("createdAt", ModuleStorageIndexValueKind.DateTime), new("createdAtId", ModuleStorageIndexValueKind.String)]),
+            [new("channelId", ScopedStorageIndexValueKind.String), new("threadId", ScopedStorageIndexValueKind.String), new("scope", ScopedStorageIndexValueKind.String), new("source", ScopedStorageIndexValueKind.String), new("category", ScopedStorageIndexValueKind.String), new("createdAt", ScopedStorageIndexValueKind.DateTime), new("createdAtId", ScopedStorageIndexValueKind.String)]),
     ];
 
-    private static ModuleStorageContractDescriptor Storage(
+    private static ScopedStorageContractDescriptor Storage(
         string name,
         string description,
-        IReadOnlyList<ModuleStorageIndexDescriptor> indexes) =>
+        IReadOnlyList<ScopedStorageIndexDescriptor> indexes) =>
         new(ModuleIdValue, name,
             [
-                new(ModuleStorageOperations.Get),
-                new(ModuleStorageOperations.Upsert),
-                new(ModuleStorageOperations.BatchUpsert),
-                new(ModuleStorageOperations.Delete),
-                new(ModuleStorageOperations.BatchDelete),
-                new(ModuleStorageOperations.List),
-                new(ModuleStorageOperations.Query),
+                new(ScopedStorageOperations.Get),
+                new(ScopedStorageOperations.Upsert),
+                new(ScopedStorageOperations.BatchUpsert),
+                new(ScopedStorageOperations.Delete),
+                new(ScopedStorageOperations.BatchDelete),
+                new(ScopedStorageOperations.List),
+                new(ScopedStorageOperations.Query),
             ], description, indexes, 524_288, 500);
 
     private static JsonElement BuildListSchema() => JsonDocument.Parse("""

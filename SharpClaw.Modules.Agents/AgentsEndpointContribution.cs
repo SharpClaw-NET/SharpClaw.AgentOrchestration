@@ -1,10 +1,10 @@
 using System.Text.Json;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 
 namespace SharpClaw.Modules.Agents;
 
 public sealed class AgentsEndpointContribution(
-    AgentsApiActionTerminal terminal) : IModuleHttpEndpointHandler
+    AgentsApiActionTerminal terminal) : IHttpEndpointHandler
 {
     private static readonly JsonElement EmptyPayload =
         JsonSerializer.SerializeToElement(new { });
@@ -62,10 +62,10 @@ public sealed class AgentsEndpointContribution(
         Route(MemoryRoutes[1], "POST", AgentsApiOperations.SearchMemory),
     ];
 
-    public static IReadOnlyList<ModuleEndpointRouteDescriptor> EndpointRoutes { get; } =
+    public static IReadOnlyList<EndpointRouteDescriptor> EndpointRoutes { get; } =
         Routes.Select(route => route.Descriptor).ToArray();
 
-    public async ValueTask<ModuleHttpEndpointResponse> InvokeAsync(
+    public async ValueTask<HttpEndpointResponse> InvokeAsync(
         HostEndpointRouteRequest request,
         IHostActionEntry hostActionEntry,
         CancellationToken cancellationToken)
@@ -127,7 +127,7 @@ public sealed class AgentsEndpointContribution(
 
     private static RouteDefinition Route(string path, string method, string operation) =>
         new(
-            new ModuleEndpointRouteDescriptor(
+            new EndpointRouteDescriptor(
                 $"{AgentsModule.ModuleIdValue}:http:{method}:{path}",
                 path,
                 method,
@@ -145,11 +145,11 @@ public sealed class AgentsEndpointContribution(
             : document.RootElement.Clone();
     }
 
-    private static ModuleHttpEndpointResponse ToResponse(IActionOutcome<JsonElement> outcome) =>
+    private static HttpEndpointResponse ToResponse(IActionOutcome<JsonElement> outcome) =>
         outcome.Kind switch
         {
             ActionOutcomeKind.Completed when outcome.Result is { } result =>
-                ModuleHttpEndpointResponse.Json(200, result),
+                HttpEndpointResponse.Json(200, result),
             ActionOutcomeKind.Cancelled => ErrorResponse(
                 409,
                 "endpoint_cancelled",
@@ -172,15 +172,15 @@ public sealed class AgentsEndpointContribution(
                 "The Agents endpoint action returned an unknown outcome."),
         };
 
-    private static ModuleHttpEndpointResponse ErrorResponse(
+    private static HttpEndpointResponse ErrorResponse(
         int statusCode,
         string code,
         string message) =>
-        ModuleHttpEndpointResponse.Json(
+        HttpEndpointResponse.Json(
             statusCode,
             JsonSerializer.SerializeToElement(new { error = code, message }));
 
     private sealed record RouteDefinition(
-        ModuleEndpointRouteDescriptor Descriptor,
+        EndpointRouteDescriptor Descriptor,
         string Operation);
 }

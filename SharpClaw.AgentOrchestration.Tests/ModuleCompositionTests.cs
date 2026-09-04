@@ -1,7 +1,7 @@
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using NUnit.Framework;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 using SharpClaw.Contracts.Providers;
 using SharpClaw.Modules.Agents;
 using SharpClaw.Modules.AgentOrchestration.Contracts;
@@ -65,9 +65,9 @@ public sealed class ModuleCompositionTests
                     .Select(item => (item.Name, item.ValueKind)),
                 Is.EquivalentTo(new[]
                 {
-                    ("subjectId", ModuleStorageIndexValueKind.String),
-                    ("clearance", ModuleStorageIndexValueKind.String),
-                    ("updatedAt", ModuleStorageIndexValueKind.DateTime),
+                    ("subjectId", ScopedStorageIndexValueKind.String),
+                    ("clearance", ScopedStorageIndexValueKind.String),
+                    ("updatedAt", ScopedStorageIndexValueKind.DateTime),
                 }));
             Assert.That(agentsGraph.Storage.Select(item => item.StorageName), Is.EquivalentTo(
                 new[] { "agents", "skills", "memory", "costs", "synchronization", "agent_jobs", "agent_job_imports" }));
@@ -76,9 +76,9 @@ public sealed class ModuleCompositionTests
                     .Select(item => item.Name),
                 Is.EquivalentTo(new[] { "name", "providerKey", "updatedAt" }));
             Assert.That(permissionGraph.Contracts.Where(item => item.IsExport).Select(item => item.ContractName),
-                Does.Contain("sharpclaw.permission"));
+                Does.Contain(AuthorizationProtocol.ContractName));
             Assert.That(agentsGraph.Contracts.Where(item => !item.IsExport).Select(item => item.ContractName),
-                Is.EquivalentTo(new[] { "sharpclaw.context", "sharpclaw.permission" }));
+                Is.EquivalentTo(new[] { "sharpclaw.context", AuthorizationProtocol.ContractName }));
             Assert.That(contextGraph.Contracts.Where(item => !item.IsExport).Select(item => item.ContractName),
                 Does.Not.Contain("sharpclaw.context-access"));
             Assert.That(permissionGraph.Contracts.Where(item => item.IsExport).Select(item => item.ContractName),
@@ -87,12 +87,12 @@ public sealed class ModuleCompositionTests
                 Does.Not.Contain("sharpclaw.agent-access"));
             Assert.That(contextGraph.Services.Any(item => item.ServiceType == typeof(IContextActionExecutor)), Is.True);
             Assert.That(contextGraph.Services.Any(item => item.ServiceType == typeof(IContextSteeringActionExecutor)), Is.True);
-            Assert.That(contextGraph.Services.Any(item => item.ServiceType == typeof(HostPermissionActionEntry)), Is.True);
+            Assert.That(contextGraph.Services.Any(item => item.ServiceType == typeof(HostAuthorizationEntry)), Is.True);
             Assert.That(contextGraph.Services.Any(item => item.ServiceType == typeof(ContextConversationResolver)), Is.True);
             Assert.That(contextGraph.Services.Any(item => item.ServiceType == typeof(ContextHistoryContributor)), Is.True);
-            Assert.That(permissionGraph.Services.Any(item => item.ServiceType == typeof(IAgentOrchestrationPermissionPolicy)), Is.True);
+            Assert.That(permissionGraph.Services.Any(item => item.ServiceType == typeof(IAuthorizationPolicy)), Is.True);
             Assert.That(agentsGraph.Services.Any(item => item.ServiceType == typeof(IAgentsActionExecutor)), Is.True);
-            Assert.That(agentsGraph.Services.Any(item => item.ServiceType == typeof(HostPermissionActionEntry)), Is.True);
+            Assert.That(agentsGraph.Services.Any(item => item.ServiceType == typeof(HostAuthorizationEntry)), Is.True);
             Assert.That(agentsGraph.Services.Any(item => item.ServiceType == typeof(IAgentsJobActionExecutor)), Is.True);
             Assert.That(contextCreate.SafePoints, Is.Not.Empty);
             Assert.That(contextCommit.Capabilities,
@@ -100,8 +100,7 @@ public sealed class ModuleCompositionTests
             Assert.That(contextSteeringRecord.Key.Value, Is.EqualTo(ContextSteeringActionKeys.Record));
             Assert.That(contextSteeringList.Key.Value, Is.EqualTo(ContextSteeringActionKeys.List));
             Assert.That(permissionGrant.SafePoints, Is.Not.Empty);
-            Assert.That(permissionGraph.Actions.Any(item => ReferenceEquals(item.TypedDescriptor, PermissionActionDescriptors.ContextAccess)), Is.True);
-            Assert.That(permissionGraph.Actions.Any(item => ReferenceEquals(item.TypedDescriptor, PermissionActionDescriptors.AgentAccess)), Is.True);
+            Assert.That(permissionGraph.Actions.Any(item => ReferenceEquals(item.TypedDescriptor, AuthorizationProtocol.Evaluate)), Is.True);
             Assert.That(agentsSaveSkill.SafePoints, Is.Not.Empty);
             Assert.That(agentsRecordJob.Key.Value,
                 Is.EqualTo(AgentsModule.RecordAgentJobAction));
@@ -131,22 +130,15 @@ public sealed class ModuleCompositionTests
             Assert.That(permissionGraph.Events.Count(item => item.Descriptor.Key.Value == TwoTierPermissionModule.PermissionChangedEvent), Is.EqualTo(1));
             Assert.That(agentsGraph.Events.Count(item => item.Descriptor.Key.Value == AgentsModule.MemoryChangedEvent), Is.EqualTo(1));
             Assert.That(contextGraph.ActionHooks.Any(item => item.ActionKey?.Value == "context.conversation.commit"), Is.True);
-            Assert.That(contextGraph.ActionHooks.Any(item => item.ActionKey?.Value == "permission.context-access"
-                && item.HandlerType == typeof(PermissionContextRelayHook)
-                && item.HookId == "permission.context-access.host-entry"), Is.True);
             Assert.That(permissionGraph.ActionHooks.Any(item => item.ActionKey?.Value == "permission.grant"), Is.True);
             Assert.That(agentsGraph.ActionHooks.Any(item => item.ActionKey?.Value == "agents.create"), Is.True);
-            Assert.That(agentsGraph.ActionHooks.Any(item => item.ActionKey?.Value == "permission.agent-access"
-                && item.HandlerType == typeof(PermissionAgentRelayHook)
-                && item.HookId == "permission.agent-access.host-entry"), Is.True);
             Assert.That(contextGraph.ActionEntries.Select(item => item.Descriptor.Key.Value), Is.EqualTo([
                 ContextModule.ApiDescriptor.Key.Value,
                 ContextSteeringActionKeys.Record,
                 ContextSteeringActionKeys.List]));
             Assert.That(permissionGraph.ActionEntries.Select(item => item.Descriptor.Key.Value), Is.EquivalentTo([
                 TwoTierPermissionModule.ApiDescriptor.Key.Value,
-                PermissionActionDescriptors.ContextAccess.Key.Value,
-                PermissionActionDescriptors.AgentAccess.Key.Value]));
+                AuthorizationProtocol.Evaluate.Key.Value]));
             Assert.That(agentsGraph.ActionEntries.Select(item => item.Descriptor.Key.Value), Is.EqualTo([AgentsModule.ApiDescriptor.Key.Value]));
             Assert.That(contextGraph.ActionEntries.Single(item => item.Descriptor.Key.Value == ContextModule.ApiDescriptor.Key.Value).TerminalType,
                 Is.EqualTo(typeof(ContextApiActionTerminal)));
@@ -154,8 +146,8 @@ public sealed class ModuleCompositionTests
                 Is.EqualTo(typeof(ContextSteeringRecordActionTerminal)));
             Assert.That(contextGraph.ActionEntries.Single(item => item.Descriptor.Key.Value == ContextSteeringActionKeys.List).TerminalType,
                 Is.EqualTo(typeof(ContextSteeringListActionTerminal)));
-            Assert.That(permissionGraph.ActionEntries.Single(item => item.Descriptor.Key.Value == PermissionActionDescriptors.ContextAccess.Key.Value).TerminalType,
-                Is.EqualTo(typeof(PermissionContextPolicyTerminal)));
+            Assert.That(permissionGraph.ActionEntries.Single(item => item.Descriptor.Key.Value == AuthorizationProtocol.Evaluate.Key.Value).TerminalType,
+                Is.EqualTo(typeof(AuthorizationPolicyTerminal)));
             Assert.That(agentsGraph.ActionEntries.Single().TerminalType, Is.EqualTo(typeof(AgentsApiActionTerminal)));
         });
     }
@@ -198,11 +190,11 @@ public sealed class ModuleCompositionTests
     [Test]
     public void ManifestsUseCurrentThreeOwnerComposition()
     {
-        (string Manifest, string Id, string ModuleType, string Assembly, string Version)[] expected =
+        (string Manifest, string Id, string EntryType, string Assembly, string Version)[] expected =
         {
-        ("Context.module.json", "sharpclaw_context", "SharpClaw.Modules.Context.ContextModule", "SharpClaw.Modules.Context.dll", "0.5.0-beta.23"),
-        ("TwoTierPermission.module.json", "sharpclaw_two_tier_permission", "SharpClaw.Modules.TwoTierPermission.TwoTierPermissionModule", "SharpClaw.Modules.TwoTierPermission.dll", "0.5.0-beta.24"),
-        ("Agents.module.json", "sharpclaw_agents", "SharpClaw.Modules.Agents.AgentsModule", "SharpClaw.Modules.Agents.dll", "0.5.0-beta.24"),
+        ("Context.package.json", "sharpclaw_context", "SharpClaw.Modules.Context.ContextModule", "SharpClaw.Modules.Context.dll", "0.5.0-beta.24"),
+        ("TwoTierPermission.package.json", "sharpclaw_two_tier_permission", "SharpClaw.Modules.TwoTierPermission.TwoTierPermissionModule", "SharpClaw.Modules.TwoTierPermission.dll", "0.5.0-beta.25"),
+        ("Agents.package.json", "sharpclaw_agents", "SharpClaw.Modules.Agents.AgentsModule", "SharpClaw.Modules.Agents.dll", "0.5.0-beta.25"),
         };
 
         foreach (var item in expected)
@@ -215,7 +207,7 @@ public sealed class ModuleCompositionTests
                 Assert.That(root.GetProperty("id").GetString(), Is.EqualTo(item.Id));
                 Assert.That(root.GetProperty("version").GetString(), Is.EqualTo(item.Version));
                 Assert.That(root.GetProperty("entryAssembly").GetString(), Is.EqualTo(item.Assembly));
-                Assert.That(root.GetProperty("moduleType").GetString(), Is.EqualTo(item.ModuleType));
+                Assert.That(root.GetProperty("entryType").GetString(), Is.EqualTo(item.EntryType));
                 Assert.That(root.GetProperty("defaultEnabled").GetBoolean(), Is.True);
                 Assert.That(root.GetProperty("hostMode").GetString(), Is.EqualTo("sidecar"));
                 Assert.That(root.GetProperty("requestedHooks").GetArrayLength(), Is.GreaterThan(0));
@@ -225,25 +217,26 @@ public sealed class ModuleCompositionTests
                     .ToArray();
                 if (item.Item2 == "sharpclaw_context")
                 {
-                    Assert.That(hookTargets, Does.Contain("permission.context-access"));
-                    Assert.That(root.GetProperty("requestedHooks")
+                    Assert.That(hookTargets, Is.EqualTo(new[] { "context.conversation.commit" }));
+                    Assert.That(root.GetProperty("requires")
                         .EnumerateArray()
-                        .Single(hook => hook.GetProperty("target").GetString() == "permission.context-access")
-                        .GetProperty("effects")
-                        .EnumerateArray()
-                        .Select(effect => effect.GetString()),
-                        Is.EquivalentTo(new[] { "Inspect", "Wrap", "Observe" }));
+                        .Select(contract => contract.GetProperty("contractName").GetString()),
+                        Does.Contain(AuthorizationProtocol.ContractName));
                 }
                 if (item.Item2 == "sharpclaw_agents")
                 {
-                    Assert.That(hookTargets, Does.Contain("permission.agent-access"));
-                    Assert.That(root.GetProperty("requestedHooks")
+                    Assert.That(hookTargets, Is.EqualTo(new[] { "agents.create" }));
+                    Assert.That(root.GetProperty("requires")
                         .EnumerateArray()
-                        .Single(hook => hook.GetProperty("target").GetString() == "permission.agent-access")
-                        .GetProperty("effects")
+                        .Select(contract => contract.GetProperty("contractName").GetString()),
+                        Does.Contain(AuthorizationProtocol.ContractName));
+                }
+                if (item.Item2 == "sharpclaw_two_tier_permission")
+                {
+                    Assert.That(root.GetProperty("exports")
                         .EnumerateArray()
-                        .Select(effect => effect.GetString()),
-                        Is.EquivalentTo(new[] { "Inspect", "Wrap", "Observe" }));
+                        .Select(contract => contract.GetProperty("contractName").GetString()),
+                        Does.Contain(AuthorizationProtocol.ContractName));
                 }
             });
         }
@@ -254,7 +247,7 @@ public sealed class ModuleCompositionTests
     {
         var expected = new[]
         {
-            (Module: (ISharpClawApplicationModule)new ContextModule(),
+            (Module: (ISharpClawModule)new ContextModule(),
                 Contribution: typeof(ContextEndpointContribution),
                 Routes: new[]
                 {
@@ -262,7 +255,7 @@ public sealed class ModuleCompositionTests
                     ContextEndpointContribution.ReadHistoryRoute,
                     ContextEndpointContribution.CommitExchangeRoute,
                 }),
-            (Module: (ISharpClawApplicationModule)new TwoTierPermissionModule(),
+            (Module: (ISharpClawModule)new TwoTierPermissionModule(),
                 Contribution: typeof(PermissionEndpointContribution),
                 Routes: new[]
                 {
@@ -271,7 +264,7 @@ public sealed class ModuleCompositionTests
                     PermissionEndpointContribution.RevokeRoute,
                     PermissionEndpointContribution.ApproveRoute,
                 }),
-            (Module: (ISharpClawApplicationModule)new AgentsModule(),
+            (Module: (ISharpClawModule)new AgentsModule(),
                 Contribution: typeof(AgentsEndpointContribution),
                 Routes: new[]
                 {
@@ -286,19 +279,18 @@ public sealed class ModuleCompositionTests
 
         foreach (var item in expected)
         {
-            var application = new RecordingApplicationBuilder();
-            item.Module.ConfigureApplication(application);
+            var application = CompileModule(item.Module).Application;
 
             Assert.Multiple(() =>
             {
                 Assert.That(
-                    application.Endpoints.Items.Select(endpoint => endpoint.HandlerType),
+                    application.Endpoints.Select(endpoint => endpoint.HandlerType),
                     Is.All.EqualTo(item.Contribution));
                 Assert.That(
-                    application.Endpoints.Items.Select(endpoint => endpoint.Descriptor.Path),
+                    application.Endpoints.Select(endpoint => endpoint.Descriptor.Path),
                     Is.SupersetOf(item.Routes));
                 Assert.That(
-                    application.Endpoints.Items.Select(endpoint => endpoint.Descriptor.Transport),
+                    application.Endpoints.Select(endpoint => endpoint.Descriptor.Transport),
                     Is.All.EqualTo(HostEndpointTransport.Http));
                 Assert.That(item.Routes, Is.All.Not.Null);
                 Assert.That(item.Routes, Is.All.Not.Empty);
@@ -311,9 +303,9 @@ public sealed class ModuleCompositionTests
     {
         Assert.Multiple(() =>
         {
-            Assert.That(typeof(IModuleHttpEndpointHandler).IsAssignableFrom(typeof(ContextEndpointContribution)), Is.True);
-            Assert.That(typeof(IModuleHttpEndpointHandler).IsAssignableFrom(typeof(PermissionEndpointContribution)), Is.True);
-            Assert.That(typeof(IModuleHttpEndpointHandler).IsAssignableFrom(typeof(AgentsEndpointContribution)), Is.True);
+            Assert.That(typeof(IHttpEndpointHandler).IsAssignableFrom(typeof(ContextEndpointContribution)), Is.True);
+            Assert.That(typeof(IHttpEndpointHandler).IsAssignableFrom(typeof(PermissionEndpointContribution)), Is.True);
+            Assert.That(typeof(IHttpEndpointHandler).IsAssignableFrom(typeof(AgentsEndpointContribution)), Is.True);
         });
 
         var contextGraph = CompileModule(new ContextModule());
@@ -397,16 +389,16 @@ public sealed class ModuleCompositionTests
                 "sharpclaw.kernel.action.result.agents.api.dispatch",
                 1,
                 "EBF621A68F0061626C140836F73212CB5D24ABF6D6FE9FAE994E6C3BA794FB65")));
-            Assert.That(PermissionActionDescriptors.ContextAccess.InputSchema, Is.EqualTo(
+            Assert.That(AuthorizationProtocol.Evaluate.InputSchema, Is.EqualTo(
                 ModuleSchemaIdentity.ActionInput(
-                    PermissionActionDescriptors.ContextAccess.Key,
+                    AuthorizationProtocol.Evaluate.Key,
                     1,
-                    typeof(PermissionContextAccessAction))));
-            Assert.That(PermissionActionDescriptors.AgentAccess.ResultSchema, Is.EqualTo(
+                    typeof(AuthorizationRequest))));
+            Assert.That(AuthorizationProtocol.Evaluate.ResultSchema, Is.EqualTo(
                 ModuleSchemaIdentity.ActionResult(
-                    PermissionActionDescriptors.AgentAccess.Key,
+                    AuthorizationProtocol.Evaluate.Key,
                     1,
-                    typeof(AccessDecision))));
+                    typeof(AuthorizationDecision))));
         });
     }
 
@@ -420,56 +412,15 @@ public sealed class ModuleCompositionTests
             Assert.That(AgentsCliHandler.Commands, Has.Count.EqualTo(12));
         });
 
-        var contextApplication = new RecordingApplicationBuilder();
-        var permissionApplication = new RecordingApplicationBuilder();
-        var agentsApplication = new RecordingApplicationBuilder();
-        new ContextModule().ConfigureApplication(contextApplication);
-        new TwoTierPermissionModule().ConfigureApplication(permissionApplication);
-        new AgentsModule().ConfigureApplication(agentsApplication);
+        var contextApplication = CompileModule(new ContextModule()).Application;
+        var permissionApplication = CompileModule(new TwoTierPermissionModule()).Application;
+        var agentsApplication = CompileModule(new AgentsModule()).Application;
 
         Assert.Multiple(() =>
         {
-            Assert.That(contextApplication.Cli.Items, Has.Count.EqualTo(ContextCliHandler.Commands.Count));
-            Assert.That(permissionApplication.Cli.Items, Has.Count.EqualTo(PermissionCliHandler.Commands.Count));
-            Assert.That(agentsApplication.Cli.Items, Has.Count.EqualTo(AgentsCliHandler.Commands.Count));
-        });
-    }
-
-    [Test]
-    public async Task ModuleActionPipelineUsesTheActionContextSnapshot()
-    {
-        var dispatcher = new RecordingActionDispatcher();
-        var pipeline = new ModuleActionPipeline(dispatcher);
-        var caller = RequestPrincipal.Anonymous;
-        var action = new ContextApiAction(
-            ContextApiOperations.ListChannels,
-            JsonSerializer.SerializeToElement(new { }));
-        var snapshot = new ActionPipelineSnapshot("test", [], [], 16);
-        var context = new ActionContext<ContextApiAction>(
-            Guid.NewGuid(),
-            null,
-            Guid.NewGuid(),
-            Guid.NewGuid(),
-            0,
-            1,
-            DateTimeOffset.UtcNow.AddMinutes(1),
-            ContextModule.ApiDescriptor.Key,
-            ContextModule.ModuleIdValue,
-            caller,
-            action,
-            ExtensionFeatureSet.Empty,
-            snapshot);
-
-        var result = await pipeline.RunRequiredAsync(
-            ContextModule.ApiDescriptor,
-            context,
-            (value, _) => ValueTask.FromResult(JsonSerializer.SerializeToElement(value.Action.Operation)));
-
-        Assert.Multiple(() =>
-        {
-            Assert.That(result.GetString(), Is.EqualTo(ContextApiOperations.ListChannels));
-            Assert.That(dispatcher.RequiredCalls, Is.EqualTo(1));
-            Assert.That(dispatcher.Snapshot, Is.SameAs(snapshot));
+            Assert.That(contextApplication.CliCommands, Has.Count.EqualTo(ContextCliHandler.Commands.Count));
+            Assert.That(permissionApplication.CliCommands, Has.Count.EqualTo(PermissionCliHandler.Commands.Count));
+            Assert.That(agentsApplication.CliCommands, Has.Count.EqualTo(AgentsCliHandler.Commands.Count));
         });
     }
 
@@ -478,7 +429,7 @@ public sealed class ModuleCompositionTests
     {
         var host = new RecordingHostActionEntry();
         var caller = new RequestPrincipal("probe", IsAuthenticated: true);
-        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossRegistration);
         var payload = JsonSerializer.SerializeToElement(new { });
         var contextStorage = new InMemoryStorageGateway();
         var contextStore = new ContextStore(contextStorage, AllowAllEntry());
@@ -492,15 +443,15 @@ public sealed class ModuleCompositionTests
         var agentsExecutor = new AgentsApiActionExecutor(agentsCatalog, AllowAllEntry());
 
         await new ContextActionGateway(
-                new HostModuleActionEntry(host),
+                new HostActionInvoker(host),
                 new ContextApiActionTerminal(contextExecutor))
             .ExecuteAsync(hostContext, ContextApiOperations.ListChannels, payload);
         await new PermissionActionGateway(
-                new HostModuleActionEntry(host),
+                new HostActionInvoker(host),
                 new PermissionApiActionTerminal(permissionExecutor))
             .ExecuteAsync(hostContext, PermissionApiOperations.ListPolicies, payload);
         await new AgentsActionGateway(
-                new HostModuleActionEntry(host),
+                new HostActionInvoker(host),
                 new AgentsApiActionTerminal(agentsExecutor))
             .ExecuteAsync(hostContext, AgentsApiOperations.ListAgents, payload);
 
@@ -592,8 +543,8 @@ public sealed class ModuleCompositionTests
             now));
         var storedPolicy = await permissionStore.GetAsync(worker.SubjectId);
 
-        var host = new TypedPermissionHostActionEntry(policy, worker);
-        var permission = new HostPermissionActionEntry(host);
+        var host = new TypedAuthorizationHostActionEntry(policy, worker);
+        var permission = new HostAuthorizationEntry(host);
         var catalog = new AgentsCatalog(gateway, permission);
         var executor = new AgentsApiActionExecutor(catalog, permission);
         var source = NeutralRecord(now, "queued");
@@ -621,8 +572,8 @@ public sealed class ModuleCompositionTests
             Assert.That(host.LastCallerSubjectId, Is.EqualTo(worker.SubjectId));
             Assert.That(host.LastCallerRoles, Is.EquivalentTo(new[] { "admin" }));
             Assert.That(host.AgentAccessCalls, Is.EqualTo(1));
-            Assert.That(host.LastDescriptorKey, Is.EqualTo(PermissionActionDescriptors.AgentAccess.Key.Value));
-            Assert.That(host.LastAction?.Capability, Is.EqualTo("manage_agent_jobs"));
+            Assert.That(host.LastDescriptorKey, Is.EqualTo(AuthorizationProtocol.Evaluate.Key.Value));
+            Assert.That(host.LastAction?.Operation, Is.EqualTo("manage_agent_jobs"));
             Assert.That(host.LastDecision?.Allowed, Is.True);
             Assert.That(host.LastDecision?.Code, Is.EqualTo("administrator"));
             Assert.That(imported, Has.Count.EqualTo(1));
@@ -638,10 +589,10 @@ public sealed class ModuleCompositionTests
             "33333333-3333-3333-3333-333333333333",
             IsAuthenticated: true);
         var gateway = new InMemoryStorageGateway();
-        var host = new TypedPermissionHostActionEntry(
+        var host = new TypedAuthorizationHostActionEntry(
             new TwoTierPermissionPolicy(new PermissionPolicyStore(gateway)),
             worker);
-        var permission = new HostPermissionActionEntry(host);
+        var permission = new HostAuthorizationEntry(host);
         var catalog = new AgentsCatalog(gateway, permission);
         var executor = new AgentsApiActionExecutor(catalog, permission);
         var source = NeutralRecord(now, "queued");
@@ -665,8 +616,8 @@ public sealed class ModuleCompositionTests
             Assert.That(host.LastCallerSubjectId, Is.EqualTo(worker.SubjectId));
             Assert.That(host.LastCallerRoles, Is.Null);
             Assert.That(host.AgentAccessCalls, Is.EqualTo(1));
-            Assert.That(host.LastDescriptorKey, Is.EqualTo(PermissionActionDescriptors.AgentAccess.Key.Value));
-            Assert.That(host.LastAction?.Capability, Is.EqualTo("manage_agent_jobs"));
+            Assert.That(host.LastDescriptorKey, Is.EqualTo(AuthorizationProtocol.Evaluate.Key.Value));
+            Assert.That(host.LastAction?.Operation, Is.EqualTo("manage_agent_jobs"));
             Assert.That(host.LastDecision?.Allowed, Is.False);
             Assert.That(host.LastDecision?.Code, Is.EqualTo("clearance_denied"));
             Assert.That(host.LastDecision?.Message, Is.EqualTo("The caller has no usable clearance."));
@@ -688,7 +639,7 @@ public sealed class ModuleCompositionTests
             HostActionEntryIngress.Cli);
 
         var result = await handler.ExecuteAsync(
-            new ModuleCliInvocation(
+            new CliInvocation(
                 Guid.NewGuid(),
                 "ctx-channel-list",
                 [],
@@ -739,7 +690,7 @@ public sealed class ModuleCompositionTests
         var hostContext = TestHostActionContext.Create(
             new RequestPrincipal(Guid.NewGuid().ToString("D"), IsAuthenticated: true),
             HostActionEntryIngress.Endpoint);
-        ModuleEndpointRouteDescriptor route = ContextEndpointContribution.EndpointRoutes.Single(
+        EndpointRouteDescriptor route = ContextEndpointContribution.EndpointRoutes.Single(
             candidate => candidate.Path == ContextEndpointContribution.CreateThreadRoute &&
                          candidate.Method == "POST");
         var invocation = new HostEndpointInvocation(
@@ -755,7 +706,7 @@ public sealed class ModuleCompositionTests
         var hostEntry = new RecordingHostActionEntry();
         var handler = new ContextEndpointContribution(new ContextApiActionTerminal(null!));
 
-        ModuleHttpEndpointResponse response = await handler.InvokeAsync(
+        HttpEndpointResponse response = await handler.InvokeAsync(
             request,
             hostEntry,
             default);
@@ -800,21 +751,21 @@ public sealed class ModuleCompositionTests
     {
         foreach (var owner in EndpointOwners())
         {
-            ModuleEndpointRouteDescriptor registered = owner.Routes[0];
-            var unknown = new ModuleEndpointRouteDescriptor(
+            EndpointRouteDescriptor registered = owner.Routes[0];
+            var unknown = new EndpointRouteDescriptor(
                 $"{registered.Id}.unknown",
                 registered.Path,
                 registered.Method,
                 registered.Transport);
             var unknownEntry = new RecordingHostActionEntry();
 
-            ModuleHttpEndpointResponse unknownResponse = await owner.Handler.InvokeAsync(
+            HttpEndpointResponse unknownResponse = await owner.Handler.InvokeAsync(
                 CreateEndpointRequest(unknown, []),
                 unknownEntry,
                 default);
 
             var malformedEntry = new RecordingHostActionEntry();
-            ModuleHttpEndpointResponse malformedResponse = await owner.Handler.InvokeAsync(
+            HttpEndpointResponse malformedResponse = await owner.Handler.InvokeAsync(
                 CreateEndpointRequest(registered, [0x7B]),
                 malformedEntry,
                 default);
@@ -862,7 +813,7 @@ public sealed class ModuleCompositionTests
                 ExceptionToThrow = new InvalidOperationException(secret),
             };
 
-            ModuleHttpEndpointResponse response = await owner.Handler.InvokeAsync(
+            HttpEndpointResponse response = await owner.Handler.InvokeAsync(
                 CreateEndpointRequest(owner.Routes[0], []),
                 hostEntry,
                 default);
@@ -892,24 +843,16 @@ public sealed class ModuleCompositionTests
 
         Assert.Multiple(() =>
         {
-            Assert.That(
-                typeof(ModuleActionPipeline).GetConstructors().Single().GetParameters()
-                    .Select(parameter => parameter.ParameterType),
-                Is.EqualTo(new[] { typeof(IActionDispatcher) }));
             foreach (var gatewayType in gatewayTypes)
             {
                 Assert.That(
                     gatewayType.GetConstructors().Single().GetParameters()
                         .Select(parameter => parameter.ParameterType),
-                    Does.Contain(typeof(HostModuleActionEntry)));
+                    Does.Contain(typeof(HostActionInvoker)));
                 Assert.That(
                     gatewayType.GetConstructors().Single().GetParameters()
                         .Select(parameter => parameter.ParameterType),
                     Does.Not.Contain(typeof(ActionPipelineSnapshot)));
-                Assert.That(
-                    gatewayType.GetConstructors().Single().GetParameters()
-                        .Select(parameter => parameter.ParameterType),
-                    Does.Not.Contain(typeof(IModuleActionPipeline)));
             }
         });
     }
@@ -1084,7 +1027,7 @@ public sealed class ModuleCompositionTests
         var permission = new TwoTierPermissionPolicy(policyStore);
         var agentId = Guid.NewGuid();
         var caller = new RequestPrincipal(agentId.ToString("D"), Roles: new HashSet<string>());
-        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossRegistration);
         await policyStore.SaveAsync(new PermissionPolicyRecord(
             caller.SubjectId,
             [], ["read_cross_thread_history", ContextAccessCapabilities.CreateThread], [],
@@ -1112,7 +1055,7 @@ public sealed class ModuleCompositionTests
 
         var policyHost = new PolicyHostActionEntry(permission, caller);
         var contextGateway = new DelegatingContextActionGateway(
-            new ContextApiActionExecutor(store, new HostPermissionActionEntry(policyHost)),
+            new ContextApiActionExecutor(store, new HostAuthorizationEntry(policyHost)),
             policyHost);
         var handler = new ContextToolHandler(contextGateway);
         using var arguments = JsonDocument.Parse($$"""{"channelId":"{{current.Id:D}}"}""");
@@ -1166,7 +1109,7 @@ public sealed class ModuleCompositionTests
         var permission = new TwoTierPermissionPolicy(policyStore);
         var agentId = Guid.NewGuid();
         var caller = new RequestPrincipal(agentId.ToString("D"));
-        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossRegistration);
         await policyStore.SaveAsync(new PermissionPolicyRecord(
             caller.SubjectId, [], ["read_cross_thread_history", ContextAccessCapabilities.CreateThread], [],
             PermissionClearance.Independent, true, [], null, DateTimeOffset.UtcNow));
@@ -1209,7 +1152,7 @@ public sealed class ModuleCompositionTests
         var permissionStore = new PermissionPolicyStore(gateway);
         var permission = new TwoTierPermissionPolicy(permissionStore);
         var admin = new RequestPrincipal(Guid.NewGuid().ToString("D"), Roles: new HashSet<string>(["admin"]));
-        var hostContext = TestHostActionContext.Create(admin, HostActionEntryIngress.CrossModule);
+        var hostContext = TestHostActionContext.Create(admin, HostActionEntryIngress.CrossRegistration);
         await permission.GrantAsync(admin,
             new PermissionGrantAction("subject", "read_memory", "global", PermissionClearance.Independent));
         Assert.That((await permission.EvaluateCapabilityAsync(
@@ -1477,7 +1420,7 @@ public sealed class ModuleCompositionTests
         var permission = new TwoTierPermissionPolicy(permissionStore);
         var admin = new RequestPrincipal("admin", Roles: new HashSet<string>(["admin"]));
         var catalog = new AgentsCatalog(gateway, PolicyEntry(permission, admin));
-        var adminContext = TestHostActionContext.Create(admin, HostActionEntryIngress.CrossModule);
+        var adminContext = TestHostActionContext.Create(admin, HostActionEntryIngress.CrossRegistration);
         var agent = await catalog.CreateAgentAsync(admin, new(
             "Test Agent", Guid.NewGuid(), "provider", "model", "prompt"),
             hostContext: adminContext);
@@ -1486,9 +1429,9 @@ public sealed class ModuleCompositionTests
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow),
             hostContext: adminContext);
         var owner = new RequestPrincipal(agent.Id.ToString("D"));
-        var ownerContext = TestHostActionContext.Create(owner, HostActionEntryIngress.CrossModule);
+        var ownerContext = TestHostActionContext.Create(owner, HostActionEntryIngress.CrossRegistration);
         await permissionStore.SaveAsync(new PermissionPolicyRecord(
-            owner.SubjectId, [], ["write_memory", "read_memory"], [],
+            owner.SubjectId, [], ["write_memory", "read_memory", "read_agent_profile"], [],
             PermissionClearance.Independent, false, [], null, DateTimeOffset.UtcNow));
         var ownerCatalog = new AgentsCatalog(gateway, PolicyEntry(permission, owner));
         var memory = await ownerCatalog.WriteMemoryAsync(owner, new(
@@ -1505,7 +1448,7 @@ public sealed class ModuleCompositionTests
         var host = new PolicyHostActionEntry(permission, owner);
         Assert.That((await new AgentChatProfileResolver(
             catalog,
-            new HostPermissionActionEntry(host)).ResolveAsync(
+            new HostAuthorizationEntry(host)).ResolveAsync(
             new ChatTurnContext(Guid.NewGuid(), new ChatTurnInput("hi", Caller: owner),
                 new ConversationSelection(Guid.NewGuid())),
             CreateChatOperationContext(owner, host),
@@ -1519,7 +1462,7 @@ public sealed class ModuleCompositionTests
         var catalog = new AgentsCatalog(gateway, AllowAllEntry());
         var executor = new AgentsJobActionExecutor(catalog);
         var caller = new RequestPrincipal("caller", IsAuthenticated: true);
-        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossRegistration);
         var agentId = Guid.NewGuid();
         var channelId = Guid.NewGuid();
         var contextId = Guid.NewGuid();
@@ -1584,7 +1527,7 @@ public sealed class ModuleCompositionTests
     {
         var catalog = new AgentsCatalog(new InMemoryStorageGateway(), AllowAllEntry());
         var caller = new RequestPrincipal("caller", IsAuthenticated: true);
-        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossRegistration);
         var job = new AgentJob(
             Guid.NewGuid(), Guid.NewGuid(), "caller", "agent.respond", "conversation",
             "{}", "{}", "D:\\work", "queued", "Unset", 0, 0, [], null, null,
@@ -1682,7 +1625,7 @@ public sealed class ModuleCompositionTests
         var imported = await executor.ImportAsync(new(
             snapshot,
             importer,
-            TestHostActionContext.Create(importer, HostActionEntryIngress.CrossModule)));
+            TestHostActionContext.Create(importer, HostActionEntryIngress.CrossRegistration)));
         var persisted = await new AgentsCatalog(gateway, AllowAllEntry())
             .GetAgentJobAsync(source.SourceId);
 
@@ -1709,7 +1652,7 @@ public sealed class ModuleCompositionTests
             [source],
             [new("legacy.agent", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1)]);
         var caller = new RequestPrincipal("importer", IsAuthenticated: true);
-        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossRegistration);
 
         var first = await catalog.ImportAgentJobsAsync(caller, snapshot, hostContext: hostContext);
         var second = await catalog.ImportAgentJobsAsync(caller, snapshot, hostContext: hostContext);
@@ -1745,7 +1688,7 @@ public sealed class ModuleCompositionTests
         gateway.BeforeOperationAsync = async (_, storage, operation) =>
         {
             if (storage != AgentsCatalog.AgentJobImportsStorage
-                || operation != ModuleStorageOperations.Upsert)
+                || operation != ScopedStorageOperations.Upsert)
                 return;
             var count = Interlocked.Increment(ref markerUpsertCount);
             if (count > 2)
@@ -1761,7 +1704,7 @@ public sealed class ModuleCompositionTests
             [NeutralRecord(now, "queued")],
             [new("legacy.agent", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1)]);
         var caller = new RequestPrincipal("importer", IsAuthenticated: true);
-        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossRegistration);
         var catalogA = new AgentsCatalog(gateway, AllowAllEntry());
         var catalogB = new AgentsCatalog(gateway, AllowAllEntry());
         var imports = new[]
@@ -1807,7 +1750,7 @@ public sealed class ModuleCompositionTests
         gateway.BeforeOperationAsync = async (_, storage, operation) =>
         {
             if (storage != AgentsCatalog.AgentJobImportsStorage
-                || operation != ModuleStorageOperations.Upsert)
+                || operation != ScopedStorageOperations.Upsert)
                 return;
             var count = Interlocked.Increment(ref markerUpsertCount);
             if (count > 2)
@@ -1826,7 +1769,7 @@ public sealed class ModuleCompositionTests
         var snapshotB = new CanonicalJobsImportSnapshot(
             "snapshot-concurrent-conflict", now, [NeutralRecord(now, "queued")], mappings);
         var caller = new RequestPrincipal("importer", IsAuthenticated: true);
-        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossRegistration);
         var catalogA = new AgentsCatalog(gateway, AllowAllEntry());
         var catalogB = new AgentsCatalog(gateway, AllowAllEntry());
         var imports = new[]
@@ -1876,7 +1819,7 @@ public sealed class ModuleCompositionTests
         var snapshot = new CanonicalJobsImportSnapshot(
             "snapshot-mapping-authority", now, [source], [primary, secondary]);
         var caller = new RequestPrincipal("importer", IsAuthenticated: true);
-        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossRegistration);
         await catalog.ImportAgentJobsAsync(caller, snapshot, hostContext: hostContext);
 
         var changed = new CanonicalJobsImportSnapshot(
@@ -1920,7 +1863,7 @@ public sealed class ModuleCompositionTests
             [source],
             [new("legacy.agent", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1)]);
         var caller = new RequestPrincipal("importer", IsAuthenticated: true);
-        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossRegistration);
         await catalog.ImportAgentJobsAsync(caller, snapshot, hostContext: hostContext);
 
         var changed = new CanonicalJobsImportSnapshot(
@@ -1949,7 +1892,7 @@ public sealed class ModuleCompositionTests
         };
         var snapshot = new CanonicalJobsImportSnapshot("snapshot-shape", now, sources, mappings);
         var caller = new RequestPrincipal("importer", IsAuthenticated: true);
-        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossRegistration);
         await catalog.ImportAgentJobsAsync(caller, snapshot, hostContext: hostContext);
 
         var missing = new CanonicalJobsImportSnapshot(
@@ -1992,7 +1935,7 @@ public sealed class ModuleCompositionTests
             sources,
             [new("legacy.agent", AgentJobHandlerKeys.Canonical, AgentJobPayloadCodecs.JsonV1)]);
         var caller = new RequestPrincipal("importer", IsAuthenticated: true);
-        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossModule);
+        var hostContext = TestHostActionContext.Create(caller, HostActionEntryIngress.CrossRegistration);
 
         Assert.ThrowsAsync<IOException>(() =>
             catalog.ImportAgentJobsAsync(caller, snapshot, hostContext: hostContext));
@@ -2173,7 +2116,7 @@ public sealed class ModuleCompositionTests
             return Task.CompletedTask;
         };
         var host = new DenyingPermissionHostActionEntry();
-        var permission = new HostPermissionActionEntry(host);
+        var permission = new HostAuthorizationEntry(host);
         var caller = new RequestPrincipal(Guid.NewGuid().ToString("D"));
         var context = CreateChatOperationContext(caller, host);
         var resolver = new ContextConversationResolver(
@@ -2367,7 +2310,7 @@ public sealed class ModuleCompositionTests
     public async Task ContextSteeringRecordsUseExplicitTargetsAndScopedPermissions()
     {
         var fixture = await CreateSteeringFixtureAsync();
-        var hostContext = TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule);
+        var hostContext = TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossRegistration);
         var action = new ContextRecordSteeringAction(
             fixture.Channel.Id,
             null,
@@ -2403,7 +2346,7 @@ public sealed class ModuleCompositionTests
             Assert.That(record.Caller.SubjectId, Is.EqualTo(fixture.Caller.SubjectId));
             Assert.That(record.CreatedAt, Is.Not.EqualTo(default(DateTimeOffset)));
             Assert.That(listed.Select(item => item.Id), Is.EqualTo([record.Id]));
-            Assert.That(fixture.Gateway.Count(ContextStore.ModuleId, ContextStore.SteeringStorage), Is.EqualTo(1));
+            Assert.That(fixture.Gateway.Count(ContextStore.SourceId, ContextStore.SteeringStorage), Is.EqualTo(1));
         });
     }
 
@@ -2415,8 +2358,8 @@ public sealed class ModuleCompositionTests
             fixture.Caller,
             fixture.Channel.Id,
             "Steering thread",
-            hostContext: TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule));
-        var hostContext = TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule);
+            hostContext: TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossRegistration));
+        var hostContext = TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossRegistration);
         var record = await fixture.Executor.RecordAsync(
             CreateSteeringContext(
                 hostContext,
@@ -2432,7 +2375,7 @@ public sealed class ModuleCompositionTests
                 fixture.Host));
         var listed = await fixture.Executor.ListAsync(
             CreateSteeringContext(
-                TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule),
+                TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossRegistration),
                 ContextSteeringActionDescriptors.List.Key,
                 new ContextListSteeringAction(fixture.Channel.Id, thread.Id, 10),
                 fixture.Host));
@@ -2466,7 +2409,7 @@ public sealed class ModuleCompositionTests
         Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await fixture.Executor.RecordAsync(
                 CreateSteeringContext(
-                    TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule),
+                    TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossRegistration),
                     ContextSteeringActionDescriptors.Record.Key,
                     wrongTarget,
                     fixture.Host)));
@@ -2477,7 +2420,7 @@ public sealed class ModuleCompositionTests
     public async Task ContextSteeringReplayUsesHostIdempotencyAndRejectsChangedContent()
     {
         var fixture = await CreateSteeringFixtureAsync();
-        var hostContext = TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule);
+        var hostContext = TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossRegistration);
         var action = new ContextRecordSteeringAction(
             fixture.Channel.Id,
             null,
@@ -2502,7 +2445,7 @@ public sealed class ModuleCompositionTests
             Assert.That(replay.Id, Is.EqualTo(first.Id));
             Assert.That(replay.CreatedAt, Is.EqualTo(first.CreatedAt));
             Assert.That(fixture.Gateway.UpsertCount, Is.EqualTo(beforeReplay));
-            Assert.That(fixture.Gateway.Count(ContextStore.ModuleId, ContextStore.SteeringStorage), Is.EqualTo(1));
+            Assert.That(fixture.Gateway.Count(ContextStore.SourceId, ContextStore.SteeringStorage), Is.EqualTo(1));
         });
     }
 
@@ -2528,7 +2471,7 @@ public sealed class ModuleCompositionTests
         Assert.ThrowsAsync<UnauthorizedAccessException>(async () =>
             await fixture.Executor.RecordAsync(
                 CreateSteeringContext(
-                    TestHostActionContext.Create(unauthorized, HostActionEntryIngress.CrossModule),
+                    TestHostActionContext.Create(unauthorized, HostActionEntryIngress.CrossRegistration),
                     ContextSteeringActionDescriptors.Record.Key,
                     unauthorizedAction,
                     new DenyingPermissionHostActionEntry())));
@@ -2538,7 +2481,7 @@ public sealed class ModuleCompositionTests
         Assert.ThrowsAsync<OperationCanceledException>(async () =>
             await fixture.Executor.RecordAsync(
                 CreateSteeringContext(
-                    TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule),
+                    TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossRegistration),
                     ContextSteeringActionDescriptors.Record.Key,
                     unauthorizedAction,
                     fixture.Host),
@@ -2547,7 +2490,7 @@ public sealed class ModuleCompositionTests
         Assert.Multiple(() =>
         {
             Assert.That(fixture.Gateway.UpsertCount, Is.EqualTo(before));
-            Assert.That(fixture.Gateway.Count(ContextStore.ModuleId, ContextStore.SteeringStorage), Is.Zero);
+            Assert.That(fixture.Gateway.Count(ContextStore.SourceId, ContextStore.SteeringStorage), Is.Zero);
         });
     }
 
@@ -2604,7 +2547,7 @@ public sealed class ModuleCompositionTests
         {
             acceptedRecords.Add(await fixture.Executor.RecordAsync(
                 CreateSteeringContext(
-                    TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule),
+                    TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossRegistration),
                     ContextSteeringActionDescriptors.Record.Key,
                     acceptedAction,
                     fixture.Host)));
@@ -2625,7 +2568,7 @@ public sealed class ModuleCompositionTests
             Assert.ThrowsAsync<ArgumentException>(async () =>
                 await fixture.Executor.RecordAsync(
                     CreateSteeringContext(
-                        TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule),
+                        TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossRegistration),
                         ContextSteeringActionDescriptors.Record.Key,
                         overLimitAction,
                         fixture.Host)));
@@ -2638,7 +2581,7 @@ public sealed class ModuleCompositionTests
             Assert.That(acceptedRecords[2].Summary, Has.Length.EqualTo(8000));
             Assert.That(acceptedRecords[3].Details, Has.Length.EqualTo(16000));
             Assert.That(acceptedRecords[4].ClientType, Has.Length.EqualTo(128));
-            Assert.That(fixture.Gateway.Count(ContextStore.ModuleId, ContextStore.SteeringStorage), Is.EqualTo(5));
+            Assert.That(fixture.Gateway.Count(ContextStore.SourceId, ContextStore.SteeringStorage), Is.EqualTo(5));
             Assert.That(fixture.Gateway.UpsertCount, Is.EqualTo(beforeRejectedWrites));
         });
     }
@@ -2651,14 +2594,14 @@ public sealed class ModuleCompositionTests
             fixture.Caller,
             fixture.Channel.Id,
             "Assembly thread",
-            hostContext: TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule));
+            hostContext: TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossRegistration));
         var channelRecords = new List<ContextSteeringRecord>();
         var threadRecords = new List<ContextSteeringRecord>();
         for (var index = 0; index < 5; index++)
         {
             channelRecords.Add(await fixture.Executor.RecordAsync(
                 CreateSteeringContext(
-                    TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule),
+                    TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossRegistration),
                     ContextSteeringActionDescriptors.Record.Key,
                     new ContextRecordSteeringAction(
                         fixture.Channel.Id,
@@ -2671,7 +2614,7 @@ public sealed class ModuleCompositionTests
                     fixture.Host)));
             threadRecords.Add(await fixture.Executor.RecordAsync(
                 CreateSteeringContext(
-                    TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule),
+                    TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossRegistration),
                     ContextSteeringActionDescriptors.Record.Key,
                     new ContextRecordSteeringAction(
                         fixture.Channel.Id,
@@ -2688,7 +2631,7 @@ public sealed class ModuleCompositionTests
             fixture.Caller,
             thread.Id,
             4,
-            hostContext: TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule));
+            hostContext: TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossRegistration));
         var newestChannel = channelRecords.OrderByDescending(item => item.CreatedAt).ThenByDescending(item => item.Id).First();
         var newestThread = threadRecords.OrderByDescending(item => item.CreatedAt).ThenByDescending(item => item.Id).First();
         var steeringQueries = fixture.Gateway.QueryLimits
@@ -2713,7 +2656,7 @@ public sealed class ModuleCompositionTests
             fixture.Caller,
             fixture.Channel.Id,
             "Skewed assembly thread",
-            hostContext: TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule));
+            hostContext: TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossRegistration));
         var oldChannel = new ContextSteeringRecord(
             Guid.Parse("11111111-1111-4111-8111-111111111111"),
             fixture.Channel.Id,
@@ -2769,7 +2712,7 @@ public sealed class ModuleCompositionTests
             fixture.Caller,
             thread.Id,
             2,
-            hostContext: TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule));
+            hostContext: TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossRegistration));
         var steeringQueries = fixture.Gateway.QueryLimits
             .Where(item => item.Storage == ContextStore.SteeringStorage)
             .TakeLast(2)
@@ -2810,7 +2753,7 @@ public sealed class ModuleCompositionTests
         var selected = await fixture.Store.ListSteeringAsync(
             fixture.Caller,
             new ContextListSteeringAction(fixture.Channel.Id, null, 2),
-            hostContext: TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule));
+            hostContext: TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossRegistration));
         var steeringQueries = fixture.Gateway.QueryLimits
             .Where(item => item.Storage == ContextStore.SteeringStorage)
             .ToArray();
@@ -2832,7 +2775,7 @@ public sealed class ModuleCompositionTests
     public async Task ContextSteeringConcurrentIdenticalReplayConvergesToStoredWinner()
     {
         var fixture = await CreateSteeringFixtureAsync();
-        var hostContext = TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossModule);
+        var hostContext = TestHostActionContext.Create(fixture.Caller, HostActionEntryIngress.CrossRegistration);
         var action = new ContextRecordSteeringAction(
             fixture.Channel.Id,
             null,
@@ -2848,9 +2791,9 @@ public sealed class ModuleCompositionTests
         var upsertsEntered = 0;
         fixture.Gateway.BeforeOperationAsync = async (module, storage, operation) =>
         {
-            if (module != ContextStore.ModuleId
+            if (module != ContextStore.SourceId
                 || storage != ContextStore.SteeringStorage
-                || operation != ModuleStorageOperations.Upsert)
+                || operation != ScopedStorageOperations.Upsert)
                 return;
 
             if (Interlocked.Increment(ref upsertsEntered) == 2)
@@ -2888,7 +2831,7 @@ public sealed class ModuleCompositionTests
                     ContextStore.FormatSteering(results[0]),
                     Is.EqualTo(ContextStore.FormatSteering(results[1])));
                 Assert.That(fixture.Gateway.Count(
-                    ContextStore.ModuleId,
+                    ContextStore.SourceId,
                     ContextStore.SteeringStorage), Is.EqualTo(1));
             });
         }
@@ -2903,7 +2846,7 @@ public sealed class ModuleCompositionTests
         InMemoryStorageGateway gateway,
         ContextSteeringRecord record) =>
         gateway.Seed(
-            ContextStore.ModuleId,
+            ContextStore.SourceId,
             ContextStore.SteeringStorage,
             record.Id.ToString("N"),
             record,
@@ -2978,7 +2921,7 @@ public sealed class ModuleCompositionTests
             null,
             now));
         var host = new PolicyHostActionEntry(policy, caller);
-        var permission = new HostPermissionActionEntry(host);
+        var permission = new HostAuthorizationEntry(host);
         var store = new ContextStore(gateway, permission);
         var channel = new ContextChannelRecord(
             Guid.NewGuid(),
@@ -3026,7 +2969,7 @@ public sealed class ModuleCompositionTests
 
     private sealed record SteeringFixture(
         InMemoryStorageGateway Gateway,
-        HostPermissionActionEntry Permission,
+        HostAuthorizationEntry Permission,
         ContextStore Store,
         ContextSteeringActionExecutor Executor,
         RequestPrincipal Caller,
@@ -3051,150 +2994,6 @@ public sealed class ModuleCompositionTests
             .Select(item => item.TypedDescriptor)
             .OfType<ActionDescriptor<TAction, TResult>>()
             .Single(item => item.Key.Value == key);
-
-    private sealed class RecordingBuilder : ISharpClawModuleBuilder
-    {
-        public IServiceCollection Services { get; } = new ServiceCollection();
-        public RecordingContracts Contracts { get; } = new();
-        IModuleContractBuilder ISharpClawModuleBuilder.Contracts => Contracts;
-        public RecordingStorage Storage { get; } = new();
-        IModuleStorageBuilder ISharpClawModuleBuilder.Storage => Storage;
-        public RecordingActions Actions { get; } = new();
-        IActionDefinitionBuilder ISharpClawModuleBuilder.Actions => Actions;
-        public RecordingHooks Hooks { get; } = new();
-        IActionHookBuilder ISharpClawModuleBuilder.Hooks => Hooks;
-        public RecordingEvents Events { get; } = new();
-        IEventDefinitionBuilder ISharpClawModuleBuilder.Events => Events;
-        public RecordingTools Tools { get; } = new();
-        IToolContributionBuilder ISharpClawModuleBuilder.Tools => Tools;
-        public RecordingChat Chat { get; } = new();
-        IChatLifecycleBuilder ISharpClawModuleBuilder.Chat => Chat;
-    }
-
-    private sealed class RecordingApplicationBuilder : ISharpClawApplicationBuilder
-    {
-        public RecordingEndpoints Endpoints { get; } = new();
-        IEndpointContributionBuilder ISharpClawApplicationBuilder.Endpoints => Endpoints;
-        public RecordingCli Cli { get; } = new();
-        ICliContributionBuilder ISharpClawApplicationBuilder.Cli => Cli;
-        public RecordingUi Ui { get; } = new();
-        IUiContributionBuilder ISharpClawApplicationBuilder.Ui => Ui;
-    }
-
-    private sealed class RecordingEndpoints : IEndpointContributionBuilder
-    {
-        public List<EndpointRegistration> Items { get; } = [];
-
-        public void AddHttp<THandler>(ModuleEndpointRouteDescriptor descriptor)
-            where THandler : class, IModuleHttpEndpointHandler =>
-            Items.Add(new(typeof(THandler), descriptor));
-
-        public void AddWebSocket<THandler>(ModuleEndpointRouteDescriptor descriptor)
-            where THandler : class, IModuleWebSocketEndpointHandler =>
-            Items.Add(new(typeof(THandler), descriptor));
-    }
-
-    private sealed record EndpointRegistration(
-        Type HandlerType,
-        ModuleEndpointRouteDescriptor Descriptor);
-
-    private sealed class RecordingCli : ICliContributionBuilder
-    {
-        public List<ModuleCliCommandDescriptor> Items { get; } = [];
-
-        public void Add<THandler>(ModuleCliCommandDescriptor descriptor)
-            where THandler : IModuleCliHandler
-        {
-            Items.Add(descriptor);
-        }
-    }
-
-    private sealed class RecordingUi : IUiContributionBuilder
-    {
-        public void Add<TContribution>()
-        {
-        }
-    }
-
-    private sealed class RecordingContracts : IModuleContractBuilder
-    {
-        public List<ModuleContractEntry> Exports { get; } = [];
-        public List<ModuleContractEntry> Requires { get; } = [];
-        public void Export<T>(string contractName, int schemaVersion = 1, int maxBytes = 65_536) =>
-            Exports.Add(new(contractName, typeof(T), schemaVersion, false));
-        public void Require<T>(string contractName, int minimumSchemaVersion = 1, bool optional = false) =>
-            Requires.Add(new(contractName, typeof(T), minimumSchemaVersion, optional));
-    }
-
-    private sealed record ModuleContractEntry(string ContractName, Type ServiceType, int Version, bool Optional);
-
-    private sealed class RecordingStorage : IModuleStorageBuilder
-    {
-        public List<ModuleStorageContractDescriptor> Items { get; } = [];
-        public void Add(ModuleStorageContractDescriptor contract) => Items.Add(contract);
-    }
-
-    private sealed class RecordingActions : IActionDefinitionBuilder
-    {
-        public List<object> Items { get; } = [];
-        public void Add<TAction, TResult>(ActionDescriptor<TAction, TResult> descriptor) => Items.Add(descriptor);
-    }
-
-    private sealed class RecordingHooks : IActionHookBuilder
-    {
-        public List<string> Items { get; } = [];
-        public IActionHookRegistrationBuilder For(SharpClawActionKey key) => new NoOpActionRegistration(Items, key.Value);
-        public IActionHookRegistrationBuilder Category(string category) => new NoOpActionRegistration(Items, category);
-        public IActionHookRegistrationBuilder AnyAction() => new NoOpActionRegistration(Items, "*");
-    }
-
-    private sealed class NoOpActionRegistration(
-        List<string> items,
-        string target) : IActionHookRegistrationBuilder
-    {
-        public void Use<TInterceptor>(HookOrdering ordering) =>
-            items.Add($"{target}:{typeof(TInterceptor).Name}:{ordering.Id}");
-
-        public void UseAny<TInterceptor>(HookOrdering ordering) =>
-            items.Add($"{target}:any:{typeof(TInterceptor).Name}:{ordering.Id}");
-    }
-
-    private sealed class RecordingEvents : IEventDefinitionBuilder
-    {
-        private static readonly IEventHookRegistrationBuilder Registration = new NoOpEventRegistration();
-        public List<object> Items { get; } = [];
-        public void Add<TEvent>(EventDescriptor<TEvent> descriptor) => Items.Add(descriptor);
-        public IEventHookRegistrationBuilder For(SharpClawEventKey key) => Registration;
-        public IEventHookRegistrationBuilder Category(string category) => Registration;
-        public IEventHookRegistrationBuilder AnyEvent() => Registration;
-    }
-
-    private sealed class NoOpEventRegistration : IEventHookRegistrationBuilder
-    {
-        public void Intercept<TInterceptor>(HookOrdering ordering) { }
-        public void InterceptAny<TInterceptor>(HookOrdering ordering) { }
-        public void Listen<TListener>(EventDelivery delivery, HookOrdering ordering) { }
-        public void ListenAny<TListener>(EventDelivery delivery, HookOrdering ordering) { }
-    }
-
-    private sealed class RecordingTools : IToolContributionBuilder
-    {
-        public List<ToolDescriptor> Items { get; } = [];
-        public void Add<THandler>(ToolDescriptor descriptor) where THandler : IToolHandler => Items.Add(descriptor);
-    }
-
-    private sealed class RecordingChat : IChatLifecycleBuilder
-    {
-        public List<Type> Resolvers { get; } = [];
-        public List<Type> Profiles { get; } = [];
-        public List<Type> Contributors { get; } = [];
-        public void UseConversationResolver<TResolver>(ExclusiveRegistration registration)
-            where TResolver : IConversationResolver => Resolvers.Add(typeof(TResolver));
-        public void UseChatProfileResolver<TResolver>(ExclusiveRegistration registration)
-            where TResolver : IChatProfileResolver => Profiles.Add(typeof(TResolver));
-        public void AddContextContributor<TContributor>() where TContributor : IChatContextContributor =>
-            Contributors.Add(typeof(TContributor));
-    }
 
     private sealed class RecordingActionDispatcher : IActionDispatcher
     {
@@ -3267,8 +3066,8 @@ public sealed class ModuleCompositionTests
     }
 
     private static async Task AssertEndpointRoutesAsync(
-        IModuleHttpEndpointHandler handler,
-        IReadOnlyList<ModuleEndpointRouteDescriptor> routes,
+        IHttpEndpointHandler handler,
+        IReadOnlyList<EndpointRouteDescriptor> routes,
         IReadOnlyDictionary<(string Path, string Method), string> expectedOperations,
         string descriptorKey,
         Func<object, string> readOperation)
@@ -3281,7 +3080,7 @@ public sealed class ModuleCompositionTests
             Assert.That(routes.Select(route => route.ToRouteIdentity()), Is.Unique);
         });
 
-        foreach (ModuleEndpointRouteDescriptor route in routes)
+        foreach (EndpointRouteDescriptor route in routes)
         {
             Assert.That(
                 expectedOperations.TryGetValue((route.Path, route.Method), out string? expectedOperation),
@@ -3291,7 +3090,7 @@ public sealed class ModuleCompositionTests
             HostEndpointRouteRequest request = CreateEndpointRequest(route, []);
 
             Assert.That(request.IsWellFormed(DateTimeOffset.UtcNow), Is.True);
-            ModuleHttpEndpointResponse response = await handler.InvokeAsync(
+            HttpEndpointResponse response = await handler.InvokeAsync(
                 request,
                 hostEntry,
                 default);
@@ -3308,7 +3107,7 @@ public sealed class ModuleCompositionTests
     }
 
     private static HostEndpointRouteRequest CreateEndpointRequest(
-        ModuleEndpointRouteDescriptor route,
+        EndpointRouteDescriptor route,
         byte[] body)
     {
         HostActionEntryRequestContext hostContext = TestHostActionContext.Create(
@@ -3335,13 +3134,13 @@ public sealed class ModuleCompositionTests
             body);
     }
 
-    private static string? ReadErrorCode(ModuleHttpEndpointResponse response)
+    private static string? ReadErrorCode(HttpEndpointResponse response)
     {
         using JsonDocument body = JsonDocument.Parse(response.Body);
         return body.RootElement.GetProperty("error").GetString();
     }
 
-    private static (IModuleHttpEndpointHandler Handler, IReadOnlyList<ModuleEndpointRouteDescriptor> Routes)[]
+    private static (IHttpEndpointHandler Handler, IReadOnlyList<EndpointRouteDescriptor> Routes)[]
         EndpointOwners() =>
         [
             (new ContextEndpointContribution(new ContextApiActionTerminal(null!)),
@@ -3439,7 +3238,7 @@ public sealed class ModuleCompositionTests
         public List<HostActionEntryRequestContext> Contexts { get; } = [];
         public List<object> Actions { get; } = [];
         public List<Type> TerminalTypes { get; } = [];
-        public AccessDecision? PermissionResult { get; set; }
+        public AuthorizationDecision? AuthorizationResult { get; set; }
         public Exception? ExceptionToThrow { get; init; }
 
         public ValueTask<IActionOutcome<TResult>> InvokeAsync<TAction, TResult>(
@@ -3457,8 +3256,8 @@ public sealed class ModuleCompositionTests
 
             var result = typeof(TResult) == typeof(JsonElement)
                 ? (TResult)(object)JsonSerializer.SerializeToElement(new { accepted = true })
-                : typeof(TResult) == typeof(AccessDecision)
-                    ? (TResult)(object)(PermissionResult ?? AccessDecision.Allow(
+                : typeof(TResult) == typeof(AuthorizationDecision)
+                    ? (TResult)(object)(AuthorizationResult ?? AuthorizationDecision.Allow(
                         "test_allowed"))
                     : default!;
             return ValueTask.FromResult<IActionOutcome<TResult>>(
@@ -3473,8 +3272,8 @@ public sealed class ModuleCompositionTests
             TerminalTypes.Add(terminal.GetType());
             var result = typeof(TResult) == typeof(JsonElement)
                 ? (TResult)(object)JsonSerializer.SerializeToElement(new { accepted = true })
-                : typeof(TResult) == typeof(AccessDecision)
-                    ? (TResult)(object)(PermissionResult ?? AccessDecision.Allow(
+                : typeof(TResult) == typeof(AuthorizationDecision)
+                    ? (TResult)(object)(AuthorizationResult ?? AuthorizationDecision.Allow(
                         "test_allowed"))
                     : default!;
             return ValueTask.FromResult<IActionOutcome<TResult>>(
@@ -3487,8 +3286,8 @@ public sealed class ModuleCompositionTests
         {
             var result = typeof(TResult) == typeof(JsonElement)
                 ? (TResult)(object)JsonSerializer.SerializeToElement(new { accepted = true })
-                : typeof(TResult) == typeof(AccessDecision)
-                    ? (TResult)(object)(PermissionResult ?? AccessDecision.Allow(
+                : typeof(TResult) == typeof(AuthorizationDecision)
+                    ? (TResult)(object)(AuthorizationResult ?? AuthorizationDecision.Allow(
                         "test_allowed"))
                     : default!;
             return ValueTask.FromResult<IActionOutcome<TResult>>(
@@ -3507,10 +3306,10 @@ public sealed class ModuleCompositionTests
         public ActionUncertainty? Uncertainty => null;
     }
 
-    private static HostPermissionActionEntry AllowAllEntry() =>
+    private static HostAuthorizationEntry AllowAllEntry() =>
         new(new RecordingHostActionEntry());
 
-    private static HostPermissionActionEntry PolicyEntry(
+    private static HostAuthorizationEntry PolicyEntry(
         TwoTierPermissionPolicy policy,
         RequestPrincipal caller) =>
         new(new PolicyHostActionEntry(policy, caller));
@@ -3530,12 +3329,12 @@ public sealed class ModuleCompositionTests
             ExtensionFeatureSet.Empty,
             hostActionEntry);
 
-    private sealed class TypedPermissionHostActionEntry(
+    private sealed class TypedAuthorizationHostActionEntry(
         TwoTierPermissionPolicy policy,
         RequestPrincipal caller) : IHostActionEntry, IModuleCrossSidecarActionEntry
     {
-        private readonly PermissionAgentPolicyTerminal _terminal =
-            new(new TwoTierPermissionAccessPolicy(policy));
+        private readonly AuthorizationPolicyTerminal _terminal =
+            new(new TwoTierAuthorizationPolicy(policy));
 
         public int AgentAccessCalls { get; private set; }
 
@@ -3545,9 +3344,9 @@ public sealed class ModuleCompositionTests
 
         public string? LastDescriptorKey { get; private set; }
 
-        public PermissionAgentAccessAction? LastAction { get; private set; }
+        public AuthorizationRequest? LastAction { get; private set; }
 
-        public AccessDecision? LastDecision { get; private set; }
+        public AuthorizationDecision? LastDecision { get; private set; }
 
         public ValueTask<IActionOutcome<TResult>> InvokeAsync<TAction, TResult>(
             HostActionEntryRequest<TAction, TResult> request,
@@ -3565,9 +3364,9 @@ public sealed class ModuleCompositionTests
             ModuleCrossSidecarActionEntryRequest<TAction, TResult> request,
             CancellationToken ct)
         {
-            if (request.Action is not PermissionAgentAccessAction action
-                || typeof(TResult) != typeof(AccessDecision)
-                || !ReferenceEquals(request.Descriptor, PermissionActionDescriptors.AgentAccess))
+            if (request.Action is not AuthorizationRequest action
+                || typeof(TResult) != typeof(AuthorizationDecision)
+                || !ReferenceEquals(request.Descriptor, AuthorizationProtocol.Evaluate))
             {
                 throw new InvalidOperationException(
                     $"The test host does not support '{request.Descriptor.Key.Value}'.");
@@ -3579,7 +3378,7 @@ public sealed class ModuleCompositionTests
             LastDescriptorKey = request.Descriptor.Key.Value;
             LastAction = action;
             var now = DateTimeOffset.UtcNow;
-            var context = new ActionContext<PermissionAgentAccessAction>(
+            var context = new ActionContext<AuthorizationRequest>(
                 Guid.NewGuid(),
                 null,
                 Guid.NewGuid(),
@@ -3587,7 +3386,7 @@ public sealed class ModuleCompositionTests
                 0,
                 1,
                 now.AddMinutes(1),
-                PermissionActionDescriptors.AgentAccess.Key,
+                AuthorizationProtocol.Evaluate.Key,
                 TwoTierPermissionModule.ModuleIdValue,
                 caller,
                 action,
@@ -3624,15 +3423,23 @@ public sealed class ModuleCompositionTests
             ModuleCrossSidecarActionEntryRequest<TAction, TResult> request,
             CancellationToken ct)
         {
-            if (request.Action is PermissionContextAccessAction)
+            if (request.Action is not AuthorizationRequest action
+                || typeof(TResult) != typeof(AuthorizationDecision)
+                || !ReferenceEquals(request.Descriptor, AuthorizationProtocol.Evaluate))
+            {
+                throw new InvalidOperationException(
+                    $"The test host does not support '{request.Descriptor.Key.Value}'.");
+            }
+
+            if (AuthorizationRequestFactory.TryReadContext(action, out _))
                 ContextAccessCalls++;
-            else if (request.Action is PermissionAgentAccessAction)
+            else if (AuthorizationRequestFactory.TryReadAgent(action, out _))
                 AgentAccessCalls++;
             else
                 throw new InvalidOperationException(
                     $"The test host does not support '{request.Descriptor.Key.Value}'.");
 
-            var decision = AccessDecision.Deny("test_denied", "The test denies access.");
+            var decision = AuthorizationDecision.Deny("test_denied", "The test denies access.");
             return ValueTask.FromResult<IActionOutcome<TResult>>(
                 new HostActionOutcome<TResult>(
                     ActionOutcomeKind.Completed,
@@ -3644,27 +3451,14 @@ public sealed class ModuleCompositionTests
         TwoTierPermissionPolicy policy,
         RequestPrincipal caller) : IHostActionEntry, IModuleCrossSidecarActionEntry
     {
+        private readonly TwoTierAuthorizationPolicy _authorization = new(policy);
+
         public async ValueTask<IActionOutcome<TResult>> InvokeAsync<TAction, TResult>(
             HostActionEntryRequest<TAction, TResult> request,
             IHostActionEntryTerminal<TAction, TResult> terminal,
             CancellationToken ct)
         {
-            var result = request.Action switch
-            {
-                PermissionContextAccessAction action =>
-                    await policy.EvaluateAsync(
-                        request.Context.Caller,
-                        action.Request,
-                        ct),
-                PermissionAgentAccessAction action =>
-                    await policy.EvaluateAgentAsync(
-                        request.Context.Caller,
-                        action.Capability,
-                        action.TargetAgentId,
-                        ct),
-                _ => throw new InvalidOperationException(
-                    $"The test host does not support '{request.Descriptor.Key.Value}'."),
-            };
+            var result = await EvaluateAsync(request.Action, request.Context.Caller, ct);
 
             return new HostActionOutcome<TResult>(
                 ActionOutcomeKind.Completed,
@@ -3676,22 +3470,7 @@ public sealed class ModuleCompositionTests
             IHostActionEntryTerminal<TAction, TResult> terminal,
             CancellationToken ct)
         {
-            var result = request.Action switch
-            {
-                PermissionContextAccessAction action =>
-                    await policy.EvaluateAsync(
-                        request.ParentContext.Caller,
-                        action.Request,
-                        ct),
-                PermissionAgentAccessAction action =>
-                    await policy.EvaluateAgentAsync(
-                        request.ParentContext.Caller,
-                        action.Capability,
-                        action.TargetAgentId,
-                        ct),
-                _ => throw new InvalidOperationException(
-                    $"The test host does not support '{request.ActionKey.Value}'."),
-            };
+            var result = await EvaluateAsync(request.Action, request.ParentContext.Caller, ct);
 
             return new HostActionOutcome<TResult>(
                 ActionOutcomeKind.Completed,
@@ -3702,19 +3481,38 @@ public sealed class ModuleCompositionTests
             ModuleCrossSidecarActionEntryRequest<TAction, TResult> request,
             CancellationToken ct)
         {
-            var result = request.Action switch
-            {
-                PermissionContextAccessAction action =>
-                    await policy.EvaluateAsync(caller, action.Request, ct),
-                PermissionAgentAccessAction action =>
-                    AccessDecision.Allow("test_allowed"),
-                _ => throw new InvalidOperationException(
-                    $"The test host does not support '{request.Descriptor.Key.Value}'."),
-            };
+            var result = await EvaluateAsync(request.Action, caller, ct);
 
             return new HostActionOutcome<TResult>(
                 ActionOutcomeKind.Completed,
                 (TResult)(object)result);
+        }
+
+        private async ValueTask<AuthorizationDecision> EvaluateAsync<TAction>(
+            TAction action,
+            RequestPrincipal requestCaller,
+            CancellationToken ct)
+        {
+            if (action is not AuthorizationRequest request)
+                throw new InvalidOperationException("The test host supports only authorization requests.");
+
+            var now = DateTimeOffset.UtcNow;
+            return await _authorization.EvaluateAsync(
+                new ActionContext<AuthorizationRequest>(
+                    Guid.NewGuid(),
+                    null,
+                    Guid.NewGuid(),
+                    Guid.NewGuid(),
+                    0,
+                    1,
+                    now.AddMinutes(1),
+                    AuthorizationProtocol.Evaluate.Key,
+                    TwoTierPermissionModule.ModuleIdValue,
+                    requestCaller,
+                    request,
+                    ExtensionFeatureSet.Empty,
+                    new ActionPipelineSnapshot("test", [], [], 16)),
+                ct);
         }
     }
 
@@ -3767,7 +3565,7 @@ public sealed class ModuleCompositionTests
         }
     }
 
-    private sealed class InMemoryStorageGateway : IModuleStorageGateway
+    private sealed class InMemoryStorageGateway : IScopedStorageGateway
     {
         private sealed record Entry(JsonElement Value, JsonElement Indexes, long Revision);
         private readonly object _sync = new();
@@ -3795,14 +3593,14 @@ public sealed class ModuleCompositionTests
             }
         }
 
-        public int Count(string moduleId, string storageName)
+        public int Count(string SourceId, string storageName)
         {
             lock (_sync)
-                return _records.Count(item => item.Key.Module == moduleId && item.Key.Storage == storageName);
+                return _records.Count(item => item.Key.Module == SourceId && item.Key.Storage == storageName);
         }
 
         public void Seed(
-            string moduleId,
+            string SourceId,
             string storageName,
             string key,
             object value,
@@ -3811,52 +3609,52 @@ public sealed class ModuleCompositionTests
         {
             lock (_sync)
             {
-                _records[(moduleId, storageName, key)] = new(
+                _records[(SourceId, storageName, key)] = new(
                     JsonSerializer.SerializeToElement(value),
                     JsonSerializer.SerializeToElement(indexes),
                     revision);
             }
         }
 
-        public IReadOnlyList<ModuleStorageContractDescriptor> ListContracts() => [];
+        public IReadOnlyList<ScopedStorageContractDescriptor> ListContracts() => [];
 
         public async Task<JsonElement> InvokeAsync(
-            string moduleId,
+            string SourceId,
             string storageName,
             string operation,
             JsonElement parameters,
             CancellationToken ct = default)
         {
             if (BeforeOperationAsync is not null)
-                await BeforeOperationAsync(moduleId, storageName, operation);
-            var prefix = (moduleId, storageName);
+                await BeforeOperationAsync(SourceId, storageName, operation);
+            var prefix = (SourceId, storageName);
             return operation switch
             {
-                ModuleStorageOperations.Get => Get(prefix, parameters),
-                ModuleStorageOperations.Upsert => Upsert(prefix, parameters),
-                ModuleStorageOperations.Delete => Delete(prefix, parameters),
-                ModuleStorageOperations.List => List(prefix),
-                ModuleStorageOperations.Query => Query(prefix, parameters),
-                ModuleStorageOperations.BatchUpsert => BatchUpsert(prefix, parameters),
-                ModuleStorageOperations.BatchDelete => BatchDelete(prefix, parameters),
+                ScopedStorageOperations.Get => Get(prefix, parameters),
+                ScopedStorageOperations.Upsert => Upsert(prefix, parameters),
+                ScopedStorageOperations.Delete => Delete(prefix, parameters),
+                ScopedStorageOperations.List => List(prefix),
+                ScopedStorageOperations.Query => Query(prefix, parameters),
+                ScopedStorageOperations.BatchUpsert => BatchUpsert(prefix, parameters),
+                ScopedStorageOperations.BatchDelete => BatchDelete(prefix, parameters),
                 _ => throw new NotSupportedException(operation),
             };
         }
 
-        public Task<ModuleStorageMutationAndOutboxResult> CommitMutationAndOutboxAsync(
-            string moduleId, string storageName, ModuleStorageMutationAndOutboxRequest request,
+        public Task<ScopedStorageMutationAndOutboxResult> CommitMutationAndOutboxAsync(
+            string SourceId, string storageName, ScopedStorageMutationAndOutboxRequest request,
             CancellationToken ct = default) => throw new NotSupportedException();
 
-        public Task<ModuleStorageClaimResult<T>> ClaimAsync<T>(
-            string moduleId, string storageName, ModuleStorageClaimRequest request,
+        public Task<ScopedStorageClaimResult<T>> ClaimAsync<T>(
+            string SourceId, string storageName, ScopedStorageClaimRequest request,
             CancellationToken ct = default) => throw new NotSupportedException();
 
-        public Task<ModuleStorageClaimRenewalResult> RenewClaimAsync(
-            string moduleId, string storageName, ModuleStorageClaimRenewalRequest request,
+        public Task<ScopedStorageClaimRenewalResult> RenewClaimAsync(
+            string SourceId, string storageName, ScopedStorageClaimRenewalRequest request,
             CancellationToken ct = default) => throw new NotSupportedException();
 
-        public Task<ModuleStorageClaimRecoveryResult> RecoverClaimAsync(
-            string moduleId, string storageName, ModuleStorageClaimRecoveryRequest request,
+        public Task<ScopedStorageClaimRecoveryResult> RecoverClaimAsync(
+            string SourceId, string storageName, ScopedStorageClaimRecoveryRequest request,
             CancellationToken ct = default) => throw new NotSupportedException();
 
         private JsonElement Get((string Module, string Storage) prefix, JsonElement parameters)
@@ -3944,7 +3742,7 @@ public sealed class ModuleCompositionTests
                 if (parameters.TryGetProperty("orderBy", out var order) && order.ValueKind == JsonValueKind.Object)
                 {
                     var indexName = order.GetProperty("indexName").GetString()!;
-                    var descending = order.GetProperty("direction").GetString() == ModuleStorageSortDirections.Descending;
+                    var descending = order.GetProperty("direction").GetString() == ScopedStorageSortDirections.Descending;
                     records = (descending
                         ? records.OrderByDescending(item => item.entry.Indexes.TryGetProperty(indexName, out var value) ? value.ToString() : "")
                         : records.OrderBy(item => item.entry.Indexes.TryGetProperty(indexName, out var value) ? value.ToString() : "")).ToList();

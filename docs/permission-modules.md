@@ -6,11 +6,11 @@ A permission module owns one neutral contract. Context and Agents call that cont
 
 ## Implement a Policy
 
-Implement `IAgentOrchestrationPermissionPolicy` to receive context and agent access checks. Each method receives the full `ActionContext`, the typed request, and cancellation authority.
+Implement `IPermissionPolicy` to receive context and agent access checks. Each method receives the full `ActionContext`, the typed request, and cancellation authority.
 
 ```csharp
-public sealed class MyPermissionPolicy(IModuleStorageGateway storage)
-    : IAgentOrchestrationPermissionPolicy
+public sealed class MyPermissionPolicy(IScopedStorageGateway storage)
+    : IPermissionPolicy
 {
     public ValueTask<AccessDecision> EvaluateContextAsync(
         ActionContext<PermissionContextAccessAction> context,
@@ -36,16 +36,16 @@ public sealed class MyPermissionPolicy(IModuleStorageGateway storage)
 }
 ```
 
-The policy can inject normal module services. It can use `IModuleStorageGateway` through declared module storage. It does not access host databases or service providers.
+The policy can inject normal module services. It can use `IScopedStorageGateway` through declared module storage. It does not access host databases or service providers.
 
 ## Register the Provider
 
 Call one builder method from the module entry point. This call adds the service, contract export, typed descriptors, generated schemas, and stable terminals.
 
 ```csharp
-public void Configure(ISharpClawModuleBuilder module)
+public void Configure(IKernelBuilder module)
 {
-    module.AddAgentOrchestrationPermissionPolicy<MyPermissionPolicy>();
+    module.AddPermissionPolicy<MyPermissionPolicy>();
 }
 ```
 
@@ -56,7 +56,7 @@ The module manifest must advertise the contract before process activation. This 
   "exports": [
     {
       "contractName": "sharpclaw.permission",
-      "serviceType": "SharpClaw.Modules.AgentOrchestration.Contracts.PermissionModuleContract",
+      "serviceType": "SharpClaw.Modules.AgentOrchestration.Contracts.PermissionContract",
       "optional": false
     }
   ]
@@ -68,17 +68,17 @@ The module manifest must advertise the contract before process activation. This 
 A module that needs checks selects its required action family. The helper adds the contract requirement, typed client, and authenticated relay subscription.
 
 ```csharp
-module.UseAgentOrchestrationPermission(AgentOrchestrationPermissionUse.Context);
+module.RequirePermissionPolicy(PermissionCheckSet.Context);
 ```
 
-Use `AgentOrchestrationPermissionUse.Agents` for agent operations. Use `AgentOrchestrationPermissionUse.All` when one module performs both check types.
+Use `PermissionCheckSet.Agents` for agent operations. Use `PermissionCheckSet.All` when one extension performs both check types.
 
 ## Complement a Policy
 
-Implement `IAgentOrchestrationPermissionRestriction` when a module must narrow decisions from the active permission provider. Default methods preserve decisions for checks that the module does not restrict.
+Implement `IPermissionRestriction` when an extension must narrow decisions from the active permission provider. Default methods preserve decisions for checks that the extension does not restrict.
 
 ```csharp
-public sealed class TenantRestriction : IAgentOrchestrationPermissionRestriction
+public sealed class TenantRestriction : IPermissionRestriction
 {
     public ValueTask<PermissionRestriction> RestrictContextAsync(
         ActionContext<PermissionContextAccessAction> context,
@@ -98,9 +98,9 @@ public sealed class TenantRestriction : IAgentOrchestrationPermissionRestriction
 Register the restriction with one stable identifier. Select only the permission families that the module must restrict.
 
 ```csharp
-module.AddAgentOrchestrationPermissionRestriction<TenantRestriction>(
+module.AddPermissionRestriction<TenantRestriction>(
     "tenant-boundary",
-    AgentOrchestrationPermissionUse.Context,
+    PermissionCheckSet.Context,
     HookPriority.High);
 ```
 
@@ -115,7 +115,7 @@ The manifest must request `Inspect` and `Wrap` for each selected permission acti
   "requires": [
     {
       "contractName": "sharpclaw.permission",
-      "serviceType": "SharpClaw.Modules.AgentOrchestration.Contracts.PermissionModuleContract",
+      "serviceType": "SharpClaw.Modules.AgentOrchestration.Contracts.PermissionContract",
       "optional": false
     }
   ],

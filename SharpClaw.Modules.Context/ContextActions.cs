@@ -1,5 +1,6 @@
 using System.Text.Json;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
+using SharpClaw.ModuleSDK;
 using SharpClaw.Modules.AgentOrchestration.Contracts;
 
 namespace SharpClaw.Modules.Context;
@@ -84,14 +85,14 @@ public interface IContextSteeringActionExecutor
 
 public sealed class ContextSteeringActionExecutor(
     ContextStore store,
-    HostPermissionActionEntry permission) : IContextSteeringActionExecutor
+    HostAuthorizationEntry authorization) : IContextSteeringActionExecutor
 {
     public async Task<ContextSteeringRecord> RecordAsync(
         ActionContext<ContextRecordSteeringAction> actionContext,
         CancellationToken ct = default)
     {
-        using var authorization = store.PushAuthorization(
-            new ModuleActionAuthorization<ContextRecordSteeringAction>(actionContext, permission));
+        using var authorizationScope = store.PushAuthorization(
+            new ActionAuthorizationClient<ContextRecordSteeringAction>(actionContext, authorization));
         return await store.RecordSteeringAsync(actionContext, ct);
     }
 
@@ -99,8 +100,8 @@ public sealed class ContextSteeringActionExecutor(
         ActionContext<ContextListSteeringAction> actionContext,
         CancellationToken ct = default)
     {
-        using var authorization = store.PushAuthorization(
-            new ModuleActionAuthorization<ContextListSteeringAction>(actionContext, permission));
+        using var authorizationScope = store.PushAuthorization(
+            new ActionAuthorizationClient<ContextListSteeringAction>(actionContext, authorization));
         return await store.ListSteeringAsync(actionContext.Caller, actionContext.Action, ct);
     }
 }
@@ -119,7 +120,7 @@ public interface IContextSteeringActionGateway
 }
 
 public sealed class ContextSteeringActionGateway(
-    HostModuleActionEntry entry,
+    HostActionInvoker entry,
     ContextSteeringRecordActionTerminal recordTerminal,
     ContextSteeringListActionTerminal listTerminal) : IContextSteeringActionGateway
 {
@@ -152,7 +153,7 @@ public sealed record ContextApiAction(
 
 public sealed class ContextApiActionExecutor(
     ContextStore store,
-    HostPermissionActionEntry permission)
+    HostAuthorizationEntry authorization)
 {
     public async ValueTask<JsonElement> ExecuteAsync(
         ActionContext<ContextApiAction> actionContext,
@@ -160,8 +161,8 @@ public sealed class ContextApiActionExecutor(
     {
         var action = actionContext.Action;
         var caller = actionContext.Caller;
-        using var authorization = store.PushAuthorization(
-            new ModuleActionAuthorization<ContextApiAction>(actionContext, permission));
+        using var authorizationScope = store.PushAuthorization(
+            new ActionAuthorizationClient<ContextApiAction>(actionContext, authorization));
         ArgumentException.ThrowIfNullOrWhiteSpace(action.Operation);
         return action.Operation switch
         {
@@ -261,7 +262,7 @@ public interface IContextActionGateway
 }
 
 public sealed class ContextActionGateway(
-    HostModuleActionEntry entry,
+    HostActionInvoker entry,
     ContextApiActionTerminal terminal) : IContextActionGateway
 {
     public ValueTask<JsonElement> ExecuteAsync(

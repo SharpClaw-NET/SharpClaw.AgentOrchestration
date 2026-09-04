@@ -1,13 +1,13 @@
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 using SharpClaw.Contracts.Persistence;
 using SharpClaw.ModuleSDK;
 using SharpClaw.Modules.AgentOrchestration.Contracts;
 
 namespace SharpClaw.Modules.TwoTierPermission;
 
-public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplicationModule
+public sealed class TwoTierPermissionModule : ISharpClawModule
 {
     public const string ModuleIdValue = "sharpclaw_two_tier_permission";
     public const string EvaluateTool = "perm_evaluate";
@@ -50,59 +50,58 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
         "SharpClaw Two Tier Permission",
         "perm");
 
-    public void Configure(ISharpClawModuleBuilder module)
+    public void ConfigureServices(IServiceCollection services)
     {
-        module.Services.AddScoped<PermissionPolicyStore>();
-        module.Services.AddScoped<TwoTierPermissionPolicy>();
-        module.Services.AddScoped<PermissionToolHandler>();
-        module.Services.AddScoped<PermissionApiActionExecutor>();
-        module.Services.AddScoped<PermissionEndpointContribution>();
-        module.Services.AddScoped<IPermissionActionGateway, PermissionActionGateway>();
-        module.Services.AddScoped<HostModuleActionEntry>();
-        module.Services.AddScoped<IModuleActionPipeline, ModuleActionPipeline>();
-        module.Services.AddScoped<PermissionGrantAuthorizationHook>();
-        module.Services.AddSingleton<PermissionCliHandler>();
+        services.AddScoped<PermissionPolicyStore>();
+        services.AddScoped<TwoTierPermissionPolicy>();
+        services.AddScoped<PermissionToolHandler>();
+        services.AddScoped<PermissionApiActionExecutor>();
+        services.AddScoped<PermissionEndpointContribution>();
+        services.AddScoped<IPermissionActionGateway, PermissionActionGateway>();
+        services.AddScoped<HostActionInvoker>();
+        services.AddScoped<PermissionGrantAuthorizationHook>();
+        services.AddSingleton<PermissionCliHandler>();
 
-        module.AddAgentOrchestrationPermissionPolicy<TwoTierPermissionAccessPolicy>();
+        services.AddAuthorizationPolicy<TwoTierAuthorizationPolicy>();
 
         foreach (var storage in StorageContracts)
-            module.Storage.Add(storage);
+            services.AddStorage(storage);
 
-        module.DefineAction(ApiDescriptor)
+        services.AddAction(ApiDescriptor)
             .UseTerminal<PermissionApiActionTerminal>(ApiTerminalId);
 
-        module.DefineAction(new ActionDescriptor<PermissionEvaluateAction, TwoTierPermissionDecision>(
+        services.AddAction(new ActionDescriptor<PermissionEvaluateAction, TwoTierPermissionDecision>(
             new("permission.evaluate"), 1, "permission",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Observe,
             true, false, RepeatPolicy, null, TimeSpan.FromSeconds(10))
         {
             SafePoints = SafePoints,
         });
-        module.DefineAction(new ActionDescriptor<PermissionGrantAction, bool>(
+        services.AddAction(new ActionDescriptor<PermissionGrantAction, bool>(
             new("permission.grant"), 1, "permission.administration",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
             true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
             SafePoints = SafePoints,
         });
-        module.DefineAction(new ActionDescriptor<PermissionRevokeAction, bool>(
+        services.AddAction(new ActionDescriptor<PermissionRevokeAction, bool>(
             new("permission.revoke"), 1, "permission.administration",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
             true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
             SafePoints = SafePoints,
         });
-        module.DefineAction(new ActionDescriptor<PermissionApproveAction, bool>(
+        services.AddAction(new ActionDescriptor<PermissionApproveAction, bool>(
             new("permission.approve"), 1, "permission.approval",
             ActionInterceptionCapabilities.Inspect | ActionInterceptionCapabilities.Cancel | ActionInterceptionCapabilities.Observe,
             true, true, RepeatPolicy, null, TimeSpan.FromSeconds(30))
         {
             SafePoints = SafePoints,
         });
-        module.Hooks.For(new SharpClawActionKey("permission.grant"))
+        services.OnAction(new SharpClawActionKey("permission.grant"))
             .Use<PermissionGrantAuthorizationHook>(new HookOrdering("permission.grant.authorization"));
 
-        module.Events.Add(new EventDescriptor<PermissionChangedEvent>(
+        services.AddEvent(new EventDescriptor<PermissionChangedEvent>(
             new(PermissionChangedEvent), 1, "permission",
             EventInterceptionCapabilities.Inspect | EventInterceptionCapabilities.Observe,
             true, true)
@@ -110,31 +109,27 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
             DeliveryClasses = [EventDelivery.Durable],
         });
 
-        module.Tools.Add<PermissionToolHandler>(new ToolDescriptor(
+        services.AddTool<PermissionToolHandler>(new ToolDescriptor(
             EvaluateTool,
             "Evaluate both permission tiers for one context access request.",
             BuildEvaluateSchema(), ContainsSensitiveData: true));
-        module.Tools.Add<PermissionToolHandler>(new ToolDescriptor(
+        services.AddTool<PermissionToolHandler>(new ToolDescriptor(
             GrantTool,
             "Grant a capability and clearance to a subject.",
             BuildGrantSchema(), ContainsSensitiveData: true));
-        module.Tools.Add<PermissionToolHandler>(new ToolDescriptor(
+        services.AddTool<PermissionToolHandler>(new ToolDescriptor(
             RevokeTool,
             "Revoke a capability from a subject.",
             BuildRevokeSchema(), ContainsSensitiveData: true));
-        module.Tools.Add<PermissionToolHandler>(new ToolDescriptor(
+        services.AddTool<PermissionToolHandler>(new ToolDescriptor(
             ApproveTool,
             "Approve a same-level permission grant.",
             BuildApproveSchema(), ContainsSensitiveData: true));
-    }
-
-    public void ConfigureApplication(ISharpClawApplicationBuilder application)
-    {
-        foreach (ModuleEndpointRouteDescriptor route in PermissionEndpointContribution.EndpointRoutes)
-            application.Endpoints.AddHttp<PermissionEndpointContribution>(route);
+        foreach (EndpointRouteDescriptor route in PermissionEndpointContribution.EndpointRoutes)
+            services.AddHttpEndpoint<PermissionEndpointContribution>(route);
         foreach (var command in PermissionCliHandler.Commands)
         {
-            application.Cli.Add<PermissionCliHandler>(new ModuleCliCommandDescriptor(
+            services.AddCliCommand<PermissionCliHandler>(new CliCommandDescriptor(
                 command.Name,
                 command.Name switch
                 {
@@ -149,41 +144,41 @@ public sealed class TwoTierPermissionModule : ISharpClawModule, ISharpClawApplic
         }
     }
 
-    public ValueTask StartAsync(ModuleStartContext context, CancellationToken ct) => ValueTask.CompletedTask;
+    public ValueTask StartAsync(ServiceStartContext context, CancellationToken ct) => ValueTask.CompletedTask;
 
     public ValueTask StopAsync(CancellationToken ct) => ValueTask.CompletedTask;
 
-    public static IReadOnlyList<ModuleStorageContractDescriptor> StorageContracts =>
+    public static IReadOnlyList<ScopedStorageContractDescriptor> StorageContracts =>
     [
         Storage(PermissionPolicyStore.PoliciesStorage, "Subject clearance and two-tier capability policy.",
             [
-                new("subjectId", ModuleStorageIndexValueKind.String),
-                new("clearance", ModuleStorageIndexValueKind.String),
-                new("updatedAt", ModuleStorageIndexValueKind.DateTime),
+                new("subjectId", ScopedStorageIndexValueKind.String),
+                new("clearance", ScopedStorageIndexValueKind.String),
+                new("updatedAt", ScopedStorageIndexValueKind.DateTime),
             ]),
         Storage(PermissionPolicyStore.GrantsStorage, "Delegated and administratively issued resource grants.",
-            [new("subjectId", ModuleStorageIndexValueKind.String), new("capability", ModuleStorageIndexValueKind.String), new("scope", ModuleStorageIndexValueKind.String)]),
+            [new("subjectId", ScopedStorageIndexValueKind.String), new("capability", ScopedStorageIndexValueKind.String), new("scope", ScopedStorageIndexValueKind.String)]),
         Storage(PermissionPolicyStore.ApprovalsStorage, "Approval records for same-level and delegated checks.",
-            [new("subjectId", ModuleStorageIndexValueKind.String), new("capability", ModuleStorageIndexValueKind.String), new("scope", ModuleStorageIndexValueKind.String)]),
+            [new("subjectId", ScopedStorageIndexValueKind.String), new("capability", ScopedStorageIndexValueKind.String), new("scope", ScopedStorageIndexValueKind.String)]),
         Storage(PermissionPolicyStore.RolesStorage, "Permission roles and assigned subjects.",
-            [new("name", ModuleStorageIndexValueKind.String), new("clearance", ModuleStorageIndexValueKind.String), new("updatedAt", ModuleStorageIndexValueKind.DateTime)]),
+            [new("name", ScopedStorageIndexValueKind.String), new("clearance", ScopedStorageIndexValueKind.String), new("updatedAt", ScopedStorageIndexValueKind.DateTime)]),
         Storage(PermissionPolicyStore.PermissionSetsStorage, "Reusable permission capability sets.",
-            [new("name", ModuleStorageIndexValueKind.String), new("updatedAt", ModuleStorageIndexValueKind.DateTime)]),
+            [new("name", ScopedStorageIndexValueKind.String), new("updatedAt", ScopedStorageIndexValueKind.DateTime)]),
     ];
 
-    private static ModuleStorageContractDescriptor Storage(
+    private static ScopedStorageContractDescriptor Storage(
         string name,
         string description,
-        IReadOnlyList<ModuleStorageIndexDescriptor> indexes) =>
+        IReadOnlyList<ScopedStorageIndexDescriptor> indexes) =>
         new(ModuleIdValue, name,
             [
-                new(ModuleStorageOperations.Get),
-                new(ModuleStorageOperations.Upsert),
-                new(ModuleStorageOperations.BatchUpsert),
-                new(ModuleStorageOperations.Delete),
-                new(ModuleStorageOperations.BatchDelete),
-                new(ModuleStorageOperations.List),
-                new(ModuleStorageOperations.Query),
+                new(ScopedStorageOperations.Get),
+                new(ScopedStorageOperations.Upsert),
+                new(ScopedStorageOperations.BatchUpsert),
+                new(ScopedStorageOperations.Delete),
+                new(ScopedStorageOperations.BatchDelete),
+                new(ScopedStorageOperations.List),
+                new(ScopedStorageOperations.Query),
             ], description, indexes, 524_288, 500);
 
     private static JsonElement BuildEvaluateSchema() => JsonDocument.Parse("""

@@ -1,11 +1,12 @@
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
+using SharpClaw.ModuleSDK;
 using SharpClaw.Modules.AgentOrchestration.Contracts;
 
 namespace SharpClaw.Modules.Context;
 
 public sealed class ContextConversationResolver(
     ContextStore store,
-    HostPermissionActionEntry permission) : IConversationResolver
+    HostAuthorizationEntry authorization) : IConversationResolver
 {
     public async ValueTask<ConversationSelection> ResolveAsync(
         ChatTurnInput input,
@@ -16,8 +17,8 @@ public sealed class ContextConversationResolver(
         if (!caller.IsAuthenticated)
             throw new UnauthorizedAccessException("Authentication is required to resolve a conversation.");
 
-        using var authorization = store.PushAuthorization(
-            new ChatOperationAuthorization(context, permission));
+        using var authorizationScope = store.PushAuthorization(
+            new ChatAuthorizationClient(context, authorization));
 
         if (input.ConversationId is { } existing)
         {
@@ -49,7 +50,7 @@ public sealed class ContextConversationResolver(
 
 public sealed class ContextHistoryContributor(
     ContextStore store,
-    HostPermissionActionEntry permission) : IChatContextContributor
+    HostAuthorizationEntry authorization) : IChatContextContributor
 {
     public async ValueTask<ChatContextContribution> ContributeAsync(
         ChatContextRequest request,
@@ -59,8 +60,8 @@ public sealed class ContextHistoryContributor(
         var caller = context.Caller;
         if (!caller.IsAuthenticated)
             throw new UnauthorizedAccessException("Authentication is required to load conversation history.");
-        using var authorization = store.PushAuthorization(
-            new ChatOperationAuthorization(context, permission));
+        using var authorizationScope = store.PushAuthorization(
+            new ChatAuthorizationClient(context, authorization));
         var messages = await store.LoadHistoryAsync(caller, request.ConversationId, ct);
         return new ChatContextContribution([], messages, []);
     }

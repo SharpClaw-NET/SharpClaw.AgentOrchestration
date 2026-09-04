@@ -2,7 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 
 namespace SharpClaw.Modules.Agents;
 

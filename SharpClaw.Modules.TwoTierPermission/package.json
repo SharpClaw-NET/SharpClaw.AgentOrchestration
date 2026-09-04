@@ -1,12 +1,12 @@
 {
   "id": "sharpclaw_two_tier_permission",
   "displayName": "SharpClaw Two Tier Permission",
-  "version": "0.5.0-beta.24",
+  "version": "0.5.0-beta.25",
   "toolPrefix": "perm",
   "runtime": "dotnet",
   "hostMode": "sidecar",
   "entryAssembly": "SharpClaw.Modules.TwoTierPermission.dll",
-  "moduleType": "SharpClaw.Modules.TwoTierPermission.TwoTierPermissionModule",
+  "entryType": "SharpClaw.Modules.TwoTierPermission.TwoTierPermissionModule",
   "minHostVersion": "0.5.0-beta.3",
   "author": "SharpClaw-NET",
   "description": "Two-tier clearance, scope, denial, delegation, grant, and approval policy.",
@@ -15,8 +15,8 @@
   "defaultEnabled": true,
   "exports": [
     {
-      "contractName": "sharpclaw.permission",
-      "serviceType": "SharpClaw.Modules.AgentOrchestration.Contracts.PermissionModuleContract",
+      "contractName": "sharpclaw.authorization",
+      "serviceType": "SharpClaw.Contracts.Kernel.AuthorizationContract",
       "optional": false
     }
   ],

@@ -1,8 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
-    <Version>0.5.0-beta.24</Version>
-    <InformationalVersion>0.5.0-beta.24</InformationalVersion>
+    <Version>0.5.0-beta.25</Version>
+    <InformationalVersion>0.5.0-beta.25</InformationalVersion>
     <IsSharpClawModulePackage>true</IsSharpClawModulePackage>
     <IsPackable>true</IsPackable>
     <PackageId>SharpClaw.Modules.TwoTierPermission</PackageId>
@@ -31,6 +31,6 @@
   <ItemGroup>
     <ProjectReference Include="..\SharpClaw.AgentOrchestration.Contracts\SharpClaw.AgentOrchestration.Contracts.csproj"
                       GlobalPropertiesToRemove="Version;InformationalVersion" />
-    <Content Include="module.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="package.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

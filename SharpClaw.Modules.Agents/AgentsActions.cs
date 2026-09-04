@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
+using SharpClaw.ModuleSDK;
 using SharpClaw.Modules.AgentOrchestration.Contracts;
 
 namespace SharpClaw.Modules.Agents;
@@ -92,7 +93,7 @@ public sealed class AgentsActionExecutor(
 
 public sealed class AgentsApiActionExecutor(
     AgentsCatalog catalog,
-    HostPermissionActionEntry permission)
+    HostAuthorizationEntry authorization)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -105,12 +106,12 @@ public sealed class AgentsApiActionExecutor(
     {
         var action = actionContext.Action;
         var caller = actionContext.Caller;
-        var authorization = new ModuleActionAuthorization<AgentsApiAction>(actionContext, permission);
-        using var authorizationScope = catalog.PushAuthorization(authorization);
+        var client = new ActionAuthorizationClient<AgentsApiAction>(actionContext, authorization);
+        using var authorizationScope = catalog.PushAuthorization(client);
         return action.Operation switch
         {
-            AgentsApiOperations.ListAgents => Json(await ListAgentsAsync(caller, ct, authorization)),
-            AgentsApiOperations.GetAgent => Json(await GetAgentAsync(caller, action, ct, authorization)),
+            AgentsApiOperations.ListAgents => Json(await ListAgentsAsync(caller, ct, client)),
+            AgentsApiOperations.GetAgent => Json(await GetAgentAsync(caller, action, ct, client)),
             AgentsApiOperations.CreateAgent => Json(await catalog.CreateAgentAsync(caller, Deserialize<AgentsCreateAction>(action.Payload), ct, null)),
             AgentsApiOperations.UpdateAgent => Json(await catalog.UpdateAgentAsync(caller, Deserialize<AgentsUpdateAction>(action.Payload), ct, null)),
             AgentsApiOperations.DeleteAgent => Json(await catalog.DeleteAgentAsync(caller, GuidValue(action.Payload, "agentId"), ct, null)),
@@ -123,7 +124,7 @@ public sealed class AgentsApiActionExecutor(
                 null)),
             AgentsApiOperations.SynchronizeAgent => Json(await catalog.SynchronizeAsync(caller, GuidValue(action.Payload, "agentId"), ct, null)),
             AgentsApiOperations.GetCost => Json(await catalog.GetCostAsync(caller, GuidValue(action.Payload, "agentId"), ct, null)),
-            AgentsApiOperations.ListSkills => Json(await ListSkillsAsync(caller, ct, authorization)),
+            AgentsApiOperations.ListSkills => Json(await ListSkillsAsync(caller, ct, client)),
             AgentsApiOperations.GetSkill => Json(await catalog.GetSkillForCallerAsync(caller, GuidValue(action.Payload, "skillId"), ct, null)),
             AgentsApiOperations.SaveSkill => Json(await catalog.SaveSkillAsync(caller, Deserialize<AgentsSaveSkillAction>(action.Payload).Skill, ct, null)),
             AgentsApiOperations.DeleteSkill => Json(await catalog.DeleteSkillAsync(caller, GuidValue(action.Payload, "skillId"), ct, null)),
@@ -147,7 +148,7 @@ public sealed class AgentsApiActionExecutor(
     private async Task<IReadOnlyList<AgentRecord>> ListAgentsAsync(
         RequestPrincipal caller,
         CancellationToken ct,
-        IModuleActionAuthorization authorization)
+        IAuthorizationClient authorization)
     {
         await RequireAccessAsync(caller, "manage_agents", null, ct, authorization);
         return await catalog.ListAgentsAsync(ct);
@@ -156,7 +157,7 @@ public sealed class AgentsApiActionExecutor(
     private async Task<IReadOnlyList<SkillRecord>> ListSkillsAsync(
         RequestPrincipal caller,
         CancellationToken ct,
-        IModuleActionAuthorization authorization)
+        IAuthorizationClient authorization)
     {
         await RequireAccessAsync(caller, "manage_skills", null, ct, authorization);
         return await catalog.ListSkillsAsync(ct);
@@ -166,7 +167,7 @@ public sealed class AgentsApiActionExecutor(
         RequestPrincipal caller,
         AgentsApiAction action,
         CancellationToken ct,
-        IModuleActionAuthorization authorization)
+        IAuthorizationClient authorization)
     {
         var agentId = GuidValue(action.Payload, "agentId");
         if (!caller.IsAuthenticated)
@@ -183,13 +184,15 @@ public sealed class AgentsApiActionExecutor(
         string capability,
         Guid? targetAgentId,
         CancellationToken ct,
-        IModuleActionAuthorization authorization)
+        IAuthorizationClient authorization)
     {
         if (IsAdministrator(caller))
             return;
         if (!caller.IsAuthenticated)
             throw new UnauthorizedAccessException("Authentication is required.");
-        var decision = await authorization.EvaluateAgentAsync(capability, targetAgentId, ct);
+        var decision = await authorization.EvaluateAsync(
+            AuthorizationRequestFactory.ForAgent(capability, targetAgentId),
+            ct);
         if (!decision.Allowed)
             throw new UnauthorizedAccessException(decision.Message);
     }
@@ -234,7 +237,7 @@ public interface IAgentsActionGateway
 }
 
 public sealed class AgentsActionGateway(
-    HostModuleActionEntry entry,
+    HostActionInvoker entry,
     AgentsApiActionTerminal terminal) : IAgentsActionGateway
 {
     public ValueTask<JsonElement> ExecuteAsync(

@@ -1,10 +1,10 @@
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 
 namespace SharpClaw.Modules.Agents;
 
-public sealed class AgentsCliHandler(IServiceScopeFactory scopeFactory) : IModuleCliHandler
+public sealed class AgentsCliHandler(IServiceScopeFactory scopeFactory) : ICliHandler
 {
     public static IReadOnlyList<(string Name, string Operation)> Commands { get; } =
     [
@@ -22,8 +22,8 @@ public sealed class AgentsCliHandler(IServiceScopeFactory scopeFactory) : IModul
         ("agents-memory-search", AgentsApiOperations.SearchMemory),
     ];
 
-    public async ValueTask<ModuleCliResult> ExecuteAsync(
-        ModuleCliInvocation invocation,
+    public async ValueTask<CliResult> ExecuteAsync(
+        CliInvocation invocation,
         CancellationToken ct)
     {
         if (!invocation.HostActionContext.Caller.Roles?.Any(role => role.Equals("admin", StringComparison.OrdinalIgnoreCase)
@@ -102,9 +102,9 @@ public sealed class AgentsCliHandler(IServiceScopeFactory scopeFactory) : IModul
 
     private static JsonElement Empty() => JsonSerializer.SerializeToElement(new { });
 
-    private static ModuleCliResult Success(string text) =>
-        new(true, [new ModuleCliOutput("stdout", text)]);
+    private static CliResult Success(string text) =>
+        new(true, [new CliOutput("stdout", text)]);
 
-    private static ModuleCliResult Failure(string text) =>
-        new(false, [new ModuleCliOutput("stderr", text)], new ExecutionError("permission_denied", text));
+    private static CliResult Failure(string text) =>
+        new(false, [new CliOutput("stderr", text)], new ExecutionError("permission_denied", text));
 }

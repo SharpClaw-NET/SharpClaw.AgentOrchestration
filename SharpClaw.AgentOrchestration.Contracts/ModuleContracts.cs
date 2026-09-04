@@ -1,13 +1,11 @@
-using SharpClaw.Contracts.Modules;
-using SharpClaw.ModuleSDK;
+using System.Text.Json;
+using SharpClaw.Contracts.Kernel;
 
 namespace SharpClaw.Modules.AgentOrchestration.Contracts;
 
-public sealed record ContextModuleContract;
+public sealed record ContextCapabilityContract;
 
-public sealed record PermissionModuleContract;
-
-public sealed record AgentsModuleContract;
+public sealed record AgentCapabilityContract;
 
 public static class ContextAccessCapabilities
 {
@@ -39,313 +37,190 @@ public sealed record AccessDecision(
         new(false, code, message);
 }
 
-public sealed record PermissionContextAccessAction(
-    ContextAccessRequest Request);
-
-public sealed record PermissionAgentAccessAction(
-    string Capability,
-    Guid? TargetAgentId);
-
-public static class PermissionActionDescriptors
+/// <summary>Maps Agent Orchestration domain data to the generic authorization port.</summary>
+public static class AuthorizationRequestFactory
 {
-    private static readonly ActionRepeatPolicy RepeatPolicy =
-        new(ActionRepeatKind.Idempotent, 3, TimeSpan.FromMilliseconds(50), "permission");
+    private const string ChannelResource = "channel";
+    private const string AgentResource = "agent";
+    private const string GlobalResource = "global";
+    private const string ContextResource = "context";
+    private const string OwnerAgentResource = "owner-agent";
+    private const string AllowedAgentResource = "allowed-agent";
+    private const string DefaultContextAgentResource = "default-context-agent";
+    private const string ContextAllowedAgentResource = "context-allowed-agent";
+    private const string SourceChannelOptInFact = "source-channel-opted-in";
 
-    private static readonly IReadOnlyList<ActionSafePoint> SafePoints =
-    [
-        ActionSafePoint.BeforeTerminal,
-        ActionSafePoint.AfterTerminal,
-    ];
-
-    public static readonly ActionDescriptor<PermissionContextAccessAction, AccessDecision> ContextAccess =
-        new(new("permission.context-access"), 1, "permission.authorization",
-            ActionInterceptionCapabilities.Inspect |
-            ActionInterceptionCapabilities.Wrap |
-            ActionInterceptionCapabilities.Observe,
-            true, false, RepeatPolicy, null, TimeSpan.FromSeconds(10))
-        {
-            InputSchema = ModuleSchemaIdentity.ActionInput(
-                new("permission.context-access"),
-                1,
-                typeof(PermissionContextAccessAction)),
-            ResultSchema = ModuleSchemaIdentity.ActionResult(
-                new("permission.context-access"),
-                1,
-                typeof(AccessDecision)),
-            SafePoints = SafePoints,
-        };
-
-    public static readonly ActionDescriptor<PermissionAgentAccessAction, AccessDecision> AgentAccess =
-        new(new("permission.agent-access"), 1, "permission.authorization",
-            ActionInterceptionCapabilities.Inspect |
-            ActionInterceptionCapabilities.Wrap |
-            ActionInterceptionCapabilities.Observe,
-            true, false, RepeatPolicy, null, TimeSpan.FromSeconds(10))
-        {
-            InputSchema = ModuleSchemaIdentity.ActionInput(
-                new("permission.agent-access"),
-                1,
-                typeof(PermissionAgentAccessAction)),
-            ResultSchema = ModuleSchemaIdentity.ActionResult(
-                new("permission.agent-access"),
-                1,
-                typeof(AccessDecision)),
-            SafePoints = SafePoints,
-        };
-}
-
-public interface IPermissionActionEntry
-{
-    ValueTask<AccessDecision> EvaluateContextAsync(
-        HostActionEntryRequestContext hostContext,
-        ContextAccessRequest request,
-        CancellationToken ct = default);
-
-    ValueTask<AccessDecision> EvaluateAgentAsync(
-        HostActionEntryRequestContext hostContext,
-        string capability,
-        Guid? targetAgentId,
-        CancellationToken ct = default);
-
-    ValueTask<AccessDecision> EvaluateContextAsync<TParentAction>(
-        ActionContext<TParentAction> parentContext,
-        ContextAccessRequest request,
-        CancellationToken ct = default);
-
-    ValueTask<AccessDecision> EvaluateAgentAsync<TParentAction>(
-        ActionContext<TParentAction> parentContext,
-        string capability,
-        Guid? targetAgentId,
-        CancellationToken ct = default);
-}
-
-public interface IModuleActionAuthorization
-{
-    RequestPrincipal Caller { get; }
-
-    ValueTask<AccessDecision> EvaluateContextAsync(
-        ContextAccessRequest request,
-        CancellationToken ct = default);
-
-    ValueTask<AccessDecision> EvaluateAgentAsync(
-        string capability,
-        Guid? targetAgentId,
-        CancellationToken ct = default);
-}
-
-public sealed class ModuleActionAuthorization<TAction>(
-    ActionContext<TAction> context,
-    HostPermissionActionEntry permission) : IModuleActionAuthorization
-{
-    public RequestPrincipal Caller => context.Caller;
-
-    public ValueTask<AccessDecision> EvaluateContextAsync(
-        ContextAccessRequest request,
-        CancellationToken ct = default) =>
-        permission.EvaluateContextAsync(context, request, ct);
-
-    public ValueTask<AccessDecision> EvaluateAgentAsync(
-        string capability,
-        Guid? targetAgentId,
-        CancellationToken ct = default) =>
-        permission.EvaluateAgentAsync(context, capability, targetAgentId, ct);
-}
-
-public sealed class ChatOperationAuthorization(
-    ChatOperationContext context,
-    HostPermissionActionEntry permission) : IModuleActionAuthorization
-{
-    public RequestPrincipal Caller => context.Caller;
-
-    public ValueTask<AccessDecision> EvaluateContextAsync(
-        ContextAccessRequest request,
-        CancellationToken ct = default) =>
-        permission.EvaluateContextAsync(context, request, ct);
-
-    public ValueTask<AccessDecision> EvaluateAgentAsync(
-        string capability,
-        Guid? targetAgentId,
-        CancellationToken ct = default) =>
-        permission.EvaluateAgentAsync(context, capability, targetAgentId, ct);
-}
-
-public sealed class HostPermissionActionEntry(IHostActionEntry host) : IPermissionActionEntry
-{
-    public async ValueTask<AccessDecision> EvaluateContextAsync(
-        ChatOperationContext context,
-        ContextAccessRequest request,
-        CancellationToken ct = default)
+    public static AuthorizationRequest ForContext(ContextAccessRequest request)
     {
-        ArgumentNullException.ThrowIfNull(context);
-        var hostEntry = context.HostActionEntry
-            ?? throw new InvalidOperationException(
-                "The chat operation has no host action entry.");
-        var action = new PermissionContextAccessAction(request);
-        var decision = await hostEntry.InvokeCrossSidecarAsync(
-            new ModuleCrossSidecarActionEntryRequest<
-                PermissionContextAccessAction,
-                AccessDecision>(
-                PermissionActionDescriptors.ContextAccess,
-                action),
-            ct);
-        return RequireResult(
-            PermissionActionDescriptors.ContextAccess.Key.Value,
-            decision,
-            ct);
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.ChannelId == Guid.Empty)
+            throw new ArgumentException("The channel identifier is required.", nameof(request));
+
+        var related = new List<AuthorizationResource>();
+        Add(related, ContextResource, request.ContextId);
+        Add(related, OwnerAgentResource, request.OwnerAgentId);
+        Add(related, DefaultContextAgentResource, request.DefaultContextAgentId);
+        Add(related, AllowedAgentResource, request.AllowedAgentIds);
+        Add(related, ContextAllowedAgentResource, request.ContextAllowedAgentIds);
+
+        return new AuthorizationRequest(
+            request.Capability,
+            new AuthorizationResource(ChannelResource, Canonical(request.ChannelId)),
+            related,
+            [new AuthorizationFact(
+                SourceChannelOptInFact,
+                JsonSerializer.SerializeToElement(request.SourceChannelOptedIn))]);
     }
 
-    public async ValueTask<AccessDecision> EvaluateAgentAsync(
-        ChatOperationContext context,
-        string capability,
-        Guid? targetAgentId,
-        CancellationToken ct = default)
+    public static AuthorizationRequest ForAgent(string capability, Guid? agentId)
     {
-        ArgumentNullException.ThrowIfNull(context);
-        var hostEntry = context.HostActionEntry
-            ?? throw new InvalidOperationException(
-                "The chat operation has no host action entry.");
-        var decision = await hostEntry.InvokeCrossSidecarAsync(
-            new ModuleCrossSidecarActionEntryRequest<
-                PermissionAgentAccessAction,
-                AccessDecision>(
-                PermissionActionDescriptors.AgentAccess,
-                new PermissionAgentAccessAction(capability, targetAgentId)),
-            ct);
-        return RequireResult(
-            PermissionActionDescriptors.AgentAccess.Key.Value,
-            decision,
-            ct);
-    }
+        ArgumentException.ThrowIfNullOrWhiteSpace(capability);
+        if (agentId == Guid.Empty)
+            throw new ArgumentException("The agent identifier cannot be empty.", nameof(agentId));
 
-    public async ValueTask<AccessDecision> EvaluateContextAsync(
-        HostActionEntryRequestContext hostContext,
-        ContextAccessRequest request,
-        CancellationToken ct = default)
-    {
-        var action = new PermissionContextAccessAction(request);
-        var decision = await InvokeAsync(
-            PermissionActionDescriptors.ContextAccess,
-            action,
-            hostContext,
-            ct);
-        return decision;
-    }
-
-    public async ValueTask<AccessDecision> EvaluateAgentAsync(
-        HostActionEntryRequestContext hostContext,
-        string capability,
-        Guid? targetAgentId,
-        CancellationToken ct = default)
-    {
-        var action = new PermissionAgentAccessAction(
+        return new AuthorizationRequest(
             capability,
-            targetAgentId);
-        var decision = await InvokeAsync(
-            PermissionActionDescriptors.AgentAccess,
-            action,
-            hostContext,
-            ct);
-        return decision;
+            new AuthorizationResource(
+                agentId.HasValue ? AgentResource : GlobalResource,
+                agentId.HasValue ? Canonical(agentId.Value) : GlobalResource));
     }
 
-    public async ValueTask<AccessDecision> EvaluateContextAsync<TParentAction>(
-        ActionContext<TParentAction> parentContext,
-        ContextAccessRequest request,
-        CancellationToken ct = default)
+    public static bool TryReadContext(
+        AuthorizationRequest request,
+        out ContextAccessRequest context)
     {
-        var action = new PermissionContextAccessAction(request);
-        var hostEntry = parentContext.HostActionEntry
-            ?? throw new InvalidOperationException(
-                "The parent action context has no host action entry.");
-        var decision = await hostEntry.InvokeCrossSidecarAsync(
-            new ModuleCrossSidecarActionEntryRequest<
-                PermissionContextAccessAction,
-                AccessDecision>(
-                PermissionActionDescriptors.ContextAccess,
-                action),
-            ct);
-        return RequireResult(
-            PermissionActionDescriptors.ContextAccess.Key.Value,
-            decision,
-            ct);
-    }
-
-    public async ValueTask<AccessDecision> EvaluateAgentAsync<TParentAction>(
-        ActionContext<TParentAction> parentContext,
-        string capability,
-        Guid? targetAgentId,
-        CancellationToken ct = default)
-    {
-        var action = new PermissionAgentAccessAction(
-            capability,
-            targetAgentId);
-        var hostEntry = parentContext.HostActionEntry
-            ?? throw new InvalidOperationException(
-                "The parent action context has no host action entry.");
-        var decision = await hostEntry.InvokeCrossSidecarAsync(
-            new ModuleCrossSidecarActionEntryRequest<
-                PermissionAgentAccessAction,
-                AccessDecision>(
-                PermissionActionDescriptors.AgentAccess,
-                action),
-            ct);
-        return RequireResult(
-            PermissionActionDescriptors.AgentAccess.Key.Value,
-            decision,
-            ct);
-    }
-
-    private async ValueTask<AccessDecision> InvokeAsync<TAction>(
-        ActionDescriptor<TAction, AccessDecision> descriptor,
-        TAction action,
-        HostActionEntryRequestContext hostContext,
-        CancellationToken ct)
-    {
-        var outcome = await host.InvokeCrossSidecarAsync(
-            new ModuleCrossSidecarActionEntryRequest<TAction, AccessDecision>(
-                descriptor,
-                action),
-            ct);
-        return RequireResult(descriptor.Key.Value, outcome, ct);
-    }
-
-    private static AccessDecision RequireResult(
-        string actionKey,
-        IActionOutcome<AccessDecision> outcome,
-        CancellationToken ct)
-    {
-        if (outcome.Kind == ActionOutcomeKind.Failed &&
-            PermissionRestriction.TryMapFailure(outcome.Error, out var denial))
+        ArgumentNullException.ThrowIfNull(request);
+        context = null!;
+        if (!string.Equals(request.Resource.Type, ChannelResource, StringComparison.Ordinal)
+            || !Guid.TryParseExact(request.Resource.Id, "D", out var channelId)
+            || channelId == Guid.Empty
+            || !TryReadOptionalSingle(request, ContextResource, out var contextId)
+            || !TryReadOptionalSingle(request, OwnerAgentResource, out var ownerAgentId)
+            || !TryReadOptionalSingle(request, DefaultContextAgentResource, out var defaultAgentId)
+            || !TryReadMany(request, AllowedAgentResource, out var allowedAgents)
+            || !TryReadMany(request, ContextAllowedAgentResource, out var contextAllowedAgents)
+            || !TryReadBooleanFact(request, SourceChannelOptInFact, out var sourceOptIn))
         {
-            ct.ThrowIfCancellationRequested();
-            return denial;
+            return false;
         }
 
-        return outcome.Kind switch
-        {
-            ActionOutcomeKind.Completed => outcome.Result
-                ?? throw new InvalidOperationException(
-                    $"The {actionKey} permission action completed without a decision."),
-            ActionOutcomeKind.Cancelled => throw new OperationCanceledException(
-                $"The {actionKey} permission action was cancelled.", ct),
-            ActionOutcomeKind.Deferred => throw new InvalidOperationException(
-                $"The {actionKey} permission action was deferred."),
-            ActionOutcomeKind.Failed => throw new InvalidOperationException(
-                FormatFailure(actionKey, outcome.Error)),
-            ActionOutcomeKind.Uncertain => throw new InvalidOperationException(
-                FormatUncertainty(actionKey, outcome.Uncertainty)),
-            _ => throw new InvalidOperationException(
-                $"The {actionKey} permission action returned an unknown outcome."),
-        };
+        context = new ContextAccessRequest(
+            channelId,
+            ownerAgentId,
+            allowedAgents,
+            defaultAgentId,
+            contextAllowedAgents,
+            sourceOptIn,
+            contextId,
+            request.Operation);
+        return true;
     }
 
-    private static string FormatFailure(string actionKey, ExecutionError? error) =>
-        error is null
-            ? $"The {actionKey} permission action failed without an error."
-            : $"The {actionKey} permission action failed: {error.Code}: {error.Message}";
+    public static bool TryReadAgent(AuthorizationRequest request, out Guid? agentId)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        agentId = null;
+        if (string.Equals(request.Resource.Type, GlobalResource, StringComparison.Ordinal))
+            return string.Equals(request.Resource.Id, GlobalResource, StringComparison.Ordinal);
 
-    private static string FormatUncertainty(string actionKey, ActionUncertainty? uncertainty) =>
-        uncertainty is null
-            ? $"The {actionKey} permission action has uncertain execution."
-            : $"The {actionKey} permission action has uncertain execution: {uncertainty.Code}: {uncertainty.Message}";
+        if (!string.Equals(request.Resource.Type, AgentResource, StringComparison.Ordinal)
+            || !Guid.TryParseExact(request.Resource.Id, "D", out var parsed)
+            || parsed == Guid.Empty)
+        {
+            return false;
+        }
+
+        agentId = parsed;
+        return true;
+    }
+
+    private static bool TryReadOptionalSingle(
+        AuthorizationRequest request,
+        string type,
+        out Guid? value)
+    {
+        value = null;
+        var resources = request.EffectiveRelatedResources
+            .Where(item => string.Equals(item.Type, type, StringComparison.Ordinal))
+            .ToArray();
+        if (resources.Length == 0)
+            return true;
+        if (resources.Length != 1
+            || !Guid.TryParseExact(resources[0].Id, "D", out var parsed)
+            || parsed == Guid.Empty)
+        {
+            return false;
+        }
+
+        value = parsed;
+        return true;
+    }
+
+    private static bool TryReadMany(
+        AuthorizationRequest request,
+        string type,
+        out IReadOnlyList<Guid> values)
+    {
+        var result = new List<Guid>();
+        foreach (var resource in request.EffectiveRelatedResources
+                     .Where(item => string.Equals(item.Type, type, StringComparison.Ordinal)))
+        {
+            if (!Guid.TryParseExact(resource.Id, "D", out var parsed)
+                || parsed == Guid.Empty
+                || result.Contains(parsed))
+            {
+                values = [];
+                return false;
+            }
+
+            result.Add(parsed);
+        }
+
+        values = result;
+        return true;
+    }
+
+    private static bool TryReadBooleanFact(
+        AuthorizationRequest request,
+        string name,
+        out bool value)
+    {
+        value = false;
+        var facts = request.EffectiveFacts
+            .Where(item => string.Equals(item.Name, name, StringComparison.Ordinal))
+            .ToArray();
+        if (facts.Length != 1
+            || facts[0].Value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+        {
+            return false;
+        }
+
+        value = facts[0].Value.GetBoolean();
+        return true;
+    }
+
+    private static void Add(
+        ICollection<AuthorizationResource> resources,
+        string type,
+        Guid? value)
+    {
+        if (value.HasValue)
+            resources.Add(new AuthorizationResource(type, Canonical(value.Value)));
+    }
+
+    private static void Add(
+        ICollection<AuthorizationResource> resources,
+        string type,
+        IEnumerable<Guid> values)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        foreach (var value in values.Order())
+        {
+            if (value == Guid.Empty)
+                throw new ArgumentException("An authorization resource identifier cannot be empty.", nameof(values));
+            resources.Add(new AuthorizationResource(type, Canonical(value)));
+        }
+    }
+
+    private static string Canonical(Guid value) => value.ToString("D");
 }

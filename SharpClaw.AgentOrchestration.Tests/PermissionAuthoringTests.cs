@@ -1,8 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using NUnit.Framework;
-using SharpClaw.Contracts.Modules;
+using SharpClaw.Contracts.Kernel;
 using SharpClaw.ModuleSDK;
-using SharpClaw.Modules.AgentOrchestration.Contracts;
 using SharpClaw.Modules.TwoTierPermission;
 
 namespace SharpClaw.AgentOrchestration.Tests;
@@ -11,34 +10,20 @@ namespace SharpClaw.AgentOrchestration.Tests;
 public sealed class PermissionAuthoringTests
 {
     [Test]
-    public void OnePolicyRegistrationPublishesTheCompleteProviderBoundary()
+    public void IndependentProviderPublishesTheNeutralAuthorizationPort()
     {
-        var graph = Compile(new ReplacementPermissionModule());
+        var graph = Compile(new IndependentAuthorizationPackage());
 
         Assert.Multiple(() =>
         {
-            Assert.That(graph.Contracts.Count, Is.EqualTo(1));
-            Assert.That(graph.Contracts.Single().ContractName,
-                Is.EqualTo(AgentOrchestrationPermission.ContractName));
-            Assert.That(graph.Contracts.Single().IsExport, Is.True);
-            Assert.That(graph.Actions.Select(item => item.Descriptor.Key.Value), Is.EquivalentTo(
-                new[]
-                {
-                    PermissionActionDescriptors.ContextAccess.Key.Value,
-                    PermissionActionDescriptors.AgentAccess.Key.Value,
-                }));
-            Assert.That(graph.ActionEntries.Select(item => item.TerminalId), Is.EquivalentTo(
-                new[]
-                {
-                    AgentOrchestrationPermission.ContextTerminalId,
-                    AgentOrchestrationPermission.AgentTerminalId,
-                }));
-            Assert.That(graph.ActionEntries.Select(item => item.TerminalType), Is.EquivalentTo(
-                new[]
-                {
-                    typeof(PermissionContextPolicyTerminal),
-                    typeof(PermissionAgentPolicyTerminal),
-                }));
+            Assert.That(graph.Contracts, Has.Count.EqualTo(1));
+            Assert.That(graph.Contracts[0].ContractName, Is.EqualTo(AuthorizationProtocol.ContractName));
+            Assert.That(graph.Contracts[0].IsExport, Is.True);
+            Assert.That(graph.Actions.Select(value => value.Descriptor.Key.Value),
+                Is.EqualTo([AuthorizationProtocol.Evaluate.Key.Value]));
+            Assert.That(graph.ActionEntries, Has.Count.EqualTo(1));
+            Assert.That(graph.ActionEntries[0].TerminalId, Is.EqualTo(AuthorizationProtocol.TerminalId));
+            Assert.That(graph.ActionEntries[0].TerminalType, Is.EqualTo(typeof(AuthorizationPolicyTerminal)));
         });
 
         var services = new ServiceCollection();
@@ -48,131 +33,104 @@ public sealed class PermissionAuthoringTests
         using var scope = provider.CreateScope();
 
         Assert.That(
-            scope.ServiceProvider.GetRequiredService<IAgentOrchestrationPermissionPolicy>(),
-            Is.SameAs(scope.ServiceProvider.GetRequiredService<ReplacementPermissionPolicy>()));
+            scope.ServiceProvider.GetRequiredService<IAuthorizationPolicy>(),
+            Is.SameAs(scope.ServiceProvider.GetRequiredService<IndependentPolicy>()));
     }
 
     [Test]
-    public void ReplacementProviderMatchesTheBundledPermissionBoundary()
+    public void IndependentProviderMatchesTheTwoTierProviderPort()
     {
-        var replacement = Compile(new ReplacementPermissionModule());
-        var bundled = Compile(new TwoTierPermissionModule());
+        var independent = Compile(new IndependentAuthorizationPackage());
+        var twoTier = Compile(new TwoTierPermissionModule());
+
+        var twoTierContract = twoTier.Contracts.Single(value =>
+            value.ContractName == AuthorizationProtocol.ContractName);
+        var twoTierEntry = twoTier.ActionEntries.Single(value =>
+            value.Descriptor.Key == AuthorizationProtocol.Evaluate.Key);
 
         Assert.Multiple(() =>
         {
-            Assert.That(
-                replacement.Contracts.Select(item => (item.ContractName, item.ServiceType, item.IsExport)),
-                Is.EqualTo(bundled.Contracts.Select(item =>
-                    (item.ContractName, item.ServiceType, item.IsExport))));
-            Assert.That(
-                replacement.ActionEntries.Select(item => (item.Descriptor, item.TerminalId)),
-                Is.EquivalentTo(bundled.ActionEntries
-                    .Where(item => item.Descriptor.Key.Value.StartsWith("permission.", StringComparison.Ordinal)
-                        && item.Descriptor.Key.Value != TwoTierPermissionModule.ApiDescriptor.Key.Value)
-                    .Select(item => (item.Descriptor, item.TerminalId))));
+            Assert.That(twoTierContract.ServiceType, Is.EqualTo(independent.Contracts[0].ServiceType));
+            Assert.That(twoTierContract.IsExport, Is.True);
+            Assert.That(twoTierEntry.Descriptor, Is.EqualTo(independent.ActionEntries[0].Descriptor));
+            Assert.That(twoTierEntry.TerminalId, Is.EqualTo(independent.ActionEntries[0].TerminalId));
+            Assert.That(twoTierEntry.TerminalType, Is.EqualTo(typeof(AuthorizationPolicyTerminal)));
         });
     }
 
     [Test]
-    public async Task PolicyTerminalUsesTheAuthenticatedActionContext()
+    public async Task ProviderReceivesAuthenticatedCallerAndGenericResource()
     {
-        var policy = new ReplacementPermissionPolicy();
-        var terminal = new PermissionContextPolicyTerminal(policy);
+        var policy = new IndependentPolicy();
+        var terminal = new AuthorizationPolicyTerminal(policy);
         var caller = new RequestPrincipal(
-            "replacement-owner",
-            Roles: new HashSet<string>(["custom-permission"]),
+            "custom-owner",
+            Roles: new HashSet<string>(["custom-policy"]),
             IsAuthenticated: true);
-        var channelId = Guid.NewGuid();
-        var action = new PermissionContextAccessAction(new ContextAccessRequest(
-            channelId,
-            null,
-            [],
-            null,
-            [],
-            false));
+        var resourceId = Guid.NewGuid().ToString("D");
+        var request = new AuthorizationRequest(
+            "agents.read",
+            new AuthorizationResource("agent", resourceId));
 
-        var decision = await terminal.InvokeAsync(CreateContext(
-            caller,
-            PermissionActionDescriptors.ContextAccess.Key,
-            action));
+        var decision = await terminal.InvokeAsync(CreateContext(caller, request));
 
         Assert.Multiple(() =>
         {
             Assert.That(decision.Allowed, Is.True);
             Assert.That(policy.LastCaller, Is.EqualTo(caller));
-            Assert.That(policy.LastChannelId, Is.EqualTo(channelId));
-            Assert.That(typeof(ContextAccessRequest).GetProperty("Principal"), Is.Null);
+            Assert.That(policy.LastOperation, Is.EqualTo("agents.read"));
+            Assert.That(policy.LastResource, Is.EqualTo(new AuthorizationResource("agent", resourceId)));
+            Assert.That(typeof(AuthorizationRequest).GetProperty("Principal"), Is.Null);
         });
     }
 
     [Test]
-    public void PolicyTerminalPreservesCancellation()
+    public void ProviderCancellationStopsBeforeEvaluation()
     {
-        var policy = new ReplacementPermissionPolicy();
-        var terminal = new PermissionAgentPolicyTerminal(policy);
+        var policy = new IndependentPolicy();
+        var terminal = new AuthorizationPolicyTerminal(policy);
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
-        var action = new PermissionAgentAccessAction("custom.manage", Guid.NewGuid());
 
         Assert.ThrowsAsync<OperationCanceledException>(async () =>
             await terminal.InvokeAsync(
                 CreateContext(
-                    new RequestPrincipal("replacement-owner", IsAuthenticated: true),
-                    PermissionActionDescriptors.AgentAccess.Key,
-                    action),
+                    new RequestPrincipal("custom-owner", IsAuthenticated: true),
+                    new AuthorizationRequest(
+                        "agents.read",
+                        new AuthorizationResource("agent", Guid.NewGuid().ToString("D")))),
                 cancellation.Token));
-        Assert.That(policy.AgentEvaluations, Is.Zero);
+        Assert.That(policy.Evaluations, Is.Zero);
     }
 
     [Test]
-    public void ConsumerRegistrationSelectsOnlyTheRequiredCheck()
+    public void ConsumerRequiresOnlyTheNeutralAuthorizationPort()
     {
-        var graph = Compile(new PermissionConsumerModule());
+        var graph = Compile(new AuthorizationConsumerPackage());
 
         Assert.Multiple(() =>
         {
-            Assert.That(graph.Contracts.Count, Is.EqualTo(1));
-            Assert.That(graph.Contracts.Single().ContractName,
-                Is.EqualTo(AgentOrchestrationPermission.ContractName));
-            Assert.That(graph.Contracts.Single().IsExport, Is.False);
+            Assert.That(graph.Contracts, Has.Count.EqualTo(1));
+            Assert.That(graph.Contracts[0].ContractName, Is.EqualTo(AuthorizationProtocol.ContractName));
+            Assert.That(graph.Contracts[0].IsExport, Is.False);
             Assert.That(graph.Actions, Is.Empty);
             Assert.That(graph.ActionEntries, Is.Empty);
-            Assert.That(graph.ActionHooks.Select(item => item.HandlerType), Is.EqualTo(
-                new[] { typeof(PermissionAgentRelayHook) }));
-            Assert.That(graph.ActionHooks.All(item =>
-                item.ActionKey == PermissionActionDescriptors.AgentAccess.Key), Is.True);
-            Assert.That(PermissionActionDescriptors.AgentAccess.Capabilities,
-                Is.EqualTo(
-                    ActionInterceptionCapabilities.Inspect |
-                    ActionInterceptionCapabilities.Wrap |
-                    ActionInterceptionCapabilities.Observe));
+            Assert.That(graph.Services.Any(value => value.ServiceType == typeof(HostAuthorizationEntry)), Is.True);
         });
     }
 
-    [TestCase(AgentOrchestrationPermissionUse.None)]
-    [TestCase((AgentOrchestrationPermissionUse)8)]
-    public void InvalidConsumerSelectionFailsDuringModuleConfiguration(
-        AgentOrchestrationPermissionUse use)
-    {
-        var exception = Assert.Throws<ModuleGraphCompilationException>(() => Compile(
-            new InvalidPermissionConsumerModule(use)));
-
-        Assert.That(exception!.Errors.Single().Code, Is.EqualTo("module_configuration_failed"));
-    }
-
-    private static ModuleContributionGraph Compile(ISharpClawModule module) =>
+    private static ModuleContributionGraph Compile(ISharpClawModule package) =>
         SharpClawModuleCompiler.Compile(
-            module,
+            package,
             options: new ModuleCompilationOptions
             {
                 HostingMode = ModuleHostingMode.OutOfProcess,
                 RequireManifestRequests = false,
             });
 
-    private static ActionContext<TAction> CreateContext<TAction>(
+    private static ActionContext<AuthorizationRequest> CreateContext(
         RequestPrincipal caller,
-        SharpClawActionKey key,
-        TAction action) =>
+        AuthorizationRequest request) =>
         new(
             Guid.NewGuid(),
             null,
@@ -181,95 +139,59 @@ public sealed class PermissionAuthoringTests
             0,
             1,
             DateTimeOffset.UtcNow.AddMinutes(1),
-            key,
-            ReplacementPermissionModule.ModuleId,
+            AuthorizationProtocol.Evaluate.Key,
+            IndependentAuthorizationPackage.SourceId,
             caller,
-            action,
+            request,
             ExtensionFeatureSet.Empty,
-            new ActionPipelineSnapshot("permission-authoring-test", [], [], 16));
+            new ActionPipelineSnapshot("authorization-authoring-test", [], [], 16));
 
-    private sealed class ReplacementPermissionModule : ISharpClawModule
+    private sealed class IndependentAuthorizationPackage : ISharpClawModule
     {
-        public const string ModuleId = "replacement_permission";
+        public const string SourceId = "independent_authorization";
 
         public ModuleIdentity Identity { get; } = new(
-            ModuleId,
-            "Replacement Permission",
-            "replacement_permission");
+            SourceId,
+            "Independent Authorization",
+            "independent_authorization");
 
-        public void Configure(ISharpClawModuleBuilder module) =>
-            module.AddAgentOrchestrationPermissionPolicy<ReplacementPermissionPolicy>();
-
-        public ValueTask StartAsync(ModuleStartContext context, CancellationToken ct) =>
-            ValueTask.CompletedTask;
-
-        public ValueTask StopAsync(CancellationToken ct) => ValueTask.CompletedTask;
+        public void ConfigureServices(IServiceCollection services) =>
+            services.AddAuthorizationPolicy<IndependentPolicy>();
     }
 
-    private sealed class PermissionConsumerModule : ISharpClawModule
+    private sealed class AuthorizationConsumerPackage : ISharpClawModule
     {
         public ModuleIdentity Identity { get; } = new(
-            "permission_consumer",
-            "Permission Consumer",
-            "permission_consumer");
+            "authorization_consumer",
+            "Authorization Consumer",
+            "authorization_consumer");
 
-        public void Configure(ISharpClawModuleBuilder module)
-        {
-            module.UseAgentOrchestrationPermission(AgentOrchestrationPermissionUse.Agents);
-        }
-
-        public ValueTask StartAsync(ModuleStartContext context, CancellationToken ct) =>
-            ValueTask.CompletedTask;
-
-        public ValueTask StopAsync(CancellationToken ct) => ValueTask.CompletedTask;
+        public void ConfigureServices(IServiceCollection services) => services.RequireAuthorization();
     }
 
-    private sealed class InvalidPermissionConsumerModule(
-        AgentOrchestrationPermissionUse use) : ISharpClawModule
-    {
-        public ModuleIdentity Identity { get; } = new(
-            "invalid_permission_consumer",
-            "Invalid Permission Consumer",
-            "invalid_permission_consumer");
-
-        public void Configure(ISharpClawModuleBuilder module) =>
-            module.UseAgentOrchestrationPermission(use);
-
-        public ValueTask StartAsync(ModuleStartContext context, CancellationToken ct) =>
-            ValueTask.CompletedTask;
-
-        public ValueTask StopAsync(CancellationToken ct) => ValueTask.CompletedTask;
-    }
-
-    private sealed class ReplacementPermissionPolicy : IAgentOrchestrationPermissionPolicy
+    private sealed class IndependentPolicy : IAuthorizationPolicy
     {
         public RequestPrincipal? LastCaller { get; private set; }
 
-        public Guid? LastChannelId { get; private set; }
+        public string? LastOperation { get; private set; }
 
-        public int AgentEvaluations { get; private set; }
+        public AuthorizationResource? LastResource { get; private set; }
 
-        public ValueTask<AccessDecision> EvaluateContextAsync(
-            ActionContext<PermissionContextAccessAction> context,
-            CancellationToken ct = default)
+        public int Evaluations { get; private set; }
+
+        public ValueTask<AuthorizationDecision> EvaluateAsync(
+            ActionContext<AuthorizationRequest> context,
+            CancellationToken cancellationToken = default)
         {
-            ct.ThrowIfCancellationRequested();
+            cancellationToken.ThrowIfCancellationRequested();
+            Evaluations++;
             LastCaller = context.Caller;
-            LastChannelId = context.Action.Request.ChannelId;
-            var allowed = context.Caller.Roles?.Contains("custom-permission") == true;
-            return ValueTask.FromResult(allowed
-                ? AccessDecision.Allow("custom_policy")
-                : AccessDecision.Deny("custom_policy", "The custom policy denies access."));
-        }
-
-        public ValueTask<AccessDecision> EvaluateAgentAsync(
-            ActionContext<PermissionAgentAccessAction> context,
-            CancellationToken ct = default)
-        {
-            ct.ThrowIfCancellationRequested();
-            AgentEvaluations++;
-            return ValueTask.FromResult(AccessDecision.Allow("custom_policy"));
+            LastOperation = context.Action.Operation;
+            LastResource = context.Action.Resource;
+            return ValueTask.FromResult(
+                context.Caller.Roles?.Contains("custom-policy") == true
+                    ? AuthorizationDecision.Allow("custom_policy")
+                    : AuthorizationDecision.Deny("custom_policy", "The custom policy denies access."));
         }
     }
-
 }
