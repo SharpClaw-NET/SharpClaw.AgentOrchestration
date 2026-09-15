@@ -29,7 +29,12 @@ public sealed class PermissionRestrictionTests
             Assert.That(graph.ActionHooks[0].ResultType, Is.Null);
             Assert.That(graph.ActionHooks[0].RequestedCapabilities, Is.EqualTo(
                 ActionInterceptionCapabilities.Inspect |
-                ActionInterceptionCapabilities.Wrap));
+                ActionInterceptionCapabilities.Wrap |
+                ActionInterceptionCapabilities.Observe));
+            Assert.That(
+                graph.ActionHooks[0].RequestedCapabilities.HasFlag(
+                    ActionInterceptionCapabilities.ReplaceResult),
+                Is.False);
         });
 
         var services = new ServiceCollection();
