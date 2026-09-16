@@ -1,168 +1,169 @@
-# Permission Module Development
+# Authorization Extension Development
 
 ## Developer Model
 
-A permission module owns one neutral contract. Context and Agents call that contract through the authenticated action graph. SharpClaw remains unaware of the policy implementation.
+SharpClaw uses one neutral authorization contract. One package supplies the authoritative policy. Other packages can require that policy or add independent restrictions. The host discovers these packages and connects them through the authenticated action graph. The host does not know the policy implementation.
 
-## Implement a Policy
+## Define Authorization Requests
 
-Implement `IPermissionPolicy` to receive context and agent access checks. Each method receives the full `ActionContext`, the typed request, and cancellation authority.
+An `AuthorizationRequest` contains an operation, one primary resource, optional related resources, and optional typed facts. It never contains caller authority. Use lowercase stable names for operations, resource types, and facts. Use `ActionContext.Caller` and `ActionContext.Features` as the only caller and feature authority.
 
 ```csharp
-public sealed class MyPermissionPolicy(IScopedStorageGateway storage)
-    : IPermissionPolicy
-{
-    public ValueTask<AccessDecision> EvaluateContextAsync(
-        ActionContext<PermissionContextAccessAction> context,
-        CancellationToken ct = default)
-    {
-        ct.ThrowIfCancellationRequested();
-        var allowed = context.Caller.Roles?.Contains("context-reader") == true;
-        return ValueTask.FromResult(allowed
-            ? AccessDecision.Allow("role_allowed")
-            : AccessDecision.Deny("role_denied", "The caller cannot read this context."));
-    }
+var request = new AuthorizationRequest(
+    "documents.read",
+    new AuthorizationResource("document", documentId.ToString("D")),
+    RelatedResources:
+    [
+        new AuthorizationResource("tenant", tenantId.ToString("D")),
+    ]);
+```
 
-    public ValueTask<AccessDecision> EvaluateAgentAsync(
-        ActionContext<PermissionAgentAccessAction> context,
-        CancellationToken ct = default)
+## Supply an Authoritative Policy
+
+Implement `IAuthorizationPolicy` to replace the active policy. The policy receives the validated request and the authenticated `ActionContext`. Return an explicit denial for each unsupported operation. Propagate cancellation before storage access or other effects.
+
+```csharp
+public sealed class DocumentAuthorizationPolicy : IAuthorizationPolicy
+{
+    public ValueTask<AuthorizationDecision> EvaluateAsync(
+        ActionContext<AuthorizationRequest> context,
+        CancellationToken cancellationToken = default)
     {
-        ct.ThrowIfCancellationRequested();
-        var allowed = context.Caller.Roles?.Contains(context.Action.Capability) == true;
+        cancellationToken.ThrowIfCancellationRequested();
+        var allowed = context.Caller.Roles?.Contains("document-reader") == true;
         return ValueTask.FromResult(allowed
-            ? AccessDecision.Allow("role_allowed")
-            : AccessDecision.Deny("role_denied", "The caller cannot use this agent operation."));
+            ? AuthorizationDecision.Allow("role_allowed")
+            : AuthorizationDecision.Deny(
+                "role_denied",
+                "The caller cannot read this document."));
     }
 }
 ```
 
-The policy can inject normal module services. It can use `IScopedStorageGateway` through declared module storage. It does not access host databases or service providers.
+## Register the Policy
 
-## Register the Provider
-
-Call one builder method from the module entry point. This call adds the service, contract export, typed descriptors, generated schemas, and stable terminals.
+Call `AddAuthorizationPolicy<TPolicy>` from `ConfigureServices`. This method registers the scoped policy, exports `sharpclaw.authorization`, defines `authorization.evaluate`, and adds its stable terminal. Normal constructor injection remains available to the policy.
 
 ```csharp
-public void Configure(IKernelBuilder module)
+public sealed class DocumentAuthorizationModule : ISharpClawModule
 {
-    module.AddPermissionPolicy<MyPermissionPolicy>();
+    public ModuleIdentity Identity { get; } = new(
+        "document_authorization",
+        "Document Authorization",
+        "document_auth");
+
+    public void ConfigureServices(IServiceCollection services) =>
+        services.AddAuthorizationPolicy<DocumentAuthorizationPolicy>();
 }
 ```
 
-The module manifest must advertise the contract before process activation. This metadata lets the host resolve the provider without loading optional implementation code.
+## Declare the Policy Export
+
+The package manifest must declare the exact contract and service type. The host rejects a missing or changed service type. Only one enabled package can export this contract.
 
 ```json
 {
   "exports": [
     {
-      "contractName": "sharpclaw.permission",
-      "serviceType": "SharpClaw.Modules.AgentOrchestration.Contracts.PermissionContract",
+      "contractName": "sharpclaw.authorization",
+      "serviceType": "SharpClaw.Contracts.Kernel.AuthorizationContract",
       "optional": false
     }
   ]
 }
 ```
 
-## Use the Policy
+## Use the Active Policy
 
-A module that needs checks selects its required action family. The helper adds the contract requirement, typed client, and authenticated relay subscription.
+Call `RequireAuthorization` in each package that needs authorization. Inject `HostAuthorizationEntry` into the guarded service. Evaluate the request with the active action or chat context. Complete authorization before protected work starts.
 
 ```csharp
-module.RequirePermissionPolicy(PermissionCheckSet.Context);
+public sealed class DocumentActionExecutor(HostAuthorizationEntry authorization)
+{
+    public async ValueTask ExecuteAsync(
+        ActionContext<DocumentReadAction> context,
+        CancellationToken cancellationToken)
+    {
+        var decision = await authorization.EvaluateAsync(
+            context,
+            new AuthorizationRequest(
+                "documents.read",
+                new AuthorizationResource(
+                    "document",
+                    context.Action.DocumentId.ToString("D"))),
+            cancellationToken);
+
+        if (!decision.Allowed)
+            throw new UnauthorizedAccessException(decision.Message);
+
+        await ReadDocumentAsync(context.Action.DocumentId, cancellationToken);
+    }
+}
 ```
 
-Use `PermissionCheckSet.Agents` for agent operations. Use `PermissionCheckSet.All` when one extension performs both check types.
+## Add an Independent Restriction
 
-## Complement a Policy
-
-Implement `IPermissionRestriction` when an extension must narrow decisions from the active permission provider. Default methods preserve decisions for checks that the extension does not restrict.
+Implement `IAuthorizationRestriction` when a package must reduce access without owning the policy. A restriction returns `Preserve` or `Deny`. It cannot return an allowance, replace the policy result, replace authenticated identity, or issue authority.
 
 ```csharp
-public sealed class TenantRestriction : IPermissionRestriction
+public sealed class TenantRestriction : IAuthorizationRestriction
 {
-    public ValueTask<PermissionRestriction> RestrictContextAsync(
-        ActionContext<PermissionContextAccessAction> context,
-        CancellationToken ct = default)
+    public ValueTask<AuthorizationRestriction> EvaluateAsync(
+        AuthorizationRestrictionContext context,
+        CancellationToken cancellationToken = default)
     {
-        ct.ThrowIfCancellationRequested();
+        cancellationToken.ThrowIfCancellationRequested();
         var tenantMatches = context.Features.Contains("tenant.scope");
         return ValueTask.FromResult(tenantMatches
-            ? PermissionRestriction.Preserve()
-            : PermissionRestriction.Deny(
+            ? AuthorizationRestriction.Preserve()
+            : AuthorizationRestriction.Deny(
                 "tenant_denied",
                 "The caller cannot access this tenant."));
     }
 }
 ```
 
-Register the restriction with one stable identifier. Select only the permission families that the module must restrict.
+## Register the Restriction
+
+Call `AddAuthorizationRestriction<TRestriction>` with one stable lowercase identifier. The helper requests only `Inspect`, `Wrap`, and `Observe`. Each restriction can preserve the current flow or stop it with a denial.
 
 ```csharp
-module.AddPermissionRestriction<TenantRestriction>(
-    "tenant-boundary",
-    PermissionCheckSet.Context,
-    HookPriority.High);
+public void ConfigureServices(IServiceCollection services) =>
+    services.AddAuthorizationRestriction<TenantRestriction>(
+        "tenant-boundary",
+        HookPriority.High);
 ```
 
-The helper adds one contract requirement and exact typed hooks. Each preserving restriction continues to the next restriction or the provider.
+## Declare the Restriction Requirement
 
-One denial stops the action before the provider terminal. A later restriction cannot change that denial to an allowance.
-
-The manifest must request `Inspect` and `Wrap` for each selected permission action. These effects let the restriction inspect authority and continue the same action.
+The restriction manifest must require the exact authorization service type. It must request the exact `authorization.evaluate` hook capabilities. The host rejects omitted service types, incompatible requirements, and multiple authoritative providers.
 
 ```json
 {
   "requires": [
     {
-      "contractName": "sharpclaw.permission",
-      "serviceType": "SharpClaw.Modules.AgentOrchestration.Contracts.PermissionContract",
+      "contractName": "sharpclaw.authorization",
+      "serviceType": "SharpClaw.Contracts.Kernel.AuthorizationContract",
       "optional": false
     }
   ],
   "requestedHooks": [
     {
-      "target": "permission.context-access",
-      "effects": ["Inspect", "Wrap"]
+      "target": "authorization.evaluate",
+      "effects": ["Inspect", "Wrap", "Observe"]
     }
   ]
 }
 ```
 
-## Preserve Authority
+## Extend or Replace Agent Orchestration
 
-Use `context.Caller` as the caller identity. Use `context.Features` for issued feature authority. Never accept either value from an action payload or request body.
-
-Return an explicit denial for unsupported operations. Propagate cancellation before storage or other effects. A denied check must complete before protected work starts.
-
-## Replace Two Tier Permission
-
-Remove the Two Tier Permission package from the selected module payload. Add one package that exports `sharpclaw.permission`. Context and Agents then use the replacement without source changes.
-
-Only one module can own the permission contract. This rule prevents two providers from producing conflicting authority. A replacement can compose multiple internal evaluators behind its one policy.
-
-Independent restriction modules can remain installed with either provider. Their intersection preserves the provider decision or reduces it to a denial.
+To replace Two Tier Permission, remove that package and add one package that exports `sharpclaw.authorization`. Context and Agents continue to use the same neutral contract. Use `AuthorizationRequestFactory` from Agent Orchestration Contracts when the policy needs its exact context and agent resource mappings.
 
 ## Keep Low-Level Control
 
-`PermissionActionDescriptors` remains public for exact typed hooks. Advanced modules can register a raw hook instead of the standard helper.
+`AuthorizationProtocol.Evaluate` exposes the exact typed descriptor for advanced hooks and tests. Its descriptor permits `Inspect`, `Wrap`, and `Observe`. It does not permit input replacement, result replacement, repeat, deferment, or cancellation. Use normal typed actions for additional policy operations instead of changing this contract.
 
-The descriptors permit `Inspect`, `Wrap`, and `Observe`. They do not permit input replacement, result replacement, repeat, deferment, or cancellation.
+## Test the Package
 
-The restriction API does not expose `IActionControl`. A restriction receives authenticated context and returns only preserve or deny.
-
-A permission module can define additional typed actions without separate schema and terminal registration. The descriptor still controls all action capabilities and policies.
-
-```csharp
-module.DefineAction(MyPermissionActions.Review)
-    .UseTerminal<MyPermissionReviewTerminal>(MyPermissionTerminals.Review);
-```
-
-Use `module.Actions.Add` and `module.AddActionEntry` when separate registration is necessary. Both forms compile through the same action graph.
-
-## Test the Module
-
-Compile the real module through `SharpClawModuleCompiler`. Verify one contract export, two action definitions, and two stable action entries. Invoke the terminals with authenticated `ActionContext` instances.
-
-Test allowed, denied, failed, and cancelled checks. Verify that denial and cancellation occur before protected storage writes.
-
-Compile Context and Agents against the replacement contract. Compile each restriction manifest with exact `Inspect` and `Wrap` effects.
+Compile the real package and manifest through `SharpClawModuleCompiler`. Verify the exact contract, action, terminal, and hook contributions. Test allowance, denial, cancellation, malformed requests, and pre-write rejection. Run both in-process and out-of-process host tests when the package supports both modes.

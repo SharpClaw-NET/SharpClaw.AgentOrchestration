@@ -18,11 +18,11 @@ Independent permission modules can complement either provider through restrictio
 
 `SharpClaw.Modules.Agents` owns agents, skills, memory, profiles, management tools, and Agent Job definitions. Canonical Jobs remains the kernel scheduler and execution authority.
 
-## Permission Development
+## Authorization Development
 
-The permission authoring API keeps caller authority in `ActionContext`. It supplies simple helpers for providers, consumers, and independent restrictions.
+The neutral authorization API keeps caller authority in `ActionContext`. It supplies one provider helper, one consumer helper, and restriction-only composition.
 
-The [permission module guide](docs/permission-modules.md) shows replacement, restriction composition, storage, testing, and low-level action control.
+The [authorization extension guide](docs/permission-modules.md) shows replacement, restriction composition, manifests, testing, and low-level action control.
 
 ## Job Import
 

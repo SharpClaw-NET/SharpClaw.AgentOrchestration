@@ -97,12 +97,14 @@ public sealed class PermissionActionEntryTests
             new ExecutionError("policy_failed", "The policy failed."));
         var entry = new HostAuthorizationEntry(host);
 
-        var exception = Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        var exception = Assert.ThrowsAsync<ActionFailedException>(async () =>
             await entry.EvaluateAsync(
                 TestHostActionContext.Create(new RequestPrincipal("caller", IsAuthenticated: true)),
                 CreateRequest()));
 
-        Assert.That(exception!.Message, Does.Contain("policy_failed"));
+        Assert.That(exception!.Error, Is.EqualTo(new ExecutionError(
+            "policy_failed",
+            "The policy failed.")));
     }
 
     private static AuthorizationRequest CreateRequest() =>

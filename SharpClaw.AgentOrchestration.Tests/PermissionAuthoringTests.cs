@@ -10,6 +10,50 @@ namespace SharpClaw.AgentOrchestration.Tests;
 public sealed class PermissionAuthoringTests
 {
     [Test]
+    public void PublicAuthoringDocsUseTheNeutralAuthorizationSurface()
+    {
+        var guide = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "docs",
+            "permission-modules.md"));
+        var readme = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "docs",
+            "README.md"));
+        var publicDocs = guide + Environment.NewLine + readme;
+
+        foreach (var symbol in new[]
+                 {
+                     nameof(IAuthorizationPolicy),
+                     nameof(IAuthorizationRestriction),
+                     nameof(AuthorizationRestrictionContext),
+                     nameof(HostAuthorizationEntry),
+                     nameof(AuthorizationProtocol),
+                     nameof(AuthorizationBuilderExtensions.AddAuthorizationPolicy),
+                     nameof(AuthorizationBuilderExtensions.AddAuthorizationRestriction),
+                     nameof(AuthorizationBuilderExtensions.RequireAuthorization),
+                     AuthorizationProtocol.ContractName,
+                 })
+        {
+            Assert.That(publicDocs, Does.Contain(symbol), symbol);
+        }
+
+        foreach (var retiredSymbol in new[]
+                 {
+                     "IPermissionPolicy",
+                     "IPermissionRestriction",
+                     "AddPermissionPolicy",
+                     "AddPermissionRestriction",
+                     "PermissionCheckSet",
+                     "PermissionActionDescriptors",
+                     "sharpclaw.permission",
+                 })
+        {
+            Assert.That(publicDocs, Does.Not.Contain(retiredSymbol), retiredSymbol);
+        }
+    }
+
+    [Test]
     public void IndependentProviderPublishesTheNeutralAuthorizationPort()
     {
         var graph = Compile(new IndependentAuthorizationPackage());
