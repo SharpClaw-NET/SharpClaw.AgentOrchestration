@@ -33,6 +33,8 @@ public sealed class PermissionAuthoringTests
                      nameof(AuthorizationBuilderExtensions.AddAuthorizationRestriction),
                      nameof(AuthorizationBuilderExtensions.RequireAuthorization),
                      AuthorizationProtocol.ContractName,
+                     "SharpClawModuleTestBuilder",
+                     ".ActionEntry(",
                  })
         {
             Assert.That(publicDocs, Does.Contain(symbol), symbol);

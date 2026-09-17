@@ -164,6 +164,23 @@ To replace Two Tier Permission, remove that package and add one package that exp
 
 `AuthorizationProtocol.Evaluate` exposes the exact typed descriptor for advanced hooks and tests. Its descriptor permits `Inspect`, `Wrap`, and `Observe`. It does not permit input replacement, result replacement, repeat, deferment, or cancellation. Use normal typed actions for additional policy operations instead of changing this contract.
 
-## Test the Package
+## Test the Production Graph
 
-Compile the real package and manifest through `SharpClawModuleCompiler`. Verify the exact contract, action, terminal, and hook contributions. Test allowance, denial, cancellation, malformed requests, and pre-write rejection. Run both in-process and out-of-process host tests when the package supports both modes.
+Reference `SharpClaw.ModuleSDK.Testing` with an exact version. Pass each real manifest path to `SharpClawModuleTestBuilder`. The builder compiles the manifest host mode and keeps scope validation active.
+
+```csharp
+await using var host = new SharpClawModuleTestBuilder()
+    .AddRegistration(new DocumentAuthorizationModule(), providerManifestPath)
+    .AddRegistration(new TenantRestrictionModule(), restrictionManifestPath)
+    .ApproveSensitiveContributions("document_authorization")
+    .ApproveSensitiveContributions("tenant_restriction")
+    .UseExecutionContext(caller, features)
+    .Build();
+
+var outcome = await host.ActionEntry(
+        AuthorizationProtocol.Evaluate,
+        request)
+    .RunAsync(cancellationToken);
+```
+
+`ActionEntry` resolves the registered policy terminal in a new scope and runs it through the production Core dispatcher. Test allowance, denial, cancellation, disposal, malformed requests, and pre-write rejection. Test both hosting modes when the package supports both modes.
