@@ -1,33 +1,28 @@
 # SharpClaw Agent Orchestration
 
-## Purpose
-
-SharpClaw Agent Orchestration provides optional Context, Two Tier Permission, and Agents modules. Each module uses neutral SharpClaw contracts and its own storage.
+> [!WARNING]
+> This repository is archived and read-only. It is no longer maintained or supported. SharpClaw does not include these packages in its default module set.
 
 ## Context
 
-`SharpClaw.Modules.Context` owns threads, channels, contexts, conversation history, and prompt context assembly. It requests access decisions from the active permission module.
+`SharpClaw.Modules.Context` adds threads, channels, saved conversation history, and prompt context assembly.
 
-## Permissions
+## Two Tier Permission
 
-`SharpClaw.Modules.TwoTierPermission` supplies the default permission provider. Another module can replace it through the neutral provider contract.
-
-Independent permission modules can complement either provider through restriction-only hooks. Each hook can preserve or deny access, but it cannot grant access.
+`SharpClaw.Modules.TwoTierPermission` adds the former two-tier clearance system, grants, denials, delegation, and approval records.
 
 ## Agents
 
-`SharpClaw.Modules.Agents` owns agents, skills, memory, profiles, management tools, and Agent Job definitions. Canonical Jobs remains the kernel scheduler and execution authority.
+`SharpClaw.Modules.Agents` adds agents, skills, memory, profiles, management operations, and Agent Job definitions that use canonical Jobs.
 
-## Authorization Development
+## Contracts
 
-The neutral authorization API keeps caller authority in `ActionContext`. It supplies one provider helper, one consumer helper, and restriction-only composition.
+`SharpClaw.AgentOrchestration.Contracts` contains the shared Context and Agents contracts used by this archived package family.
 
-The [authorization extension guide](docs/permission-modules.md) shows replacement, restriction composition, manifests, testing, and low-level action control.
+## Status
 
-## Job Import
+These packages remain available as historical source. They receive no fixes, compatibility work, security support, package updates, or publication support.
 
-The Agents module accepts a neutral `CanonicalJobsImportSnapshot`. It verifies source identities, payload hashes, action mappings, status, recovery data, and replay state before writes.
+## License
 
-## Build
-
-Run `dotnet restore`, `dotnet build -c Release`, and `dotnet test -c Release` from the repository root. Package publication requires separate owner approval.
+This repository uses the [GNU Affero General Public License version 3 or later](LICENSE.md), with the exceptions stated in the license file.
